@@ -1,0 +1,28 @@
+# switch-ext-spotify
+
+Spotify on every device the user has: playback (play, pause, skip, seek, volume, shuffle, repeat, transfer, the queue), search, their playlists (read, make, edit, add, remove, reorder, replace), their library (saved and followed) and history (recent, top). Events when what's playing changes, when playback starts or pauses, when it jumps within a track, and when it moves to another device; Spotify pushes nothing, so the player is polled every 5 seconds while something plays, every 10 otherwise, and right after a call changes it. `spotify.heartbeat` comes from that polling every 5 minutes and at once when what's failing changes: `failing` is what's wrong with reading the player now, or null.
+
+A widget, `playing`: the art, title and artist, back, play/pause and next, and a rule that runs with the track. Paused, one line; with nothing playing, nothing. It's narrow, made for the top of a space's rail.
+
+A [Switch](https://switch.ax) extension, built on
+[switch-ext-kit](../../packages/kit), through the Spotify Web API. Playback control needs Spotify Premium.
+
+## Install
+
+Ask Switch's agent to install `github:zachsents/switch` with path `extensions/spotify`, or add it in the desktop's
+Extensions view (⌘K, Extensions).
+
+## Setup
+
+1. Make an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): any name,
+   Redirect URI `http://127.0.0.1/oauth/callback`, API: Web API.
+2. Give Switch its Client ID (`connections_client`, provider `spotify`). PKCE: there's no secret.
+3. Connect Spotify in Switch (Connections).
+
+## Develop
+
+```sh
+bun install
+bun run check
+bun start   # serves MCP on stdio
+```

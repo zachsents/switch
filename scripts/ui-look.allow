@@ -1,0 +1,16 @@
+# What may break the look's rules (bun run look): a path, a tab, words from the line. Motion only
+# where it shows where something goes or is the one live mark, under 150 ms or the runner's beat.
+apps/desktop/src/mainview/index.css	@keyframes run
+apps/desktop/src/mainview/ui/marks.tsx	animation: "run 1s steps(8) infinite"
+apps/desktop/src/mainview/index.css	@keyframes spin
+apps/desktop/src/mainview/ui/marks.tsx	animation: "spin 1s steps(8) infinite"
+apps/desktop/src/mainview/ui/mic.tsx	animate-pulse
+apps/desktop/src/mainview/index.css	@keyframes typing
+apps/desktop/src/mainview/ui/chat.tsx	animate-[typing_1.2s_steps(1)_infinite]
+# Inks are identity, not a background: the user's words (and tapbacks) in a space's ink, a line in its ink, a
+# filament's swatch; the gallery shows each token.
+apps/desktop/src/mainview/ui/chat.tsx	style={right ? { background: ink } : undefined}
+apps/desktop/src/mainview/ui/band.tsx	style={{ background: ink }}
+apps/desktop/src/mainview/widgets/swatch.tsx	background: color === ""
+apps/desktop/src/mainview/ui/gallery.tsx	style={{ background: `var(--color-${c})` }}
+apps/desktop/src/mainview/ui/settings/color-field.tsx	style={{ background: value }}

@@ -1,0 +1,19 @@
+{
+  "name": "switch-ext-texts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Mac's Messages as a Switch extension: every text both ways, and sends that report delivered and read.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/zachsents/switch", "directory": "extensions/texts" },
+  "extension": {
+    "name": "texts",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "messages"
+    ]
+  }
+}

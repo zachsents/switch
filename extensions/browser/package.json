@@ -1,0 +1,48 @@
+{
+  "name": "switch-ext-browser",
+  "version": "0.2.0",
+  "private": true,
+  "description": "This Mac's own browser, signed in as the user is there, as a Switch extension: background tabs, a decision model's runs, and sign-in from the browser's saved passwords.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zachsents/switch",
+    "directory": "extensions/browser"
+  },
+  "files": [
+    "src",
+    "extension"
+  ],
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --type-aware --fix --fix-suggestions",
+    "format": "oxfmt --write .",
+    "fix": "bun run lint && bun run format",
+    "check": "bun run typecheck && bun run fix",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "effect": "^4.1.5",
+    "screen-relay": "0.1.5",
+    "switch-ext-kit": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.5",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "ultracite": "^8.3.1"
+  },
+  "extension": {
+    "name": "browser",
+    "main": "src/main.ts",
+    "heartbeat": 480000,
+    "needs": [
+      "browser"
+    ]
+  }
+}

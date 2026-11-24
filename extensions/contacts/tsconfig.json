@@ -1,0 +1,9 @@
+{
+  // Three programs: the extension, the app's view (DOM) and the app's bun process.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.extension.json" },
+    { "path": "./tsconfig.view.json" },
+    { "path": "./tsconfig.bun.json" }
+  ]
+}

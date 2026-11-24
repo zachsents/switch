@@ -1,0 +1,3 @@
+# A self-signed key for a test camera server, and the browser extension's public key (its id).
+extensions/3d-printing/src/testdata/key.pem:private-key:1
+extensions/browser/extension/manifest.json:generic-api-key:5

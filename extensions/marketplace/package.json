@@ -1,0 +1,35 @@
+{
+  "name": "switch-ext-marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Facebook Marketplace as a Switch extension: searches and saved searches, and the chats with sellers and buyers.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "check": "uvx ruff check --no-cache --select E9,F63,F7,F82 --exclude home . && python3 check.py"
+  },
+  "extension": {
+    "name": "marketplace",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "always-on"
+    ],
+    "heartbeat": 1500000,
+    "connections": [
+      {
+        "provider": "facebook",
+        "kind": "session",
+        "label": "Facebook",
+        "scopes": [],
+        "multiple": false
+      }
+    ],
+    "widgets": [
+      "watches",
+      "chats"
+    ]
+  }
+}

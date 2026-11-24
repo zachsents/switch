@@ -1,0 +1,13 @@
+{
+  // The bun process and the build's configs.
+  "extends": ["../../tsconfig.base.json", "./.hutch/devkit/tsconfig.json"],
+  "compilerOptions": {
+    "baseUrl": null,
+    "lib": ["ESNext", "DOM"],
+    "types": ["bun"],
+    // REVIEW: off here only; Electrobun's main-process SDK is projected into .hutch/devkit as
+    // source, and its own optional properties fail it. The view keeps it on.
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["src/bun", "src/shared", "src/native", "scripts", "*.ts"]
+}

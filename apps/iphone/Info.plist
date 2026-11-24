@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The core speaks plain HTTP and WebSocket on the tailnet, which encrypts it. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!-- An older build's core (the build's SWITCH_CORE, never in the source): an unpaired install asks it for a code once. -->
+	<key>SwitchCore</key>
+	<string>$(SWITCH_CORE)</string>
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Switchboard</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>switchboard</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

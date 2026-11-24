@@ -1,0 +1,36 @@
+# Calendar for iPhone, made by XcodeGen (`xcodegen` here; ios/build.sh runs it). Team, bundle id
+# and the core's address come from the build (ios/build.sh), never the source.
+name: Calendar
+options:
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    APP_BUNDLE_ID: dev.local.switch.calendar
+    # The core, ws://host:port, given at build time (ios/build.sh).
+    SWITCH_CORE: ""
+targets:
+  Calendar:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        type: syncedFolder
+    settings:
+      base:
+        PRODUCT_NAME: Calendar
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Calendar
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: To reach Switch over your network.
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic

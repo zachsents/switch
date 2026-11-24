@@ -1,0 +1,40 @@
+[package]
+name = "images"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui.workspace = true
+fast_image_resize = { version = "6", features = ["image"] }
+futures = "0.3.34"
+image = "0.25"
+kamadak-exif = "0.6"
+kit.workspace = true
+schemars = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+webp = "0.3"
+imaging = { version = "0.1.0", path = "../imaging" }
+ai = { version = "0.1.0", path = "../ai" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+
+# Read by `cargo xtask bundle images`.
+[package.metadata.bundle]
+name = "Images"
+icon = "image"
+# Finder's Open With menu offers Images for these, without making it their default app.
+opens = [
+    "public.jpeg",
+    "public.png",
+    "org.webmproject.webp",
+    "public.heic",
+    "public.heif",
+    "public.avif",
+    "com.compuserve.gif",
+    "public.tiff",
+    "com.microsoft.bmp",
+]

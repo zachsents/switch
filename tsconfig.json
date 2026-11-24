@@ -1,0 +1,29 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/brain"
+    },
+    {
+      "path": "packages/models"
+    },
+    {
+      "path": "packages/gateway"
+    },
+    {
+      "path": "packages/agent"
+    },
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/autonomy"
+    },
+    {
+      "path": "packages/migrate"
+    },
+    {
+      "path": "apps/desktop"
+    }
+  ]
+}

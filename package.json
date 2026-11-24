@@ -1,0 +1,35 @@
+{
+  "name": "switch",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "extensions/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck",
+    "lint": "oxlint --type-aware --type-check --disable-nested-config --fix",
+    "format": "oxfmt --write .",
+    "fix": "bun run lint && bun run format",
+    "check": "bun run denylist && bun run captions && bun run look && bun run catalogs && bun run test && bun run fix",
+    "test": "bun run --cwd apps/desktop test && bun run --cwd packages/gateway test",
+    "denylist": "sh scripts/denylist.sh",
+    "captions": "ui-captions --allow scripts/ui-captions.allow apps/desktop/src apps/iphone",
+    "dev": "bun run --cwd apps/desktop dev",
+    "core": "bun run --cwd packages/core start",
+    "build": "bun run --cwd packages/core build",
+    "deploy": "sh scripts/deploy.sh",
+    "look": "bun scripts/ui-look.ts",
+    "catalogs": "bun scripts/catalogs.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "switch-ext-kit": "^0.2.0",
+    "typescript": "^7.0.2",
+    "ultracite": "^8.3.0"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@switch/core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./steered": "./src/steered.ts",
+    "./profiles": "./src/profiles.ts",
+    "./account-schema": "./src/account-schema.ts"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "build": "bun ../../scripts/build-core.ts ../../dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.1.4",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@switch/agent": "workspace:*",
+    "@switch/autonomy": "workspace:*",
+    "@switch/brain": "workspace:*",
+    "@switch/gateway": "workspace:*",
+    "@switch/models": "workspace:*",
+    "effect": "^4.1.4",
+    "meshoptimizer": "^1.3.0",
+    "switch-ext-kit": "^0.2.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0"
+  }
+}

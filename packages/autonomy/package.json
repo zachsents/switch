@@ -1,0 +1,20 @@
+{
+  "name": "@switch/autonomy",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./memory-commands": "./src/memory-commands.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@switch/agent": "workspace:*",
+    "@switch/brain": "workspace:*",
+    "@switch/gateway": "workspace:*",
+    "@switch/models": "workspace:*",
+    "effect": "^4.1.4",
+    "switch-ext-kit": "^0.2.0"
+  }
+}

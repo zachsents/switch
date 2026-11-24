@@ -1,0 +1,456 @@
+@import "tailwindcss";
+
+/* Switchboard's look: functional signage. One background, three lines, ink for who, three lamps for
+   state, black plates for names. DESIGN.md says how to use these; views use these tokens only
+   (`bun run check` refuses raw colors, other backgrounds and motion). Every color follows the
+   system's appearance through light-dark(). */
+
+@theme {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  /* The one background, everywhere: the band, page, widgets, sidebars, chat, popovers, windows.
+     State highlights use an ink wash over that background (`lit`, `held`). Black is only a
+     plate on a picture; green only the key that acts; inks only marks and the user's words. */
+  --color-bg: light-dark(#ffffff, #0d0d0d);
+  --color-hover: color-mix(in srgb, var(--color-ink) 8%, var(--color-bg));
+
+  /* The three lines: line-1 between the panes and under the band; line-section between a rail's
+     sections and between widgets; line-2 between rows, and between the chat and its box. */
+  --color-line-1: light-dark(#c8c8c8, #2c2c2c);
+  --color-line-section: light-dark(#d8d8d8, #242424);
+  --color-line-2: light-dark(#e8e8e8, #1c1c1c);
+
+  /* Words: read, supporting, meta. */
+  --color-ink: light-dark(#0a0a0a, #ededed);
+  --color-ink2: light-dark(#555555, #a1a1a1);
+  --color-ink3: light-dark(#8a8a8a, #6b6b6b);
+
+  /* Home's ink: the user's words in Home, which has no line of its own. */
+  --color-home: light-dark(#4a4a4a, #3d3d3d);
+  /* The agent's bubble, iMessage's gray. */
+  --color-bubble: light-dark(#e9e9eb, #262628);
+
+  /* A key's edge, its border: no shadows anywhere, a key is the background inside its hairline. */
+  --color-key-border: light-dark(#8c8c8c, #444444);
+  --color-go-border: light-dark(#004f37, #00513a);
+
+  /* The three lamps (marks only), and the one key that sends. */
+  --color-yellow: #ffc000;
+  --color-orange: #f26419;
+  --color-red: #d42a1f;
+  --color-go: light-dark(#138a5b, #2a8f66);
+  --color-go-press: light-dark(#0e6e48, #23784f);
+  /* Words on a lamp, the green key, an ink or a picture. */
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  --font-sign: "DIN Condensed", "DINCondensed-Bold", "Barlow Condensed", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-caption: 11px;
+  --text-caption--line-height: 14px;
+  --text-small: 12px;
+  --text-small--line-height: 16px;
+  --text-ui: 13px;
+  --text-ui--line-height: 16px;
+  --text-read: 14px;
+  --text-read--line-height: 20px;
+  --text-data: 11px;
+  --text-data--line-height: 14px;
+  /* Sign sizes: a name on a plate, a space's name on the band. */
+  --text-name: 15px;
+  --text-name--line-height: 15px;
+  --text-title: 22px;
+  --text-title--line-height: 22px;
+
+  /* Heights, on a 4 px rhythm: a row, a key, the band (the window's buttons centre on it), a plate. */
+  --spacing-line: 24px;
+  --spacing-ask: 44px;
+  --spacing-work: 36px;
+  --spacing-key: 22px;
+  --spacing-band: 30px;
+  --spacing-plate: 20px;
+  /* How far words sit from their cell's edge, and a read column's. */
+  --spacing-inset: 8px;
+  --spacing-gutter: 16px;
+  --spacing-board: 340px;
+  --spacing-side: 180px;
+  /* A space's page: its rail a quarter of the window (at least 240 px), its widgets 27 %. */
+  --spacing-rail: max(240px, 25%);
+  --spacing-widgets: 27%;
+
+  --container-column: 720px;
+
+  --radius-key: 4px;
+  --radius-float: 6px;
+  --radius-bubble: 18px;
+}
+
+/* Charts' and tapbacks' colors are read by name (var(), a page's theme), not only through utilities:
+   always out. */
+@theme static {
+  /* The tapbacks, each in iMessage's color for it: Apple's system colors. */
+  --color-tapback-love: light-dark(#ff2d55, #ff375f);
+  --color-tapback-like: light-dark(#ff9500, #ff9f0a);
+  --color-tapback-dislike: light-dark(#5856d6, #5e5ce6);
+  --color-tapback-laugh: light-dark(#af52de, #bf5af2);
+  --color-tapback-emphasize: light-dark(#ff3b30, #ff453a);
+  --color-tapback-question: light-dark(#007aff, #0a84ff);
+  /* Charts (marks only, never words): series in this order, never cycled, each appearance's own
+     steps, checked for color vision on the background (the dataviz method's palette); a magnitude
+     in one hue, least to most, its least nearest the background. */
+  --color-series-1: light-dark(#2a78d6, #3987e5);
+  --color-series-2: light-dark(#eb6834, #d95926);
+  --color-series-3: light-dark(#1baf7a, #199e70);
+  --color-series-4: light-dark(#eda100, #c98500);
+  --color-series-5: light-dark(#e87ba4, #d55181);
+  --color-series-6: light-dark(#008300, #008300);
+  --color-series-7: light-dark(#6250d6, #9085e9);
+  --color-series-8: light-dark(#e34948, #e66767);
+  --color-scale-1: light-dark(#cde2fb, #184f95);
+  --color-scale-2: light-dark(#9ec5f4, #256abf);
+  --color-scale-3: light-dark(#5598e7, #3987e5);
+  --color-scale-4: light-dark(#256abf, #6da7ec);
+  --color-scale-5: light-dark(#104281, #b7d3f6);
+}
+
+:root {
+  color-scheme: light dark;
+  /* The three lines' thickness (the theme sets them, ui/theme.ts). */
+  --line-1: 1px;
+  --line-section: 1px;
+  --line-2: 0.5px;
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  line-height: var(--text-ui--line-height);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+/* The page is one layer: what floats (in portals beside it) is always over it, lines and all. */
+#root {
+  isolation: isolate;
+}
+
+/* Words to copy select like a page's. */
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+/* The sign face: condensed capitals, trimmed to the capitals, so centring it beside a ring or the
+   window's buttons centres the letters themselves. */
+@utility sign {
+  font-family: var(--font-sign);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-box: trim-both cap alphabetic;
+  /* Even room above and below the capitals, so what truncation clips keeps its descenders. */
+  padding-block: 0.25em;
+}
+
+/* Words beside a mark or in a key: trimmed to their capitals, so they centre optically. */
+/* Hover changes only the background. Lines and geometry stay fixed. */
+@utility lit {
+  background-color: var(--color-hover);
+}
+/* Selection and pressing never add an edge or replace a permanent divider. */
+@utility held {
+  background-color: var(--color-hover);
+}
+
+/* Keyboard focus is independent of selection and never changes layout. */
+@utility focused {
+  --tw-outline-style: solid;
+  outline: 1px solid var(--color-ink3);
+  outline-offset: -1px;
+}
+
+@utility trim {
+  text-box: trim-both cap alphabetic;
+  padding-block: 0.3em;
+}
+
+/* The lines. Each is drawn over what its element holds (a hover, a picture, a pressed row), so
+   nothing inside ever covers it, and hover never changes one. One line utility per element.
+   `edge`: a widget's own right and foot, so neighbours share one line. */
+@utility edge {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-right: var(--line-1) solid var(--color-line-1);
+    border-bottom: var(--line-1) solid var(--color-line-1);
+    pointer-events: none;
+  }
+}
+@utility line-1-t {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-top: var(--line-1) solid var(--color-line-1);
+    pointer-events: none;
+  }
+}
+@utility line-1-b {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-bottom: var(--line-1) solid var(--color-line-1);
+    pointer-events: none;
+  }
+}
+@utility line-1-r {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-right: var(--line-1) solid var(--color-line-1);
+    pointer-events: none;
+  }
+}
+@utility line-1-l {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-left: var(--line-1) solid var(--color-line-1);
+    pointer-events: none;
+  }
+}
+@utility line-2-b {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-bottom: var(--line-2) solid var(--color-line-2);
+    pointer-events: none;
+  }
+}
+@utility line-2-t {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-top: var(--line-2) solid var(--color-line-2);
+    pointer-events: none;
+  }
+}
+
+@utility line-section-t {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-top: var(--line-section) solid var(--color-line-section);
+    pointer-events: none;
+  }
+}
+@utility line-section-b {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-bottom: var(--line-section) solid var(--color-line-section);
+    pointer-events: none;
+  }
+}
+
+@utility line-2-l {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-left: var(--line-2) solid var(--color-line-2);
+    pointer-events: none;
+  }
+}
+
+/* A list's rows: a line-2 under each but the last, over each row's hover. */
+@utility rows {
+  & > * {
+    position: relative;
+  }
+  & > *::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    z-index: 2;
+    height: var(--line-2);
+    background: var(--color-line-2);
+    pointer-events: none;
+  }
+  & > :last-child::after {
+    display: none;
+  }
+}
+
+/* No native scroll bars: a pane shows its own thumb (ui/pane-scroll.tsx), and only when it has more
+   than it shows. */
+* {
+  scrollbar-width: none;
+}
+::-webkit-scrollbar {
+  display: none;
+}
+
+::placeholder {
+  color: var(--color-ink3);
+  opacity: 1;
+}
+
+/* What moves on its own: the runner, eight poses a second, the spinner, and the typing bubble's dots. */
+@keyframes run {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+/* Loading: the spinner's eight spokes, a step at a time. */
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
+}
+
+/* The typing bubble's dots, lit one at a time. */
+@keyframes typing {
+  0% {
+    background-color: var(--color-ink2);
+  }
+  33.3% {
+    background-color: var(--color-ink3);
+  }
+}
+
+/* A widget's cell: what A2UI draws fills it edge to edge; an MCP App's frame is no card. */
+@utility widget-cell {
+  --a2ui-sandboxed-frame-height: calc(var(--spacing-board) - 1px);
+  --a2ui-sandboxed-frame-border: 0;
+  --a2ui-sandboxed-frame-border-radius: 0;
+  --a2ui-sandboxed-frame-background: transparent;
+}
+
+/* A space's widgets with none to show: out of the page (ui/widget-column.tsx). Between two shown,
+   the section line, drawn by the lower one. */
+[data-widgets]:not(:has([data-widget]:not([data-nothing]))) {
+  display: none;
+}
+[data-widget]:not([data-nothing]) ~ [data-widget]:not([data-nothing]) {
+  @apply line-section-t;
+}
+
+/* A column with the house catalog's picture and its lines (a camera and its printer): the picture,
+   edge to edge, with everything its line says laid on it, so nothing reads as the next cell's. The
+   line's line is the name plate as a space's banner carries its name (ui/space-banner.tsx): black,
+   flush left near the top, rounded at the right, the name in the sign face and where it's at after
+   it. What the line holds (a printer's slots) is a black band along the picture's foot. */
+[data-column]:has([data-feed]) {
+  position: relative;
+}
+/* Two pictures one under the other would run together: the page shows between them. */
+[data-widget]:not([data-nothing]):has([data-feed]) ~ [data-widget]:not([data-nothing]) {
+  padding-top: 16px;
+}
+[data-column] > :has([data-feed]),
+[data-column] [data-feed] {
+  order: -1;
+}
+[data-column]:has([data-feed]) [data-row] {
+  padding-bottom: 0;
+  --color-bg: var(--color-black);
+  --color-ink: var(--color-white);
+  --color-ink2: color-mix(in srgb, var(--color-white) 80%, transparent);
+  --color-ink3: color-mix(in srgb, var(--color-white) 55%, transparent);
+  --color-line-1: color-mix(in srgb, var(--color-white) 22%, transparent);
+  --color-line-2: color-mix(in srgb, var(--color-white) 45%, transparent);
+  --color-hover: color-mix(in srgb, var(--color-white) 18%, transparent);
+}
+[data-column]:has([data-feed]) [data-row] > div:first-child {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  left: 0;
+  max-width: calc(100% - 8px);
+  height: auto;
+  padding: 6px 10px 6px 14px;
+  border-radius: 0 6px 6px 0;
+  background: var(--color-black);
+  color: var(--color-white);
+}
+[data-column]:has([data-feed]) [data-row-label] {
+  font-family: var(--font-sign);
+  font-size: var(--text-name);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-box: trim-both cap alphabetic;
+  padding-block: 0.25em;
+}
+[data-column]:has([data-feed]) [data-row-detail] {
+  flex: 0 1 auto;
+  color: var(--color-ink2);
+}
+/* The plate says where it's at in words; a rule across it would read as the picture's. */
+[data-column]:has([data-feed]) [data-row-progress] {
+  display: none;
+}
+[data-column]:has([data-feed]) [data-row] > div + div {
+  position: absolute;
+  z-index: 1;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin-top: 0;
+  background: var(--color-black);
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)) !important;
+}
+
+/* A card (A2UI's Card) is a region of its own: a line-1 parts it from what follows it in its parent,
+   under it down a column, beside it across a row; the last one's edge is its parent's. */
+:not(:last-child) > [data-card] {
+  @apply line-1-b;
+}
+[data-across] > :not(:last-child) > [data-card] {
+  @apply line-1-r;
+}

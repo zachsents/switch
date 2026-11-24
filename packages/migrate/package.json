@@ -1,0 +1,21 @@
+{
+  "name": "@switch/migrate",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "migrate": "bun src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.1.4",
+    "@switch/agent": "workspace:*",
+    "@switch/autonomy": "workspace:*",
+    "@switch/brain": "workspace:*",
+    "@switch/core": "workspace:*",
+    "@switch/models": "workspace:*",
+    "effect": "^4.1.4"
+  }
+}

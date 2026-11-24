@@ -1,0 +1,305 @@
+#!/bin/sh
+# A snapshot of every store in ~/.switch, to the backup disk ~/.switch/deploy.json names:
+#   backups      the folder on it (an encrypted APFS disk image, switch.sparsebundle, is kept there)
+#   backupsSize  the image's cap (default 40g), which old snapshots are dropped to stay under
+# The image's passphrase is in the login keychain (ax.switch.backup), never a file or a log; a first
+# run makes both. Keep a copy off this machine: a restore elsewhere needs it.
+# Inside, snapshots/<time>-<label>/files is ~/.switch as it was: what the release, the checkouts and
+# the deploy's own brain copies rebuild is left out, every SQLite file is a consistent copy, the brain
+# is brain.db.zst, and a file unchanged since the last snapshot is a hard link to it.
+#   backup.sh <label> [brain]   brain: a copy to back up instead of the live one (the deploy's,
+#                               taken before its migration)
+# A deploy's (its label a commit) is skipped while the last snapshot is under an hour old: deploys
+# come minutes apart, and each keeps its own copy in ~/.switch/backups meanwhile. Any backup waits
+# (fails, and says so) while this disk has less than twice the brain's size free: the brain's copy
+# on its way to the image needs up to one brain's size here.
+# The core runs it (POST /backup, and nightly) at background priority under ~/.switch/backup.lock:
+# it has the disk access.
+# The last line of a failure says what's wrong; the core raises it to the agent.
+#   backup.sh serve             a pull by the second copy (scripts/backup-pull.sh), over ssh
+# scripts/restore.sh puts a snapshot back.
+set -eu
+S=${SWITCH_DIR:-$HOME/.switch}
+LOGS=$HOME/Library/Logs/switch
+SERVICE=ax.switch.backup
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+mkdir -p "$LOGS"
+conf() { plutil -extract "$1" raw -o - "$S/deploy.json" 2>/dev/null || true; }
+expand() { case $1 in "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
+say() { echo "[backup $(date +%H:%M:%S)] $*" >>"$LOGS/backup.log"; }
+fail() {
+  say "FAILED: $*"
+  echo "$*" >&2
+  exit 1
+}
+
+label=${1:?usage: backup.sh <label> [brain]}
+brain=${2:-$S/brain.db}
+DEST=$(expand "$(conf backups)")
+SIZE=$(conf backupsSize)
+[ -n "$SIZE" ] || SIZE=40g
+[ -n "$DEST" ] || fail "No backups folder in deploy.json"
+# A folder on a volume that isn't mounted would land on the system disk instead.
+case $DEST in
+  /Volumes/*)
+    vol=/Volumes/$(echo "${DEST#/Volumes/}" | cut -d/ -f1)
+    if [ ! -d "$vol" ] || [ "$(stat -f %d "$vol")" = "$(stat -f %d /Volumes)" ]; then
+      fail "The backup disk isn't mounted ($vol)"
+    fi
+    ;;
+esac
+mkdir -p "$DEST" 2>/dev/null || fail "Can't write to $DEST"
+# macOS's own rsync (openrsync) breaks on --link-dest.
+rsync --version | grep -q '^rsync  *version 3' || fail "rsync 3 is needed (brew install rsync)"
+# A pull by the second copy (scripts/backup-pull.sh), the only thing its key may do: the image read
+# while no backup writes it, or its word that it pulled.
+if [ "$label" = serve ]; then
+  cmd=${SSH_ORIGINAL_COMMAND:-}
+  if [ "$cmd" = pulled ]; then
+    date +%s >"$S/backup-pulled"
+    exit 0
+  fi
+  if printf %s "$cmd" | grep -q '[^A-Za-z0-9 ._=/,-]'; then
+    fail "A pull asked for something else"
+  fi
+  case $cmd in
+    "rsync --server --sender "*" . switch.sparsebundle/") ;;
+    *) fail "A pull asked for something else" ;;
+  esac
+  cd "$DEST"
+  # shellcheck disable=SC2086
+  exec /usr/sbin/taskpolicy -b lockf -t 3600 "$S/backup.lock" "$(command -v rsync)" ${cmd#rsync }
+fi
+[ -f "$brain" ] || fail "No brain at $brain"
+# Deploys come minutes apart: one an hour reaches the image.
+if printf %s "$label" | grep -qE '^[0-9a-f]{40}$' && [ -f "$S/backup-last" ]; then
+  ago=$(($(date +%s) - $(cat "$S/backup-last" 2>/dev/null || echo 0)))
+  if [ "$ago" -lt "${SWITCH_BACKUP_EVERY:-3600}" ]; then
+    say "$label: skipped, the last snapshot is $((ago / 60)) min old"
+    exit 0
+  fi
+fi
+# A run killed outright leaves its work folder (a brain's copy among it); backup.lock means none
+# other is running.
+rm -rf "${TMPDIR:-/tmp}"/switch-backup.*
+# Room for the brain's copy (one brain's size at most), and as much again for everything else.
+need=$(($(stat -f %z "$brain") / 1024 * 2))
+room=$(df -k "${TMPDIR:-/tmp}" | awk 'NR == 2 { print $4 }')
+if [ "$room" -lt "$need" ]; then
+  say "$label: $((room / 1048576)) GB free, $((need / 1048576)) GB needed"
+  fail "Too little free disk for a backup (under twice the brain's size)"
+fi
+
+t0=$(date +%s)
+say "$label: start"
+IMG=$DEST/switch.sparsebundle
+pass=$(security find-generic-password -s "$SERVICE" -a backups -w 2>/dev/null || true)
+if [ -z "$pass" ]; then
+  [ ! -e "$IMG" ] || fail "No passphrase for $IMG in the keychain ($SERVICE)"
+  pass=$(openssl rand -hex 32)
+  # Through stdin, so it's in no process's arguments. Only the security tool reads it back.
+  printf 'add-generic-password -s %s -a backups -l "Switch backups" -T /usr/bin/security -w %s\n' "$SERVICE" "$pass" |
+    security -i >/dev/null 2>&1 || fail "Can't keep the backup passphrase in the keychain"
+  [ "$(security find-generic-password -s "$SERVICE" -a backups -w 2>/dev/null)" = "$pass" ] ||
+    fail "Can't keep the backup passphrase in the keychain"
+fi
+if [ ! -e "$IMG" ]; then
+  printf %s "$pass" | hdiutil create -quiet -size "$SIZE" -type SPARSEBUNDLE -fs APFS \
+    -encryption AES-256 -stdinpass -volname "Switch backups" "$IMG" || fail "Can't make $IMG"
+  say "made $IMG ($SIZE, encrypted)"
+fi
+# Mounted where nothing else looks; one a killed run left attached is used as it is.
+MNT=$HOME/Library/Caches/$SERVICE/mnt
+mkdir -p "$MNT"
+attached=''
+if ! mount | grep -qF " on $MNT ("; then
+  printf %s "$pass" | hdiutil attach -quiet -stdinpass -nobrowse -noautoopen -owners on -mountpoint "$MNT" "$IMG" ||
+    fail "Can't open $IMG"
+  attached=1
+fi
+# Spotlight never indexes it: each snapshot is hundreds of thousands of new paths, and indexing them
+# competes with the core for the disk. Turning off a disk image's index needs no admin.
+mdutil -i off "$MNT" >/dev/null 2>&1 || true
+pass=''
+work=$(mktemp -d "${TMPDIR:-/tmp}/switch-backup.XXXXXX")
+done_() {
+  rm -rf "$work"
+  [ -z "$attached" ] || hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -quiet -force "$MNT" 2>/dev/null || true
+}
+trap done_ EXIT
+trap 'exit 1' INT TERM HUP
+
+SNAP=$MNT/snapshots
+mkdir -p "$SNAP"
+# What a run cut short (a deploy restarts the core that runs it) copied is carried on from.
+partial=$(ls -1d "$SNAP"/*.partial 2>/dev/null | sort | tail -1)
+if [ -n "$partial" ]; then
+  rm -rf "$SNAP/.resume"
+  mv "$partial" "$SNAP/.resume"
+  rm -rf "$SNAP"/*.partial
+fi
+
+# Free space in the image, as a percentage of it.
+free_pct() { df -k "$MNT" | awk 'NR == 2 { printf "%d", $4 * 100 / $2 }'; }
+snapshots() { ls -1 "$SNAP" | grep -v '\.partial$' | sort; }
+# The newest 5, each of the last 14 days' newest and each of the last 8 weeks' newest are kept;
+# then the oldest go while the image is less than a fifth free (never the newest).
+prune() {
+  keep=$work/keep
+  snapshots | tail -5 >"$keep"
+  snapshots | sort -r | awk -v d="$(date -v-13d +%Y%m%d)" '{ day = substr($0, 1, 8) } day >= d && !seen[day]++' >>"$keep"
+  snapshots | sort -r | while read -r s; do
+    echo "$(date -j -f %Y%m%d "${s%%-*}" +%G%V 2>/dev/null) $s"
+  done | awk -v w="$(date -v-7w +%G%V)" '$1 >= w && !seen[$1]++ { print $2 }' >>"$keep"
+  snapshots | while read -r s; do
+    grep -qxF "$s" "$keep" || { rm -rf "${SNAP:?}/$s"; say "dropped $s"; }
+  done
+  while [ "$(free_pct)" -lt 20 ] && [ "$(snapshots | wc -l)" -gt 1 ]; do
+    s=$(snapshots | head -1)
+    rm -rf "${SNAP:?}/$s"
+    say "dropped $s for room"
+  done
+}
+prune
+
+name=$(date +%Y%m%d-%H%M%S)-$label
+new=$SNAP/$name.partial
+prev=$(snapshots | tail -1)
+if [ -d "$SNAP/.resume" ]; then
+  mv "$SNAP/.resume" "$new"
+  rm -f "$new/manifest" "$new/files/brain.db.zst"
+fi
+mkdir -p "$new/files"
+
+# Left out: what a deploy rebuilds (releases, checkouts, the update feed, builds), each extension's
+# pkg (installed again from its source whenever it starts), its own brain
+# copies (backups/, the canary), what lasts only while running (procs, locks), the browser a page is
+# previewed in, every SQLite file and every node_modules folder, both copied on their own below.
+cat >"$work/exclude" <<'EOF'
+/releases/
+/current
+/src/
+/app-src/
+/backups/
+/canary/
+/updates/
+/updates.new/
+/updates.old/
+/iphone-builds/
+/preview/
+/procs/
+/fetch/
+/blobs/tmp/
+/extensions/*/pkg/
+node_modules/
+.node_modules.*
+*.lock
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+EOF
+link=''
+[ -z "$prev" ] || link=--link-dest=$SNAP/$prev/files
+rc=0
+# shellcheck disable=SC2086
+# Sockets and devices only mean something while their process runs: -a without -D.
+rsync -rlptgoH --delete --exclude-from="$work/exclude" $link "$S/" "$new/files/" 2>"$work/rsync.err" || rc=$?
+# Files that went while they were copied (a log rotated, a build replaced) are fine: 24, or 23
+# when every error is a file not found (openrsync says no more).
+gone=''
+if [ "$rc" = 24 ] || { [ "$rc" = 23 ] && ! grep 'error:' "$work/rsync.err" | grep -qv ' (2)'; }; then
+  gone=1
+fi
+if [ "$rc" != 0 ] && [ -z "$gone" ]; then
+  tail -3 "$work/rsync.err" >>"$LOGS/backup.log"
+  fail "Copying files failed: $(tail -1 "$work/rsync.err")"
+fi
+
+# A node_modules folder (an extension's packages: most of the files) as one archive beside it,
+# .node_modules.tar.zst, made again only when its files changed (.node_modules.sig): a snapshot
+# links a few hundred thousand fewer files. restore.sh unpacks them.
+prune_dirs() {
+  find "$S" \( -path "$S/releases" -o -path "$S/src" -o -path "$S/app-src" -o -path "$S/backups" \
+    -o -path "$S/canary" -o -path "$S/updates" -o -path "$S/updates.old" -o -path "$S/updates.new" \
+    -o -path "$S/iphone-builds" -o -path "$S/preview" -o -path "$S/procs" -o -path "$S/current" \
+    -o -path "$S/extensions/*/pkg" "$@"
+}
+prune_dirs \) -prune -o -type d -name node_modules -prune -print >"$work/modules"
+packed=0
+: >"$work/module-files"
+while read -r d; do
+  rel=$(dirname "${d#"$S"/}")
+  at=$new/files/$rel
+  [ -d "$at" ] || continue
+  find "$d" \( -type f -o -type l \) -print0 | xargs -0 stat -f '%N %z %m' >"$work/list" 2>/dev/null || true
+  grep -c '' "$work/list" >>"$work/module-files" || true
+  sig=$(shasum <"$work/list" | cut -c1-40)
+  if [ "$(cat "$at/.node_modules.sig" 2>/dev/null)" = "$sig" ] && [ -f "$at/.node_modules.tar.zst" ]; then
+    continue
+  fi
+  rm -f "$at/.node_modules.tar.zst" "$at/.node_modules.sig"
+  if [ -n "$prev" ] && [ "$(cat "$SNAP/$prev/files/$rel/.node_modules.sig" 2>/dev/null)" = "$sig" ]; then
+    ln "$SNAP/$prev/files/$rel/.node_modules.tar.zst" "$at/.node_modules.tar.zst"
+  else
+    tar -cf - -C "$(dirname "$d")" node_modules 2>/dev/null | zstd -q -T0 -3 -o "$at/.node_modules.tar.zst" ||
+      fail "Can't pack $rel/node_modules"
+    packed=$((packed + 1))
+  fi
+  echo "$sig" >"$at/.node_modules.sig"
+done <"$work/modules"
+
+# SQLite files: each a consistent copy (VACUUM INTO reads one transaction), the brain compressed.
+sq() { printf %s "$1" | sed "s/'/''/g"; }
+prune_dirs -o -name node_modules \) -prune -o -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print >"$work/dbs"
+while read -r db; do
+  rel=${db#"$S"/}
+  [ "$rel" != brain.db ] || continue
+  mkdir -p "$(dirname "$new/files/$rel")"
+  sqlite3 "$db" "VACUUM INTO '$(sq "$new/files/$rel")';" 2>"$work/db.err" || {
+    # Not SQLite after all, or not readable as one: copied as it is.
+    cp -p "$db" "$new/files/$rel" || fail "Can't copy $rel: $(tail -1 "$work/db.err")"
+  }
+done <"$work/dbs"
+# The brain, compressed straight from one consistent copy beside it: the most room it takes is one
+# brain's size. A deploy's copy (taken at rest, checkpointed) is cloned as it is, an instant that
+# costs nothing while it shares its blocks; the deploy's tidy may compress the original meanwhile.
+# The live brain, or a copy with a WAL beside it, is compacted (VACUUM INTO reads one transaction).
+copy=$work/brain.db
+if [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ]; then
+  cp -c "$brain" "$copy" || fail "Can't clone $brain"
+else
+  sqlite3 "$brain" "VACUUM INTO '$(sq "$copy")';" 2>"$work/db.err" ||
+    fail "Can't copy the brain: $(tail -1 "$work/db.err")"
+fi
+# Read as immutable: nothing (no -shm, no WAL) is written beside it.
+head=$(sqlite3 -readonly "file:$copy?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;") ||
+  fail "Can't read the brain's copy"
+zstd -q -T0 -10 "$copy" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
+rm -f "$copy"
+
+# What a restore checks itself against.
+{
+  echo "label $label"
+  echo "release $(basename "$(readlink "$S/current" 2>/dev/null || echo none)")"
+  echo "events $head"
+  echo "blobs $(find "$new/files/blobs" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+  echo "extensions $(ls -1 "$new/files/extensions" 2>/dev/null | tr '\n' ' ')"
+  echo "logins $(find "$new/files/logins" -type f 2>/dev/null | wc -l | tr -d ' ')"
+  # Files and links as restored: node_modules' unpacked, the brain one file.
+  plain=$(find "$new/files" \( -type f -o -type l \) ! -name '.node_modules.*' | wc -l)
+  echo "files $((plain + $(awk '{ n += $1 } END { print n + 0 }' "$work/module-files")))"
+} >"$new/manifest"
+mv "$new" "$SNAP/$name"
+date +%s >"$S/backup-last"
+prune
+say "$label: $name in $(($(date +%s) - t0)) s, $packed node_modules packed; image $(df -h "$MNT" | awk 'NR == 2 { print $3 " used, " $4 " free" }')"
+# The second copy, once there is one, pulls within two days.
+if [ -f "$S/backup-pulled" ]; then
+  age=$((($(date +%s) - $(cat "$S/backup-pulled")) / 3600))
+  [ "$age" -lt 48 ] || fail "The second copy of the backups hasn't pulled in $age hours"
+fi

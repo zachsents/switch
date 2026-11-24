@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Switch",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0yQbj23/qyCfN2lKC5qjZXJTjf5GD0cFn1GHdZpTPNXndaPWf1Z5+ZTSE5aofPN7mLK/PmbDmrU/KKAMabNKooeCOmLyrrvDDA9ay4cRG47oD02oeQ7YLA6L7hJoLSTg1KNE2THe+iq22ik3I+FwuBerJxD9Bc1hhsHNxzw2yfh0E67u+ZnRVGwUYEkT/TgGza77ISJQFUuB8pYAMfbEc2TpKBA/FoHoq/S4Yk0C+7TtvOhSeMU7dMWsa9wd9ArwDn7R6vOAThv9B4+VZJKPkf1BsI1vsWfNh5kiZ3E+ipdeOyQFbhP45myOy7CT2lgf/dwWzHT6iyTB7rgKppnypQIDAQAB",
+  "permissions": ["nativeMessaging", "tabs", "debugger", "tabGroups", "storage", "alarms", "idle"],
+  "background": { "service_worker": "background.js" }
+}

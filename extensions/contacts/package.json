@@ -1,0 +1,82 @@
+{
+  "name": "switch-ext-contacts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "People and companies from the user's address books, other extensions and everyone who messages them, as a Switch extension.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zachsents/switch",
+    "directory": "extensions/contacts"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "app": "electrobun prepare && vite build && electrobun dev",
+    "app:view": "vite",
+    "app:build": "sh scripts/app.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.extension.json && tsc --noEmit -p tsconfig.view.json && tsc --noEmit -p tsconfig.bun.json",
+    "lint": "oxlint --type-aware --type-check --fix --fix-suggestions",
+    "format": "oxfmt --write .",
+    "fix": "bun run lint && bun run format",
+    "check": "electrobun prepare >/dev/null && bun run typecheck && bun run captions && bun run fix",
+    "captions": "ui-captions src app ios"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "effect": "^4.1.5",
+    "libphonenumber-js": "^1.13.17",
+    "switch-ext-kit": "^0.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.1.2",
+    "@base-ui/react": "^1.9.0",
+    "@rolldown/plugin-babel": "^0.3.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-form": "^1.33.5",
+    "@tanstack/react-query": "^5.108.1",
+    "@tanstack/react-virtual": "^3.14.26",
+    "@types/babel__core": "^7.20.5",
+    "@types/bun": "^1.4.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@ui-sdk/core": "^0.1.0-beta.13",
+    "@ui-sdk/react": "^0.1.0-beta.13",
+    "@vitejs/plugin-react": "^6.3.0",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "electrobun": "2.0.6",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-error-boundary": "^6.1.6",
+    "tailwindcss": "^4.3.5",
+    "temporal-polyfill": "^1.0.8",
+    "typescript": "^7",
+    "ultracite": "^8.3.1",
+    "vite": "^8.3.8"
+  },
+  "extension": {
+    "name": "contacts",
+    "main": "src/main.ts",
+    "heartbeat": 420000,
+    "needs": [
+      "macos"
+    ],
+    "connections": [
+      {
+        "provider": "google",
+        "scopes": [
+          "https://www.googleapis.com/auth/contacts"
+        ],
+        "multiple": false
+      }
+    ],
+    "widgets": [
+      "person",
+      "identified"
+    ]
+  }
+}

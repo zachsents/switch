@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask bundle <app>` and `cargo xtask install <app>`. See xtask/src/main.rs.
+xtask = "run --quiet --package xtask --"

@@ -1,0 +1,5 @@
+node_modules/
+home/
+events.db*
+*.tsbuildinfo
+.DS_Store

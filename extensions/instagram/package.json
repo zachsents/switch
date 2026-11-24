@@ -1,0 +1,34 @@
+{
+  "name": "switch-ext-instagram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Instagram DMs as a Switch extension: the inbox read through the browser extension without opening a chat, so nothing shows Seen.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/zachsents/switch", "directory": "extensions/instagram" },
+  "extension": {
+    "name": "instagram-dms",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "always-on"
+    ],
+    "connections": [
+      {
+        "provider": "instagram",
+        "kind": "session",
+        "label": "Instagram",
+        "scopes": [],
+        "multiple": false
+      }
+    ],
+    "reaches": {
+      "calls": [
+        "browser_act"
+      ]
+    },
+    "heartbeat": 1080000
+  }
+}

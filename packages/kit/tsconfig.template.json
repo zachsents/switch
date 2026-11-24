@@ -1,0 +1,9 @@
+{
+  "extends": "./template/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "switch-ext-kit": ["./src/index.ts"]
+    }
+  },
+  "include": ["template/src"]
+}

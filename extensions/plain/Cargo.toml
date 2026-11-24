@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/ai", "crates/imaging", "crates/images", "crates/kit", "crates/recorder", "crates/store", "xtask"]
+
+# Every app builds against this one GPUI revision. Bump it here, never per app.
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "322cd509dcccaee1f6bc44725d270598ae8171ad" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "322cd509dcccaee1f6bc44725d270598ae8171ad", features = ["font-kit"] }
+kit = { path = "crates/kit" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

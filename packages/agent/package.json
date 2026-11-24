@@ -1,0 +1,21 @@
+{
+  "name": "@switch/agent",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./acp-install": "./src/acp-install.ts",
+    "./acp-registry": "./src/acp-registry.ts",
+    "./provider-probe": "./src/provider-probe.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.4.2",
+    "@muse-code/sdk": "1.4.6",
+    "@switch/brain": "workspace:*",
+    "@switch/models": "workspace:*",
+    "effect": "^4.1.4"
+  }
+}

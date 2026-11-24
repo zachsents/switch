@@ -1,0 +1,8 @@
+{
+  // The viewer runs in the apps' web views: the DOM's types.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src"]
+}

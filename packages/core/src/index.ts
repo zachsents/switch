@@ -1,0 +1,8 @@
+export { chatLayer, triageLayer } from "./chat.ts"
+export { CoreConfig } from "./config.ts"
+export type { CoreConfigShape } from "./config.ts"
+export { IDENTITY, line, makeContext, spaceOf, threadOf } from "./context.ts"
+export { preRead } from "./preread.ts"
+export type { Read } from "./preread.ts"
+export { brainParts, layerServer } from "./server.ts"
+export { clientView, threadSpaces, viewConfig } from "./view.ts"

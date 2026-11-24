@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+/* Switch's house style (the Switchboard Interface Standard, rev D, as Switch's desktop draws it).
+   Every color follows the system's appearance through light-dark(). */
+
+@theme {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  /* Paper and ink */
+  --color-desk: light-dark(#dcdcdc, #000000);
+  --color-page: light-dark(#f0f0f0, #000000);
+  --color-paper: light-dark(#ffffff, #0d0d0d);
+  --color-ink: light-dark(#0a0a0a, #ededed);
+  --color-ink2: light-dark(#555555, #a3a3a3);
+  --color-ink3: light-dark(#8e8e8e, #6b6b6b);
+  --color-wash: light-dark(#f4f4f4, #161616);
+  --color-selection: light-dark(#ededed, #1e1e1e);
+  --color-bubble: light-dark(#ececec, #1f1f1f);
+  /* the user's bubble in Home, which has no ink */
+  --color-own: light-dark(#4a4a4a, #3a3a3a);
+
+  /* The band: black in both appearances */
+  --color-band: light-dark(#0a0a0a, #000000);
+  --color-band-ink: #ffffff;
+  --color-band-ink2: light-dark(#9a9a9a, #7a7a7a);
+  --color-band-wash: #1c1c1c;
+
+  /* Lines, on a road sign's scale */
+  --color-hair: light-dark(#c4c4c4, #333333);
+  --color-heavy: light-dark(#0a0a0a, #8a8a8a);
+
+  /* The three lamps, and the one green key */
+  --color-yellow: #ffc000;
+  --color-orange: #f26419;
+  --color-red: #d42a1f;
+  --color-on-lamp: #ffffff;
+
+  /* Keys: raised, lit from above */
+  --color-key-top: light-dark(#ffffff, #262626);
+  --color-key-foot: light-dark(#f0f0f0, #1b1b1b);
+  --color-key-border: light-dark(#8c8c8c, #3c3c3c);
+  --color-key-light: light-dark(#ffffff, #3a3a3a);
+  --color-key-drop: light-dark(#a6a6a6, #000000);
+  --color-key-pressed: light-dark(#eaeaea, #161616);
+  --color-go-top: light-dark(#0a8c58, #0b8a57);
+  --color-go-foot: #00744a;
+  --color-go-border: light-dark(#004f37, #00513a);
+  --color-go-drop: light-dark(#003a28, #000000);
+
+  /* What floats */
+  --color-overlay: light-dark(#ffffff, #141414);
+  --color-scrim: light-dark(rgb(0 0 0 / 0.18), rgb(0 0 0 / 0.55));
+
+  /* Faces: the sign face for names only; SF for words; SF Mono for data */
+  --font-sign: "DIN Condensed", "DINCondensed-Bold", "Barlow Condensed", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-caption: 11px;
+  --text-caption--line-height: 14px;
+  --text-small: 12px;
+  --text-small--line-height: 16px;
+  --text-ui: 13px;
+  --text-ui--line-height: 18px;
+  --text-read: 14px;
+  --text-read--line-height: 20px;
+  --text-data: 11px;
+  --text-data--line-height: 14px;
+  --text-name: 20px;
+  --text-name--line-height: 20px;
+  --text-title: 30px;
+  --text-title--line-height: 30px;
+
+  /* Heights: a line, a cell's heading, the band; the inset words keep from a cell's lines */
+  --spacing-line: 36px;
+  --spacing-head: 42px;
+  --spacing-band: 58px;
+  --spacing-inset: 14px;
+  --spacing-board: 340px;
+  --spacing-label: 112px;
+  --spacing-source: 132px;
+
+  --container-column: 720px;
+
+  --radius-chip: 4px;
+  --radius-row: 5px;
+  --radius-card: 8px;
+  --radius-box: 9px;
+  --radius-bubble: 13px;
+
+  /* Two shadows: raised keys, and what floats */
+  --shadow-key: inset 0 1px 0 var(--color-key-light), 0 1.5px 0 var(--color-key-drop);
+  --shadow-go: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 1.5px 0 var(--color-go-drop);
+  --shadow-float: 0 18px 44px rgb(0 0 0 / 0.2), 0 0 0 1px var(--color-hair);
+
+  --ease-snap: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root {
+  color-scheme: light dark;
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  line-height: var(--text-ui--line-height);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-page);
+  color: var(--color-ink);
+}
+
+/* Words to copy select like a page's. */
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+/* The sign face: capitals, a little tracking, set down to sit centred beside a ring. */
+@utility sign {
+  font-family: var(--font-sign);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding-top: 0.12em;
+}
+
+/* Lines on a road sign's scale: hairline inside a cell, rule between cells, heavy between sections. */
+/* Drawn above what's inside, so a row's hover, focus, pressed or selected fill never covers it. */
+@utility hairline-b {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    z-index: 1;
+    height: 0.5px;
+    background: var(--color-hair);
+    pointer-events: none;
+  }
+}
+/* Between cells side by side: the hairline down a cell's right edge. */
+@utility hairline-r {
+  position: relative;
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 1;
+    width: 0.5px;
+    background: var(--color-hair);
+    pointer-events: none;
+  }
+}
+@utility rule-b {
+  border-bottom: 1px solid var(--color-hair);
+}
+@utility rule-t {
+  border-top: 1px solid var(--color-hair);
+}
+@utility rule-r {
+  border-right: 1px solid var(--color-hair);
+}
+@utility heavy-t {
+  border-top: 2px solid var(--color-heavy);
+}
+
+@keyframes run {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+::placeholder {
+  color: var(--color-ink3);
+}

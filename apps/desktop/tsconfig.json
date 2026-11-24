@@ -1,0 +1,5 @@
+{
+  // Two programs: the view (every flag on) and the bun process with the build's configs.
+  "files": [],
+  "references": [{ "path": "./tsconfig.view.json" }, { "path": "./tsconfig.bun.json" }]
+}

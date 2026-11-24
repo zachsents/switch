@@ -1,0 +1,11 @@
+{
+  // The app's view, with every flag on.
+  "extends": ["./tsconfig.base.json", "./.hutch/devkit/tsconfig.json"],
+  "compilerOptions": {
+    "baseUrl": null,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"]
+  },
+  "include": ["app/view", "app/shared", "src/text.ts"]
+}

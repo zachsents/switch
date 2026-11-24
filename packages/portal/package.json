@@ -1,0 +1,14 @@
+{
+  "name": "@switch/portal",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./view": "./src/view.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "screen-relay": "0.1.5"
+  }
+}

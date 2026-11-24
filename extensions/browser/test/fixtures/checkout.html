@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Checkout</title>
+    <style>
+      body {
+        margin: 0;
+        font: 16px sans-serif;
+      }
+      .columns {
+        display: flex;
+      }
+      .summary {
+        flex: 2;
+      }
+      .summary li {
+        height: 120px;
+      }
+      .pay {
+        flex: 1;
+      }
+      /* Its top just above the fold, its middle just below. */
+      #place {
+        display: block;
+        margin-top: calc(100vh - 20px);
+        height: 60px;
+        width: 200px;
+      }
+      #covered {
+        position: absolute;
+        top: 40px;
+        left: 10px;
+      }
+      #cover {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 300px;
+        height: 100px;
+        background: #fff;
+      }
+      footer {
+        margin-top: 150vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="columns">
+      <ul class="summary">
+        <li>Wrap <button>hide choices</button></li>
+        <li>Fruit</li>
+        <li>Cookie</li>
+        <li>Dressing</li>
+        <li>Soup</li>
+        <li>Drink</li>
+        <li>Chips</li>
+      </ul>
+      <div class="pay">
+        <button id="place" type="button"><span>Place Order</span> <span>$9.99</span></button>
+      </div>
+    </div>
+    <button id="covered">Hidden behind</button>
+    <div id="cover"></div>
+    <footer><button>Contact Us</button></footer>
+  </body>
+</html>

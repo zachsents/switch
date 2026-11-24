@@ -1,0 +1,100 @@
+# Switchboard for iPhone, Switch's client, made by XcodeGen (`xcodegen` here). It ships as the next
+# version of Switchboard's iPhone app: the same bundle id (dev.local.switchboard.phone.<team>, made
+# by scripts/ios.sh), the same .activities and .notifications extensions, team, entitlements and
+# App Store Connect record, so push permission and Live Activity tokens carry over. Sources are
+# synced folders: a new file needs no project change.
+#
+# Widgets are A2UI 1.0, drawn by Google's A2UISwiftUI, pinned to a commit of main. Its package runs
+# a build plugin, so xcodebuild runs with -skipPackagePluginValidation.
+name: Switchboard
+options:
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  A2UI:
+    url: https://github.com/a2ui-project/a2ui
+    revision: 496df0e76e2ad9aba4cc2a12abe066f43d4f171d
+  JSONSchema:
+    url: https://github.com/ajevans99/swift-json-schema
+    minorVersion: 0.13.1
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    MARKETING_VERSION: "0.2"
+    CURRENT_PROJECT_VERSION: "1"
+    APP_BUNDLE_ID: dev.local.switchboard.phone
+    # An older build's core address (scripts/ios.sh: SWITCH_CORE or deploy.local's ios_core). The app
+    # pairs (Credential.swift); this is only where an unpaired install first asks for a code.
+    SWITCH_CORE: ""
+targets:
+  Switchboard:
+    type: application
+    platform: iOS
+    sources:
+      - path: Switchboard
+        type: syncedFolder
+      - path: Shared
+        type: syncedFolder
+    dependencies:
+      - target: NotificationService
+      - target: Activities
+      - package: A2UI
+        products: [A2UISwiftCore, A2UISwiftUI, BasicCatalog, BasicCatalogSwiftUI]
+      - package: JSONSchema
+        products: [JSONSchema, OrderedJSON]
+    settings:
+      base:
+        PRODUCT_NAME: Switchboard
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        CODE_SIGN_ENTITLEMENTS: Switchboard.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Switchboard
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: To reach Switch over your network.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: So Switch knows where you are.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: For dictation, and the sound of videos you record.
+        INFOPLIST_KEY_NSCameraUsageDescription: To scan a pairing code, and take photos and videos to send.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: To send your photos and videos.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: To save photos and videos from chat.
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: Info.plist
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+        type: syncedFolder
+      - path: Shared
+        type: syncedFolder
+    settings:
+      base:
+        PRODUCT_NAME: NotificationService
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).notifications
+        INFOPLIST_FILE: NotificationService-Info.plist
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+  Activities:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Activities
+        type: syncedFolder
+      - path: Shared
+        type: syncedFolder
+    settings:
+      base:
+        PRODUCT_NAME: Activities
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).activities
+        INFOPLIST_FILE: Activities-Info.plist
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES

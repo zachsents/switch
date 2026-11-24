@@ -1,0 +1,28 @@
+{
+  "name": "switch-ext-people-search",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public-records people search for a phone number, name, address or email.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "check": "uvx ruff check --no-cache --select E9,F63,F7,F82 --exclude home . && python3 check.py"
+  },
+  "extension": {
+    "name": "people-search",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "macos"
+    ],
+    "heartbeat": 1800000,
+    "reaches": {
+      "calls": [
+        "browser_act",
+        "browser_run"
+      ]
+    }
+  }
+}

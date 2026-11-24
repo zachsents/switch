@@ -1,0 +1,37 @@
+{
+  "name": "switch-ext-google",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gmail, Drive and Sheets as a Switch extension: every inbox followed, mail searched and read, files and cells.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/zachsents/switch", "directory": "extensions/google" },
+  "extension": {
+    "name": "google",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "heartbeat": 1080000,
+    "needs": [
+      "always-on"
+    ],
+    "connections": [
+      {
+        "provider": "google",
+        "scopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/spreadsheets"
+        ],
+        "multiple": true,
+        "legacy": "switchboard-gmail",
+        "session": {
+          "signIn": "authorize",
+          "status": "connection_status"
+        }
+      }
+    ]
+  }
+}

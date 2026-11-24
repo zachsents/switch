@@ -1,0 +1,50 @@
+{
+  "name": "switch-ext-3d-printing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bambu Lab 3D printers on the LAN, as a Switch extension.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zachsents/switch",
+    "directory": "extensions/3d-printing"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --type-aware --fix --fix-suggestions",
+    "format": "oxfmt --write .",
+    "fix": "bun run lint && bun run format",
+    "check": "bun run typecheck && bun run captions && bun run fix",
+    "captions": "ui-captions src ios",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "basic-ftp": "^6.2.6",
+    "effect": "^4.1.5",
+    "mqtt": "^5.16.1",
+    "switch-ext-kit": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.5",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "ultracite": "^8.3.1"
+  },
+  "extension": {
+    "name": "printers",
+    "main": "src/main.ts",
+    "heartbeat": 360000,
+    "needs": [
+      "lan:printers"
+    ],
+    "widgets": [
+      "printer-*"
+    ]
+  }
+}

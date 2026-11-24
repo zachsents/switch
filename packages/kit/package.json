@@ -1,0 +1,57 @@
+{
+  "name": "switch-ext-kit",
+  "version": "0.2.0",
+  "description": "The extension convention for Switch: tools, events, widgets and a manifest, served as MCP.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zachsents/switch",
+    "directory": "packages/kit"
+  },
+  "bin": {
+    "ui-captions": "./bin/ui-captions.ts"
+  },
+  "files": [
+    "src",
+    "bin"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./sealed": {
+      "types": "./src/sealed.ts",
+      "default": "./src/sealed.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit && tsgo --noEmit -p tsconfig.template.json",
+    "lint": "oxlint --type-aware --disable-nested-config --fix --fix-suggestions",
+    "format": "oxfmt --write .",
+    "fix": "bun run lint && bun run format",
+    "check": "bun run typecheck && bun run captions && bun run fix && bun run package",
+    "package": "publint && attw --pack . --profile esm-only",
+    "captions": "bun bin/ui-captions.ts template"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "oxc-parser": "^0.159.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@types/bun": "^1.4.4",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "effect": "^4.1.4",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "publint": "^0.3.25",
+    "ultracite": "^8.3.0"
+  },
+  "peerDependencies": {
+    "effect": "^4.1.4"
+  }
+}

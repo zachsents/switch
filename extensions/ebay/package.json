@@ -1,0 +1,28 @@
+{
+  "name": "switch-ext-ebay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "What a model sold for on eBay, by condition, and its cheapest live listings.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "check": "uvx ruff check --no-cache --select E9,F63,F7,F82 --exclude home . && python3 check.py"
+  },
+  "extension": {
+    "name": "ebay",
+    "command": [
+      "sh",
+      "./run.sh"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "macos"
+    ],
+    "heartbeat": 1800000,
+    "reaches": {
+      "calls": [
+        "browser_act",
+        "browser_run"
+      ]
+    }
+  }
+}
