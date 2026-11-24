@@ -36,6 +36,7 @@
     "main": "src/main.ts",
     "needs": [
       "always-on"
-    ]
+    ],
+    "heartbeat": 300000
   }
 }
