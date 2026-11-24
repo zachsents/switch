@@ -18,6 +18,9 @@ export const spec = Schema.Struct({
       source: Schema.String,
       name: Schema.String,
       main: Schema.optionalKey(Schema.String),
+      /** A monorepo's folder (`path` of `from`): each host packs it itself, as `source` is the core's file. */
+      from: Schema.optionalKey(Schema.String),
+      path: Schema.optionalKey(Schema.String),
     }),
   ),
   env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),

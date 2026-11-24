@@ -196,6 +196,62 @@ pub fn system_type(name: &str) -> String {
     UTType::typeWithFilenameExtension(&NSString::from_str(ext)).and_then(|t| t.preferredMIMEType()).map(|m| m.to_string()).unwrap_or_default()
 }
 
+/// What a paste brings that the box takes as files, read from the pasteboard itself as a page's
+/// `clipboardData.files` has it: a copied file (Finder's) as that file, and a picture's data (a
+/// screenshot, one copied from a browser or Preview) as `image.png` and its kind, whatever words
+/// come with it. gpui's own reading gives the words alone when there are any, and no TIFF.
+pub fn pasted() -> Vec<Chosen> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::{NSString, NSURL};
+    // The kinds a page takes a pasted picture as, best first; TIFF (the Mac's own) goes as PNG, as
+    // WebKit hands it to a page.
+    const PICTURES: [(&str, &str, &str); 5] = [
+        ("public.png", "png", "image/png"),
+        ("public.jpeg", "jpg", "image/jpeg"),
+        ("com.compuserve.gif", "gif", "image/gif"),
+        ("org.webmproject.webp", "webp", "image/webp"),
+        ("public.heic", "heic", "image/heic"),
+    ];
+    let mut paths = vec![];
+    let mut pictures = vec![];
+    let items = NSPasteboard::generalPasteboard().pasteboardItems();
+    for item in items.iter().flat_map(|a| a.iter()) {
+        let types: Vec<String> = item.types().iter().map(|t| t.to_string()).collect();
+        let has = |t: &str| types.iter().any(|x| x == t);
+        if has("public.file-url") {
+            let url = item.stringForType(&NSString::from_str("public.file-url"));
+            if let Some(path) = url.and_then(|u| NSURL::URLWithString(&u)).and_then(|u| u.path()) {
+                paths.push(PathBuf::from(path.to_string()));
+            }
+            continue;
+        }
+        let data = |t: &str| item.dataForType(&NSString::from_str(t)).map(|d| d.to_vec());
+        if let Some((bytes, ext, kind)) = PICTURES.iter().find_map(|(t, ext, kind)| data(t).map(|b| (b, *ext, *kind))) {
+            pictures.push((format!("image.{ext}"), kind.to_string(), bytes));
+        } else if let Some(png) = data("public.tiff").and_then(|b| png_of(&b)) {
+            pictures.push(("image.png".to_string(), "image/png".to_string(), png));
+        }
+    }
+    let mut out = choose_paths(&paths);
+    out.extend(choose(pictures));
+    out
+}
+
+/// Whether the pasteboard holds words of its own (`text/plain`), not just files gpui would give as
+/// their paths.
+pub fn pasted_words() -> bool {
+    use objc2_app_kit::NSPasteboard;
+    NSPasteboard::generalPasteboard().types().is_some_and(|t| t.iter().any(|t| t.to_string() == "public.utf8-plain-text"))
+}
+
+/// A TIFF's picture as PNG.
+fn png_of(tiff: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(tiff, image::ImageFormat::Tiff).ok()?;
+    let mut out = std::io::Cursor::new(vec![]);
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// Files dropped or picked from disk, as the box holds them: their size read now, their bytes
 /// copied beside the outbox off the main thread (a clone on APFS), never read into memory.
 pub fn choose_paths(paths: &[PathBuf]) -> Vec<Chosen> {

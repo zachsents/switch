@@ -528,6 +528,14 @@ impl ThreadView {
         self.handles.entry(key).or_insert_with(|| cx.focus_handle().tab_stop(true)).clone()
     }
 
+    /// A paste no field took goes to the steer box while it's there.
+    pub fn paste_outside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running(cx) {
+            let b = self.steer.clone();
+            b.update(cx, |b, cx| b.paste_outside(window, cx));
+        }
+    }
+
     fn running(&self, cx: &App) -> bool {
         model(cx).read(cx).brain.threads.get(&self.thread).is_some_and(|t| t.status == Status::Running)
     }
@@ -633,6 +641,8 @@ impl ThreadView {
             .track_focus(&self.focus)
             // ⌘. only while it runs: otherwise the key isn't the page's.
             .when(running, |d| d.on_action(cx.listener(|this, _: &StopTurn, _, cx| this.stop(cx))))
+            // ⌘V or Edit ▸ Paste with the page focused: to the steer box while it's there.
+            .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| this.paste_outside(window, cx)))
             .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::SelectAll, window, _| {
                 this.sh.sel.select_all();
                 window.refresh();

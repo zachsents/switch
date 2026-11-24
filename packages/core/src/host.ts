@@ -35,6 +35,7 @@ import { guardOf } from "./guard.ts"
 import { decodeToHost, SILENT_MS, spec } from "./link.ts"
 import { RELEASE, TARGET, takeNext, takeRelease } from "./release.ts"
 import { EVERY_MS, runaways } from "./runaway.ts"
+import { packFolder } from "./pack.ts"
 import { makeScripts } from "./script-host.ts"
 import type { Link, Spec, ToCore, ToHost } from "./link.ts"
 
@@ -365,7 +366,11 @@ export const makeHost = Effect.fnUntraced(function* making(options: HostOptions)
       let env = envOf(r.spec, folder)
       if (pkg) {
         const at = path.join(folder, "pkg")
-        const added = yield* Effect.result(addPackage(at, pkg.source))
+        const source =
+          pkg.from === undefined || pkg.path === undefined
+            ? Effect.succeed(pkg.source)
+            : packFolder(options.dir, pkg.from, pkg.path).pipe(Effect.map((p) => p.pack))
+        const added = yield* Effect.result(source.pipe(Effect.flatMap((s) => addPackage(at, s))))
         if (added._tag === "Failure") {
           return added.failure
         }

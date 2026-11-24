@@ -250,7 +250,7 @@ pub struct ChatView {
     docs: HashMap<u64, (u64, Rc<Doc>)>,
     sh: Shared,
     menu: Entity<ReactMenu>,
-    chatbox: Entity<ChatBox>,
+    pub chatbox: Entity<ChatBox>,
     /// The seq of the message being edited in the box.
     editing: Option<u64>,
     typing: bool,
@@ -1054,6 +1054,11 @@ impl ChatView {
             .track_focus(&self.focus)
             // Edit ▸ Copy, as ⌘C.
             // ⌘A and Edit ▸ Select All: the column's words.
+            // ⌘V or Edit ▸ Paste with the column focused (no field): to the box, files and words.
+            .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| {
+                let b = this.chatbox.clone();
+                b.update(cx, |b, cx| b.paste_outside(window, cx));
+            }))
             .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::SelectAll, window, _| {
                 this.sh.sel.select_all();
                 window.refresh();

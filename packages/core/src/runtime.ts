@@ -14,7 +14,7 @@
 import { parseJSONRPCMessage } from "@modelcontextprotocol/server"
 import type { JSONRPCMessage, Transport } from "@modelcontextprotocol/server"
 import type { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import {
   Brain,
@@ -52,6 +52,7 @@ import { addPackage } from "./host.ts"
 import { decodeToCore, SILENT_MS } from "./link.ts"
 import { ExtensionDown, ExtensionUp } from "./extension-runs.ts"
 import type { Link, Spec, ToCore, ToHost } from "./link.ts"
+import { packFolder } from "./pack.ts"
 import { buildsOf, noteTarget, RELEASE_NAME, releaseOf } from "./release.ts"
 import { remoteMachine } from "./remote.ts"
 import { stoppedRunaway } from "./runaway.ts"
@@ -154,6 +155,7 @@ const fromInstalled = (i: Installed, o: ExtensionOptions = {}): Runnable => ({
       source: i.source,
       name: i.package,
       ...(i.manifest.main !== undefined && { main: i.manifest.main }),
+      ...(i.path !== undefined && { from: i.from, path: i.path }),
     },
     ...(i.manifest.command && { command: i.manifest.command }),
     ...(i.manifest.shim && { shim: i.manifest.shim }),
@@ -205,73 +207,6 @@ const pinnedIn = (lock: string, name: string) => {
   return at === -1 || pinned === "" ? undefined : pinned
 }
 
-const git = (...args: string[]) =>
-  Effect.tryPromise({
-    try: async () => {
-      const p = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" })
-      const [code, out, err] = await Promise.all([
-        p.exited,
-        new Response(p.stdout).text(),
-        new Response(p.stderr).text(),
-      ])
-      if (code !== 0) {
-        const verb = args[0] === "-C" ? args[2] : args[0]
-        throw new Error(`git ${verb ?? ""}: ${err.trim().split("\n").at(-1) ?? code}`)
-      }
-      return out.trim()
-    },
-    catch: (error) =>
-      new Rejected({ reason: error instanceof Error ? error.message : "git failed" }),
-  })
-
-/**
- * A monorepo's folder at `from`'s commit (its default branch's newest without one), packed as a
- * package from the repo's bare clone in `<dir>/extension-src`: the pack and its commit.
- */
-const packFolder = (dir: string, from: string, folder: string) =>
-  Effect.gen(function* packing() {
-    const [repo = "", ref = ""] = from.split("#")
-    const name = repo.replace(/^github:/u, "").replaceAll("/", "-")
-    const src = path.join(dir, "extension-src")
-    const clone = path.join(src, `${name}.git`)
-    mkdirSync(src, { recursive: true })
-    if (!existsSync(path.join(clone, "HEAD"))) {
-      yield* git("clone", "-q", "--bare", repo.replace(/^github:/u, "https://github.com/"), clone)
-    }
-    const known =
-      ref !== "" &&
-      (yield* git("-C", clone, "cat-file", "-e", `${ref}^{commit}`).pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      ))
-    if (!known) {
-      yield* git("-C", clone, "fetch", "-q", "origin", "+refs/heads/*:refs/heads/*")
-    }
-    const commit = yield* git("-C", clone, "rev-parse", `${ref === "" ? "HEAD" : ref}^{commit}`)
-    const pack = path.join(src, `${name}-${folder}-${commit}.tgz`)
-    if (!existsSync(pack)) {
-      const part = `${pack}.${crypto.randomUUID()}.part`
-      yield* git(
-        "-C",
-        clone,
-        "archive",
-        "--format=tar.gz",
-        "--prefix=package/",
-        "-o",
-        part,
-        `${commit}:${folder}`,
-      ).pipe(
-        Effect.tapError(() =>
-          Effect.sync(() => {
-            rmSync(part, { force: true })
-          }),
-        ),
-      )
-      renameSync(part, pack)
-    }
-    return { pack, commit }
-  })
-
 /**
  * Adds `from` (with `folder`, that folder of it packed) in a folder of its own under `dir`, removed
  * after: its package, manifest, version (with the commit, from git) and the source pinned to it.
@@ -290,7 +225,12 @@ export const fetchExtension = (dir: string, from: string, folder?: string) =>
             rmSync(at, { recursive: true, force: true })
           }),
       )
-      const packed = folder === undefined ? null : yield* packFolder(dir, from, folder)
+      const packed =
+        folder === undefined
+          ? null
+          : yield* packFolder(dir, from, folder).pipe(
+              Effect.mapError((reason) => new Rejected({ reason })),
+            )
       yield* addPackage(at, packed?.pack ?? from).pipe(
         Effect.mapError((reason) => new Rejected({ reason })),
       )

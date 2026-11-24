@@ -340,6 +340,21 @@ impl Render for Root {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToBox, window, cx| this.focus_page_box(window, cx)))
+            // A paste with nothing focused goes to the page's box, as one from its column does.
+            .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| match this.boxed.clone() {
+                Some(Page::Space(space)) => {
+                    if let Some(c) = this.chats.get(&space).cloned() {
+                        let b = c.read(cx).chatbox.clone();
+                        b.update(cx, |b, cx| b.paste_outside(window, cx));
+                    }
+                }
+                Some(Page::Thread(t, _)) => {
+                    if let Some(v) = this.threads.get(&t).cloned() {
+                        v.update(cx, |v, cx| v.paste_outside(window, cx));
+                    }
+                }
+                None => {}
+            }))
             // Files dropped anywhere on the window join the box of the space open.
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
                 if let Page::Space(space) = Nav::entity(cx).read(cx).page.clone()

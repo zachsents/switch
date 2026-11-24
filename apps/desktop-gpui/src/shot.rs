@@ -138,6 +138,19 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                             window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: at, click_count: n, ..Default::default() }), cx);
                         }
                     } else {
+                        // `key:clip-<png|tiff|file|mixed>:<path>`: the pasteboard holds that file as a
+                        // picture's data (PNG, TIFF), as a copied file, or as words and a PNG,
+                        // set the moment before the next step pastes it.
+                        if let Some(spec) = rest.strip_prefix("clip-") {
+                            let (how, path) = spec.split_once(':').unwrap_or((spec, ""));
+                            clip(how, path);
+                            return;
+                        }
+                        // `key:paste`: Edit ▸ Paste, as the menu sends it (⌘V is the menu's key).
+                        if rest == "paste" {
+                            window.dispatch_action(Box::new(ui_sdk::native::text_field::Paste), cx);
+                            return;
+                        }
                         let k = gpui::Keystroke::parse(Box::leak(rest.into_boxed_str())).map_err(|_| ());
                         if let Ok(k) = k {
                             // Down, then up: a focused button's press is on the key's release.
@@ -412,4 +425,28 @@ fn fixture(which: &str, arg: &str, cx: &mut App) {
         m.refresh();
         cx.notify();
     });
+}
+
+/// Puts a file on the general pasteboard for a paste to find, as `key:clip-…` asks.
+fn clip(how: &str, path: &str) {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::{NSData, NSString, NSURL};
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let data = NSData::with_bytes(&bytes);
+    match how {
+        "png" => drop(pb.setData_forType(Some(&data), &NSString::from_str("public.png"))),
+        "tiff" => drop(pb.setData_forType(Some(&data), &NSString::from_str("public.tiff"))),
+        "mixed" => {
+            pb.setString_forType(&NSString::from_str("words with it"), &NSString::from_str("public.utf8-plain-text"));
+            pb.setData_forType(Some(&data), &NSString::from_str("public.png"));
+        }
+        _ => {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+            if let Some(s) = url.absoluteString() {
+                pb.setString_forType(&s, &NSString::from_str("public.file-url"));
+            }
+        }
+    }
 }

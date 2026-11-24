@@ -14,7 +14,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Global, ImageFormat,
+    AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, div, img, prelude::*, px,
 };
@@ -100,6 +100,8 @@ pub struct BoxOptions {
 
 pub struct ChatBox {
     pub opts: BoxOptions,
+    /// The next paste is the words alone: a paste from outside already brought its files in.
+    words_only: bool,
     input: Entity<Textarea>,
     dictated: Vec<Span>,
     files: Vec<Chosen>,
@@ -222,6 +224,7 @@ impl ChatBox {
             replies_of,
             replies: vec![],
             seeded: false,
+            words_only: false,
             last_text: String::new(),
             width: Rc::new(std::cell::Cell::new(px(0.))),
         }
@@ -431,35 +434,22 @@ impl ChatBox {
         cx.notify();
     }
 
-    /// A paste that found no field, or one into the box: its files join it, its words go after
-    /// what's in it.
-    pub fn pasted(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(item) = cx.read_from_clipboard() else { return false };
-        let mut kept = vec![];
-        for entry in item.entries() {
-            match entry {
-                gpui::ClipboardEntry::ExternalPaths(paths) => kept.extend(files::choose_paths(paths.paths())),
-                gpui::ClipboardEntry::Image(image) => {
-                    let (ext, mime) = match image.format {
-                        ImageFormat::Png => ("png", "image/png"),
-                        ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-                        ImageFormat::Gif => ("gif", "image/gif"),
-                        ImageFormat::Webp => ("webp", "image/webp"),
-                        ImageFormat::Tiff => ("tiff", "image/tiff"),
-                        ImageFormat::Bmp => ("bmp", "image/bmp"),
-                        ImageFormat::Svg => ("svg", "image/svg+xml"),
-                        _ => ("png", "image/png"),
-                    };
-                    kept.extend(files::choose(vec![(format!("image.{ext}"), mime.to_string(), image.bytes().to_vec())]));
-                }
-                _ => {}
-            }
+    /// Files on the pasteboard join it as chips (a copied file, a picture's data), as the desktop's
+    /// paste takes `clipboardData.files`; answers whether there were any.
+    pub fn pasted(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.opts.attach {
+            return false;
         }
-        if self.opts.attach && !kept.is_empty() {
-            self.attach(kept, window, cx);
-            return true;
+        let files = files::pasted();
+        if files.is_empty() {
+            return false;
         }
-        false
+        // Its chips join it where the cursor is; a paste in a reply row keeps it there.
+        let chosen = model(cx).update(cx, |m, cx| m.choose(files, cx));
+        self.files.extend(chosen);
+        self.keep(cx);
+        cx.notify();
+        true
     }
 
     /// Typing that no field took lands here: the key's letter after what's in it.
@@ -476,15 +466,22 @@ impl ChatBox {
         window.refresh();
     }
 
-    /// A paste no field took: its words at the box's caret, unless it was files.
+    /// A paste no field took: its files join the box and its words go in at the box's caret, as
+    /// the desktop's `pasted` has both.
     pub fn paste_outside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pasted(window, cx) {
-            return;
+        let files = self.pasted(cx);
+        if files {
+            self.focus(window, cx);
         }
-        // The field's own paste, once it has the focus: the words go in at its caret.
-        if self.listening(cx).is_none() {
+        let words = files::pasted_words();
+        // The field's own paste, once it has the focus: the words go in at its caret (its files
+        // are in already).
+        if words && self.listening(cx).is_none() {
+            self.words_only = files;
             let paste = gpui::Keystroke::parse("cmd-v").expect("cmd-v");
             self.typed(paste, window, cx);
+        } else {
+            self.focus(window, cx);
         }
     }
 
@@ -525,13 +522,6 @@ impl ChatBox {
             cx.stop_propagation();
             window.prevent_default();
             cx.emit(BoxEvent::Recall);
-        } else if k.key == "v" && m.platform && !m.shift && self.opts.attach {
-            let has_files = cx.read_from_clipboard().is_some_and(|i| i.entries().iter().any(|e| matches!(e, gpui::ClipboardEntry::ExternalPaths(_) | gpui::ClipboardEntry::Image(_))));
-            if has_files {
-                cx.stop_propagation();
-                window.prevent_default();
-                self.pasted(window, cx);
-            }
         }
     }
 
@@ -861,6 +851,18 @@ impl Render for ChatBox {
             .border_t(px(l.w2))
             .border_color(l.line2)
             .capture_key_down(cx.listener(|b, e: &KeyDownEvent, window, cx| b.key(e, window, cx)))
+            // ⌘V and Edit ▸ Paste in its field or a reply row: files on the pasteboard join it as
+            // chips and nothing else is pasted, as the desktop's field takes a paste with files;
+            // words alone are the field's to paste. (⌘V is a menu key and a binding, so it comes
+            // here as the action, never as a key.)
+            .capture_action(cx.listener(|b, _: &ui_sdk::native::text_field::Paste, _, cx| {
+                if std::mem::take(&mut b.words_only) {
+                    return;
+                }
+                if b.pasted(cx) {
+                    cx.stop_propagation();
+                }
+            }))
             // Esc drops a dictation, else puts an edit down; else it's the window's (up a space).
             .on_action(cx.listener(|b, _: &crate::commands::Escape, window, cx| {
                 // An edit's Esc is the box's own field's; in a reply row it's the window's.
