@@ -146,6 +146,22 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                             clip(how, path);
                             return;
                         }
+                        // `key:ns-<text>`, `key:nscmd-<letter>`, `key:nsclick-<x>-<y>`: real AppKit events
+                        // posted to the app's queue, as the keyboard and mouse send them (through the
+                        // menu's keys, the window and its first responder).
+                        if let Some(text) = rest.strip_prefix("ns-") {
+                            ns_keys(text, false);
+                            return;
+                        }
+                        if let Some(text) = rest.strip_prefix("nscmd-") {
+                            ns_keys(text, true);
+                            return;
+                        }
+                        if let Some(at) = rest.strip_prefix("nsclick-") {
+                            let mut xy = at.split('-').map(|v| v.parse::<f64>().unwrap_or(0.));
+                            ns_click(xy.next().unwrap_or(0.), xy.next().unwrap_or(0.));
+                            return;
+                        }
                         // `key:paste`: Edit ▸ Paste, as the menu sends it (⌘V is the menu's key).
                         if rest == "paste" {
                             window.dispatch_action(Box::new(ui_sdk::native::text_field::Paste), cx);
@@ -163,7 +179,9 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 let shot = cx.update_window(last, |_, window, cx| {
                     // Where the focus went, as the key contexts down to it.
                     let at: Vec<String> = window.context_stack().iter().map(|c| format!("{c:?}")).collect();
-                    eprintln!("focus: {:?} {}", window.focused(cx), at.join(" > "));
+                    // And AppKit's first responder, which the keyboard's keys go to.
+                    let responder = ns_window().and_then(|w| w.firstResponder()).map(|r| r.class().name().to_string_lossy().into_owned()).unwrap_or_default();
+                    eprintln!("focus: {:?} {} [{responder}]", window.focused(cx), at.join(" > "));
                     window.render_to_image()
                 });
                 if let Ok(Ok(img)) = shot {
@@ -447,6 +465,59 @@ fn clip(how: &str, path: &str) {
             if let Some(s) = url.absoluteString() {
                 pb.setString_forType(&s, &NSString::from_str("public.file-url"));
             }
+        }
+    }
+}
+
+/// The app's main window, made key so the keyboard's events reach it, as a click on it would.
+fn ns_window() -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    let mtm = objc2_foundation::MainThreadMarker::new()?;
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    let w = app.windows().iter().find(|w| w.isVisible() && w.title().to_string() == "Switchboard")?;
+    w.makeKeyAndOrderFront(None);
+    Some(w)
+}
+
+/// Posts keystrokes for `text` (letters and spaces) as the keyboard would, ⌘ held if `cmd`.
+fn ns_keys(text: &str, cmd: bool) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
+    let Some(w) = ns_window() else { return };
+    let mtm = objc2_foundation::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    const CODES: &str = "asdfhgzxcv bqweryt123465=97-80]ou[ip lj'k;\\,/nm.";
+    for ch in text.chars() {
+        let code = if ch == ' ' { 49 } else { CODES.find(ch.to_ascii_lowercase()).unwrap_or(0) as u16 };
+        let flags = if cmd { NSEventModifierFlags::Command } else { NSEventModifierFlags::empty() };
+        let c = NSString::from_str(&ch.to_string());
+        for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+            let e: Option<objc2::rc::Retained<NSEvent>> = unsafe {
+                objc2::msg_send![objc2::class!(NSEvent), keyEventWithType: kind, location: NSPoint::new(0., 0.), modifierFlags: flags, timestamp: 0f64, windowNumber: w.windowNumber(), context: std::ptr::null::<objc2::runtime::AnyObject>(), characters: &*c, charactersIgnoringModifiers: &*c, isARepeat: false, keyCode: code]
+            };
+            if let Some(e) = e {
+                app.postEvent_atStart(&e, false);
+            }
+        }
+    }
+}
+
+/// Posts a click at (`x`, `y`) in the window's points, from its top left, as the mouse would.
+fn ns_click(x: f64, y: f64) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::NSPoint;
+    let Some(w) = ns_window() else { return };
+    let mtm = objc2_foundation::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    let h = w.contentRectForFrameRect(w.frame()).size.height;
+    let at = NSPoint::new(x, h - y);
+    for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+        let e: Option<objc2::rc::Retained<NSEvent>> = unsafe {
+            objc2::msg_send![objc2::class!(NSEvent), mouseEventWithType: kind, location: at, modifierFlags: NSEventModifierFlags::empty(), timestamp: 0f64, windowNumber: w.windowNumber(), context: std::ptr::null::<objc2::runtime::AnyObject>(), eventNumber: 0isize, clickCount: 1isize, pressure: 1f32]
+        };
+        if let Some(e) = e {
+            app.postEvent_atStart(&e, false);
         }
     }
 }

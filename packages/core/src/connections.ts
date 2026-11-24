@@ -1649,6 +1649,7 @@ const list = tool(
 const request = tool(
   "request",
   {
+    closed: true,
     description:
       'Ask the user to connect an account an extension needs (or to grant one more scopes): an action item, by the need\'s kind a Connect button (oauth), a sealed field the user types a key into that goes straight to the Keychain (key; account names it, else "default"), or a sign-in through the extension that holds the session (session). Existing grants and declared sign-in recovery are attempted first. Complete authorized routine sign-in and consent yourself; never ask for a key or verification code in text.',
     input: Schema.Struct({

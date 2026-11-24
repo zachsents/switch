@@ -111,6 +111,8 @@ export interface Tool<R> {
   readonly name: string
   readonly description: string
   readonly readOnly: boolean
+  /** What it changes stays in Switch: the brain, or the user's own chat (MCP's openWorldHint false). */
+  readonly closed: boolean
   /** It sends something out in the user's name: the Outbound gate reads it first. */
   readonly speaks: boolean
   /** Only the user's clients call it, never the agent (MCP Apps' `visibility: ["app"]`). */
@@ -126,6 +128,8 @@ interface ToolOptions {
   readonly description: string
   /** It only looks, changing nothing. */
   readonly readOnly?: boolean
+  /** What it changes stays in Switch: the brain, or the user's own chat. */
+  readonly closed?: boolean
   /** It sends something out in the user's name (a text, an email, a call). */
   readonly speaks?: boolean
   /** Only the user's clients call it, never the agent. */
@@ -153,6 +157,7 @@ export function tool<R>(
     name,
     description: options.description,
     readOnly: options.readOnly === true,
+    closed: options.closed === true,
     speaks: options.speaks === true,
     appOnly: options.appOnly === true,
     input: input && standard(input),
@@ -627,7 +632,11 @@ export const serve: <R>(
       const fed = app.widgets.find((w) => w.tool === t.name)
       const config = {
         description: t.description,
-        annotations: { readOnlyHint: t.readOnly, ...(t.speaks && { speaksForPerson: true }) },
+        annotations: {
+          readOnlyHint: t.readOnly,
+          ...(t.closed && { openWorldHint: false }),
+          ...(t.speaks && { speaksForPerson: true }),
+        },
         _meta: {
           ui: {
             ...(fed && { resourceUri: fed.resource }),

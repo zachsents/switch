@@ -19,7 +19,7 @@ import { reflectConfig, reflecting } from "./reflect.ts"
 import { reportsLayer } from "./report.ts"
 import { resolveWatch } from "./resolve.ts"
 import { rulesAt, wakeRulesOf } from "./rules.ts"
-import { seedMemories } from "./seeds.ts"
+import { seedAlarms, seedMemories } from "./seeds.ts"
 import { sensesWatch } from "./senses.ts"
 import { dialNumber, settingsConfig, untune } from "./settings.ts"
 import { surpriseConfig } from "./surprise.ts"
@@ -107,7 +107,13 @@ export const autonomyWorkers = (config: AutonomyConfig) =>
   Layer.effectDiscard(
     Effect.gen(function* working() {
       const sessions = yield* Sessions
-      yield* Effect.forkScoped(Effect.ignore(seedMemories, { log: "Warn" }))
+      // The alarms after the seeds: a brain the seeds find holding them would be one that's not new.
+      yield* Effect.forkScoped(
+        Effect.andThen(
+          Effect.ignore(seedMemories, { log: "Warn" }),
+          Effect.ignore(seedAlarms, { log: "Warn" }),
+        ),
+      )
       yield* Effect.forkScoped(Effect.ignore(untune, { log: "Warn" }))
       // Each expectation wakes its work at most twice.
       yield* Effect.forkScoped(

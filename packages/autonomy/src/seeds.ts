@@ -1,9 +1,11 @@
 // What a new brain starts with: a few opinionated rules, as memories the user can edit or forget
 // like any other. Only a brain that has never held a memory gets them; one that has is never touched.
+// And the resource alarms, wake rules every brain gets once each.
 import { Brain, EventId } from "@switch/brain"
 import { Effect } from "effect"
 
 import { embedMissing, GLOBAL, MemoryWritten } from "./memory.ts"
+import { wakeRuleMemory } from "./rules.ts"
 
 const SEEDS: readonly {
   readonly id: string
@@ -63,4 +65,96 @@ export const seedMemories = Effect.gen(function* seeding() {
   )
   yield* Effect.ignore(embedMissing, { log: "Warn" })
   return SEEDS.length
+})
+
+/** What each alarm's turn is for: easing it is the user's rules' to say. */
+const EASE =
+  "Ease it before the machine stalls everything on it, as the user's rules say: pause it, stop the newest job or move it to a box rented for it, or clean up. Only what needs the user reaches them."
+
+/**
+ * The resource alarms (core alarms.ts), from the vitals the Macs and the Linux box recorded Nov 20 to
+ * 24, readings five minutes apart: on the Mac mini (10 cores, 16 GB) each rang in the trouble it's
+ * for, and seldom besides.
+ * - Free disk under 5 GB, over at 10: three times on the mini (Nov 20; Nov 22's full disk, 0.8 GB
+ *   free; Nov 23's swap storm), twice on the MacBook Air. At 10 the mini, which keeps 10 to 15 GB
+ *   free, would ring seven times, each lasting hours.
+ * - Swap growing over 15 GB an hour, as twenty minutes' growth, over once it stops: the runaways of
+ *   Nov 21 (75 GB, and another) and Nov 23's storm of image jobs (2.5 GB to 12 in an hour and a
+ *   quarter). Over ten minutes it rang eleven times, at a gigabyte's swap file or two.
+ * - Memory pressure critical, over at normal: the same three.
+ * - The load over five minutes past three times the cores, over under one and a half: ten times on
+ *   the mini, each a pile-up (load 30 to 300), twice on the Air; at twice the cores, fifteen.
+ */
+const ALARMS: readonly {
+  readonly name: string
+  readonly question: string
+  readonly alarm: Readonly<Record<string, unknown>>
+}[] = [
+  {
+    name: "Low disk",
+    question: "A machine's free disk is under 5 GB: what writes there is about to fail.",
+    alarm: { on: "diskFreeGb", below: 5, clear: 10, by: "memory" },
+  },
+  {
+    name: "Swap storm",
+    question:
+      "A machine's swap is growing over 15 GB an hour: what's outgrowing its memory will fill the disk.",
+    alarm: { on: "swapGrowthGbPerHour", above: 15, clear: 0, by: "memory" },
+  },
+  {
+    name: "Memory critical",
+    question: "A machine's memory pressure is critical: everything on it slows to a crawl.",
+    alarm: { on: "pressure", is: "critical", clear: "normal", by: "memory" },
+  },
+  {
+    name: "Load over cores",
+    question:
+      "A machine's load over five minutes is past three times its cores: its jobs are piling up.",
+    alarm: { on: "load5/cores", above: 3, clear: 1.5, by: "cpu" },
+  },
+]
+
+/** Writes each resource alarm a brain has never held: one changed or forgotten since stays so. */
+export const seedAlarms = Effect.gen(function* seeding() {
+  const brain = yield* Brain
+  const fresh = yield* brain.read((db) => {
+    const held = db.query("SELECT 1 FROM memories WHERE id = ?")
+    return ALARMS.map((a) => ({
+      a,
+      kept: wakeRuleMemory({
+        name: a.name,
+        question: a.question,
+        goal: EASE,
+        wakes: {},
+        at: null,
+        alarm: a.alarm,
+        from: "A seed: every brain starts with it.",
+      }),
+    })).filter(({ kept }) => held.get(kept.name) === null)
+  })
+  if (fresh.length === 0) {
+    return 0
+  }
+  yield* Effect.orDie(
+    brain.ingest(
+      fresh.map(({ kept }) => ({
+        id: EventId.make(`seed:${kept.name}:1`),
+        type: MemoryWritten.type,
+        source: "seed",
+        payload: {
+          id: kept.name,
+          name: kept.name,
+          description: kept.description,
+          type: "feedback",
+          scope: GLOBAL,
+          body: kept.body,
+          trigger: null,
+          replaces: [],
+          decision: "",
+        } satisfies typeof MemoryWritten.payload.Type,
+      })),
+    ),
+  )
+  yield* Effect.ignore(embedMissing, { log: "Warn" })
+  return fresh.length
 })

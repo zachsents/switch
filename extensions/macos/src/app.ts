@@ -554,7 +554,7 @@ const vitals = tool(
   "vitals",
   {
     description:
-      "This Mac's vitals now: load, CPU, memory and its pressure, swap, free disk, battery.",
+      "This Mac's vitals now: load (and over five minutes), CPU, memory and its pressure, swap and how fast it grows, free disk, battery.",
     readOnly: true,
   },
   () =>
@@ -569,7 +569,7 @@ const loadTool = tool(
   "load",
   {
     description:
-      "Whose load this Mac carries: each owner (app, Claude Code session, program) with its CPU and memory footprint, heaviest first; and the disk, free and how fast it's falling.",
+      "Whose load this Mac carries: each owner (the work or extension whose mark its processes carry, app, Claude Code session, program) with its CPU and memory footprint and its heaviest process, heaviest first; and the disk, free and how fast it's falling.",
     readOnly: true,
     input: Schema.Struct({ top: Schema.optionalKey(Schema.Finite) }),
   },

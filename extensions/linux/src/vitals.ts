@@ -1,6 +1,7 @@
 // A Linux machine's vitals, the same reading the macOS extension's widget draws: load, CPU, memory
-// and its pressure, swap, the root filesystem's free space, and in the battery's place the CPU's
-// temperature. Read from /proc and /sys, so it needs nothing installed.
+// and its pressure, swap and how fast it grows, the root filesystem's free space, and in the
+// battery's place the CPU's temperature. Read from /proc and /sys, so it needs nothing installed.
+// What the core's resource alarms read (core alarms.ts): free disk, swap's growth, pressure, load.
 import { readdirSync, readFileSync, statfsSync } from "node:fs"
 import { cpus, loadavg } from "node:os"
 import path from "node:path"
@@ -11,6 +12,8 @@ export const reading = Schema.Struct({
   machine: Schema.String,
   cores: Schema.Finite,
   load: Schema.Finite,
+  /** The load over the last five minutes, as `uptime` gives it. */
+  load5: Schema.Finite,
   /** Percent of all cores, since the last reading. */
   cpu: Schema.Finite,
   /** CPU over 90% for five minutes or more. */
@@ -18,6 +21,9 @@ export const reading = Schema.Struct({
   memoryPct: Schema.Finite,
   pressure: Schema.Literals(["normal", "warn", "critical"]),
   swapGb: Schema.Finite,
+  /** How fast swap grew over the last twenty minutes, GB an hour (below 0 as it shrinks); absent
+   * until there are ten minutes of readings. */
+  swapGrowthGbPerHour: Schema.optionalKey(Schema.Finite),
   diskFreeGb: Schema.Finite,
   /** Of the root filesystem, as `df` counts it. */
   diskUsedPct: Schema.optionalKey(Schema.Finite),
@@ -145,6 +151,25 @@ const sustained = (cpu: number) => {
   return now - hotFrom >= HOT_FOR_NS
 }
 
+const SWAP_WINDOW_MS = 20 * 60_000
+const SWAP_SINCE_MS = 10 * 60_000
+/** Swap as each reading found it, over the last twenty minutes. */
+const swaps: { at: number; gb: number }[] = []
+
+/** Swap's growth over the readings of the last twenty minutes, in GB an hour, as the macOS
+ * extension reads it. */
+const growth = (gb: number, at = Date.now()) => {
+  swaps.push({ at, gb })
+  while ((swaps[0]?.at ?? at) < at - SWAP_WINDOW_MS) {
+    swaps.shift()
+  }
+  const [first] = swaps
+  if (first === undefined || at - first.at < SWAP_SINCE_MS) {
+    return null
+  }
+  return round(((gb - first.gb) / (at - first.at)) * 3_600_000)
+}
+
 export const read = (machine: string): Reading => {
   const now = busy()
   const spent = now.total - last.total
@@ -158,15 +183,20 @@ export const read = (machine: string): Reading => {
   const disk = statfsSync("/")
   const usedBlocks = disk.blocks - disk.bfree
   const temp = tempOf()
+  const swapGb = round(swapKb / 1024 / 1024)
+  const grew = growth(swapGb)
+  const [load1 = 0, load5 = 0] = loadavg()
   return {
     machine,
     cores: cpus().length,
-    load: round(loadavg()[0] ?? 0),
+    load: round(load1),
+    load5: round(load5),
     cpu: round(cpu),
     cpuHot: sustained(cpu),
     memoryPct,
     pressure: pressureOf(memoryPct),
-    swapGb: round(swapKb / 1024 / 1024),
+    swapGb,
+    ...(grew !== null && { swapGrowthGbPerHour: grew }),
     diskFreeGb: round((disk.bavail * disk.bsize) / 1e9),
     diskUsedPct: round((usedBlocks / (usedBlocks + disk.bavail)) * 100),
     ...(temp !== undefined && { temp }),
@@ -199,6 +229,20 @@ export const alerts = (r: Reading): readonly string[] => warnings(r).map((w) => 
 /** The meters `alerts` show on. */
 export const alerting = (r: Reading): readonly string[] => warnings(r).map((w) => w.on)
 
-/** A change worth an event between the regular ones: a new alert. */
+/** The load over five minutes for each core. */
+const perCore = (r: Reading) => Math.floor(r.load5 / Math.max(r.cores, 1))
+
+/**
+ * What an alarm reads moved since the reading last sent: memory pressure, swap by a gigabyte, free
+ * disk by a gigabyte or a tenth of it, the load over five minutes past another multiple of the cores:
+ * an alarm hears of it within the minute, not at the next of the regular events.
+ */
+const moved = (was: Reading, now: Reading) =>
+  was.pressure !== now.pressure ||
+  Math.abs(now.swapGb - was.swapGb) >= 1 ||
+  Math.abs(now.diskFreeGb - was.diskFreeGb) >= Math.max(1, was.diskFreeGb / 10) ||
+  perCore(was) !== perCore(now)
+
+/** A change worth an event between the regular ones: a new alert, or what an alarm reads moved. */
 export const notable = (was: Reading | null, now: Reading) =>
-  was === null || alerts(was).join(",") !== alerts(now).join(",")
+  was === null || alerts(was).join(",") !== alerts(now).join(",") || moved(was, now)

@@ -90,6 +90,7 @@ import {
 import { blobsRoute } from "./blobs.ts"
 import { queryRoute } from "./query.ts"
 import { chatLayer, triageLayer } from "./chat.ts"
+import { alarmsWorker } from "./alarms.ts"
 import { clocksWorker } from "./clocks.ts"
 import { limitTold, limitsWorker } from "./limits.ts"
 import { claudeCodeLayer, LateSessions } from "./claude-code.ts"
@@ -625,6 +626,7 @@ const layerWorkers = Layer.unwrap(
             limitsWorker,
             clocksWorker,
             backupWorker,
+            alarmsWorker,
           ),
     ),
   ),

@@ -46,6 +46,8 @@ pub struct Root {
     menus: Option<MenuModel>,
     /// The page whose box last took the cursor: only another page opened takes it again.
     boxed: Option<Page>,
+    /// gpui's focus as last drawn, to see it move.
+    focused_last: Option<gpui::FocusHandle>,
     /// A two-finger swipe across the trackpad under way: how far it's gone, when it last moved, and
     /// whether it has gone back or forward already.
     swipe: (f32, std::time::Instant, bool),
@@ -98,7 +100,7 @@ impl Root {
         cx.observe_global_in::<Held>(window, |this, window, cx| this.restyle(window, cx)).detach();
         let rail = cx.new(|cx| Rail::new(window, cx));
         let palette = cx.new(|cx| Palette::new(window, cx));
-        let mut root = Root { rail, chats: HashMap::new(), threads: HashMap::new(), columns: HashMap::new(), drew_ready: false, palette, finds: HashMap::new(), rename: None, menus: None, boxed: None, swipe: (0., std::time::Instant::now(), false), sheet_focus: cx.focus_handle(), sheet_restore: None };
+        let mut root = Root { rail, chats: HashMap::new(), threads: HashMap::new(), columns: HashMap::new(), drew_ready: false, palette, finds: HashMap::new(), rename: None, menus: None, boxed: None, focused_last: None, swipe: (0., std::time::Instant::now(), false), sheet_focus: cx.focus_handle(), sheet_restore: None };
         root.restyle(window, cx);
         root
     }
@@ -200,6 +202,15 @@ impl Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::webview::start_frame(window, cx);
+        // gpui's focus moved (a field clicked, the box focused): AppKit's keys come with it, from a
+        // page that had them or from nothing.
+        let focused = window.focused(cx);
+        if focused != self.focused_last {
+            self.focused_last = focused.clone();
+            if focused.is_some() {
+                crate::webview::keys_to_app(window);
+            }
+        }
         let l = Look::get(cx);
         let page = Nav::entity(cx).read(cx).page.clone();
         let m = model(cx).read(cx);

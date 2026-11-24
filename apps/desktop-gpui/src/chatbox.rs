@@ -460,6 +460,17 @@ impl ChatBox {
             return;
         }
         self.focus(window, cx);
+        // A letter goes in at the caret now, so the next key (which the field takes itself once
+        // it's drawn) can't land before it; anything else (⌘V) is the field's own, once it's drawn.
+        let plain = !(key.modifiers.platform || key.modifiers.control || key.modifiers.alt);
+        if let Some(text) = key.key_char.clone().filter(|_| plain) {
+            let field = self.input.read(cx).field().clone();
+            field.update(cx, |f, cx| {
+                let at = f.selection();
+                f.replace_range(at, &text, window, cx);
+            });
+            return;
+        }
         window.on_next_frame(move |window, cx| {
             window.dispatch_keystroke(key, cx);
         });

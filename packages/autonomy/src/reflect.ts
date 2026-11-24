@@ -6,8 +6,8 @@
 // question, an action item in its space); standing rules that stop ignored output; lessons tied to
 // the call they're about, from its mistakes (a call failed or sent back) and the user's go-aheads
 // (asked once, after the same kind of approval passes unchanged again and again), so recall puts
-// them in front of the next such call (hooks.ts); senses that disagree and blind spots, as
-// surprises; and when to look again, from 15 minutes to 3 hours. A look with nothing new since the
+// them in front of the next such call (hooks.ts), and narrower words for a trigger whose holds
+// changed nothing; senses that disagree and blind spots, as surprises; and when to look again, from 15 minutes to 3 hours. A look with nothing new since the
 // last costs no model call, and the user stepping away brings one sooner. Once a day, upkeep: gates
 // scored, core fields rebuilt.
 import type { Database } from "bun:sqlite"
@@ -29,11 +29,13 @@ import { Effect, Schema } from "effect"
 
 import { openExpectations } from "./expect.ts"
 import { gate, gateStats, scoreGates } from "./gate.ts"
+import { HELD } from "./hooks.ts"
 import { items, OpenItem } from "./items.ts"
 import { field, jsonOf, list, strings, text } from "./json.ts"
 import { getLead, heldLeads, LEAD_KINDS, LeadNoted, leadsConfig, LeadTaken } from "./leads.ts"
 import type { Lead } from "./leads.ts"
-import { remember } from "./memory.ts"
+import { getMemory, liveMemories, MemoryWritten, remember } from "./memory.ts"
+import type { Memory } from "./memory.ts"
 import { buildCores } from "./recall.ts"
 import { rulesAt } from "./rules.ts"
 import { openSurprises, raise } from "./surprise.ts"
@@ -110,6 +112,52 @@ const kindOf = (name: string, input: unknown) => {
   return name === "mcp__apps__call_tool" ? text(field(input, "name")) : name
 }
 
+/** The call a held one's next of its kind is: the same tool, and through `call_tool` the same one. */
+const sameKind = (a: unknown, b: unknown) =>
+  field(a, "turn") === field(b, "turn") &&
+  field(a, "name") === field(b, "name") &&
+  field(field(a, "input"), "name") === field(field(b, "input"), "name")
+
+/**
+ * Each triggered memory that held calls (hooks.ts), and how many of them came again unchanged: a
+ * hold that changed nothing, a trigger firing where it doesn't apply.
+ */
+const heldFor = (
+  calls: readonly { readonly p: unknown }[],
+  holds: readonly { readonly call: unknown; readonly reason: string }[],
+  live: readonly Memory[],
+) => {
+  const tied = live.filter((m) => m.trigger !== null)
+  const counts = new Map<string, { m: Memory; n: number; same: number; example: string }>()
+  for (const h of holds) {
+    const at = calls.findIndex(({ p }) => p === h.call)
+    const next = calls.slice(at + 1).find(({ p }) => sameKind(p, h.call))?.p
+    const same =
+      next !== undefined &&
+      JSON.stringify(field(next, "input")) === JSON.stringify(field(h.call, "input"))
+    for (const m of tied) {
+      if (h.reason.includes(`- ${m.description}: `) || h.reason.includes(`→ ${m.description}: `)) {
+        const c = counts.get(m.id) ?? { m, n: 0, same: 0, example: "" }
+        counts.set(m.id, {
+          m,
+          n: c.n + 1,
+          same: c.same + (same ? 1 : 0),
+          example:
+            c.example ||
+            clip(`${text(field(h.call, "name"))} ${JSON.stringify(field(h.call, "input"))}`, 160),
+        })
+      }
+    }
+  }
+  return [...counts.values()]
+    .toSorted((a, b) => b.same - a.same || b.n - a.n)
+    .slice(0, 10)
+    .map(
+      (c) =>
+        `- ${c.m.id} (tools ${c.m.trigger?.tools.join(", ") ?? ""}; words ${c.m.trigger?.words.join(", ") ?? ""}): held ×${c.n}, called again unchanged ×${c.same}: ${c.example}`,
+    )
+}
+
 /** The same kind of approval passed unchanged this often in a month: worth asking about once. */
 const APPROVED_SAME = 3
 
@@ -149,9 +197,14 @@ const gather = (db: Database, since: number, sinceTime: number) => {
   // Calls that failed or were sent back, by kind: where a mistake tied to a tool shows.
   const byId = new Map(calls.map(({ p }) => [text(field(p, "id")), p]))
   const failures = new Map<string, { n: number; examples: string[] }>()
+  const holds: { readonly call: unknown; readonly reason: string }[] = []
   for (const { p } of events(db, "turn.result", since)) {
     const call = byId.get(text(field(p, "id")))
     if (field(p, "error") !== true || call === undefined) {
+      continue
+    }
+    if (text(field(p, "output")).includes(HELD)) {
+      holds.push({ call, reason: text(field(p, "output")) })
       continue
     }
     const k = kindOf(text(field(call, "name")), field(call, "input"))
@@ -168,6 +221,7 @@ const gather = (db: Database, since: number, sinceTime: number) => {
     .toSorted((a, b) => b[1].n - a[1].n)
     .slice(0, 12)
     .map(([k, v]) => `- ${k} ×${v.n}: ${v.examples.join(" | ")}`)
+  const held = heldFor(calls, holds, liveMemories(db))
   const every = items(db)
   const all = every.filter((i) => i.openedAt > sinceTime || i.status === "open")
   // The same kind of approval the user let through as drafted, again and again.
@@ -231,6 +285,7 @@ const gather = (db: Database, since: number, sinceTime: number) => {
   )
   return {
     failed,
+    held,
     approved,
     answers,
     self,
@@ -259,6 +314,7 @@ Give same_as with a held lead's id when this stretch shows it again, or when you
 Also:
 - "drops": output that gets ignored (items dismissed, wakes in spaces never answered). Each {"space", "lesson"}: a standing rule that stops it, said generally. Usually none.
 - "lessons": a mistake tied to a tool call that this stretch shows (a call that failed or was sent back, listed, that a lesson would have stopped; most failures are only the work going on, and need none), or a standing go-ahead the user gave in answering your question. Each {"space", "lesson", "tool", "words", "quote"}: the lesson said generally; "tool", the call it's about ("Bash", or an extension's tool as listed); "words", a few lowercase words in that call's input that pick it out; "quote", the user's exact words for a go-ahead. It's put in front of the next such call, before it runs. Usually none.
+- "narrow": a triggered memory that holds calls it doesn't apply to (listed: most held calls came again unchanged) gets narrower words. Each {"id", "words"}: a few lowercase words found in the calls it's for and not in the ones it held for nothing. Usually none.
 - The same kind of approval passed unchanged again and again (listed) is a learn lead whose "ask" is whether it should go ahead without asking from now on, said with what it would let you do; asked once, as every lead is.
 - "surprises": two senses that disagree (kind "disagree"), or something a space needed that no sense gives (kind "blind"): {"name", "kind", "space", "text"}. Usually none.
 - "noticed": what stood out, at most three short lines; where you were passive or slow.
@@ -266,7 +322,7 @@ Also:
 
 Name patterns, not contents: apps, sites, people and projects, never what anyone wrote.
 
-Answer with JSON only: {"leads": [{"name": "", "kind": "grow|fix|learn", "text": "", "same_as": "", "act": false, "task": "", "ask": "", "space": "home"}], "drops": [], "lessons": [], "surprises": [], "noticed": "", "next_minutes": 60}.`
+Answer with JSON only: {"leads": [{"name": "", "kind": "grow|fix|learn", "text": "", "same_as": "", "act": false, "task": "", "ask": "", "space": "home"}], "drops": [], "lessons": [], "narrow": [], "surprises": [], "noticed": "", "next_minutes": 60}.`
 
 export interface ReflectConfig {
   /** Starts a self-started task. */
@@ -327,6 +383,10 @@ const promptOf = (day: Day, more: ReturnType<typeof around>, measured: string) =
     `Looks so far today: ${more.today?.n ?? 0}, ${usd(more.today?.usd ?? 0)}.`,
     measured,
     section("Failed or sent-back tool calls (kind ×count: call → result)", day.failed),
+    section(
+      "Triggered memories that held calls (id, trigger: held, called again unchanged)",
+      day.held,
+    ),
     section("Approved unchanged, last 30 days (kind ×count)", day.approved),
     section("The user's answers to your questions", day.answers),
     section("Slowest turns", day.slow),
@@ -495,9 +555,13 @@ const tiedTo = (tool: string, words: readonly string[]) =>
     ? { tools: [tool], words }
     : { tools: ["mcp__apps__*"], words: [tool.toLowerCase(), ...words] }
 
-/** The rest of the answer: rules that stop ignored output, lessons tied to calls, and surprises. */
+/**
+ * The rest of the answer: rules that stop ignored output, lessons tied to calls, triggers narrowed,
+ * and surprises.
+ */
 const keep = (answer: unknown, day: Day) =>
   Effect.gen(function* keeping() {
+    const brain = yield* Brain
     const spaces = new Map<string, SpaceId>(day.spaces.map((s) => [s.id, s.id]))
     for (const d of list(field(answer, "drops")).slice(0, 3)) {
       const lesson = text(field(d, "lesson"))
@@ -528,6 +592,32 @@ const keep = (answer: unknown, day: Day) =>
             how: `Before a ${tool} call. Trigger: tools ${JSON.stringify(tie.tools)}, words ${JSON.stringify(tie.words)}.`,
             ...(quote !== "" && { quote }),
           }),
+        )
+      }
+    }
+    for (const n of list(field(answer, "narrow")).slice(0, 5)) {
+      const words = strings(field(n, "words")).map((w) => w.toLowerCase())
+      const m = yield* brain.read((db) => getMemory(db, text(field(n, "id"))))
+      if (m?.trigger && words.length > 0) {
+        yield* Effect.orDie(
+          brain.ingest([
+            {
+              id: EventId.make(`narrow:${m.id}:${Date.now()}`),
+              type: MemoryWritten.type,
+              source: "autonomy",
+              payload: {
+                id: m.id,
+                name: m.name,
+                description: m.description,
+                type: m.type,
+                scope: m.scope,
+                body: m.body,
+                trigger: { tools: m.trigger.tools, words },
+                replaces: [],
+                decision: "",
+              } satisfies typeof MemoryWritten.payload.Type,
+            },
+          ]),
         )
       }
     }

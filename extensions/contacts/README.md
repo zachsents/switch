@@ -50,8 +50,8 @@ Extensions view (⌘K, Extensions). It runs on a Mac (it reads Contacts through 
 - Allow the host to control Contacts the first time it reads them.
 - Apple is imported as soon as Contacts answers, Google as soon as it's connected (or run the
   `import` tool). Everyone who messages the user comes in as their messages land in the brain
-  (texts, Gmail, Instagram, a business's conversations), other sources every hour, and changes go
-  out every two minutes (`CONTACTS_LOOPS=0` turns these off). A record or event that fails is kept
+  (texts, Gmail, Instagram, Slack, a business's conversations), other sources every hour, and
+  changes go out every two minutes (`CONTACTS_LOOPS=0` turns these off). A record or event that fails is kept
   in `contacts-skipped.json` and tried again every five minutes; `contacts.heartbeat` says what's
   failing and how far behind the brain's messages it is. Its log, state and backups live in
   `$SWITCH_CONTACTS_DIR`, else the folder it runs in (its own, under the host); what an older

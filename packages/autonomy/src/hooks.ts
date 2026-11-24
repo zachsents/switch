@@ -1,8 +1,9 @@
 // Claude Code hooks, over HTTP: before a tool call, the memories tied to it (triggered recall). A
 // call that changes something, with a memory the turn hasn't been shown yet, is held once: denied,
 // the memories its reason, so they're read before it runs rather than beside it; the next call of
-// its kind goes through. What changes something is the tools' to say: an extension's readOnly
-// (MCP's readOnlyHint), and Claude Code's own that write. A turn's own words reach no one now, so
+// its kind goes through. What changes something is the tools' to say: an extension's tool unless it
+// only looks (readOnlyHint) or what it changes stays in Switch (openWorldHint false: the brain, the
+// user's own chat), and Claude Code's own that write. A turn's own words reach no one now, so
 // its stop has nothing to check: the reply check reads what's said (autonomy app.ts `say`).
 import type { Database } from "bun:sqlite"
 import { Brain } from "@switch/brain"
@@ -66,6 +67,9 @@ const whereIs = (db: Database, session: string, spaceOf: (thread: ThreadId) => S
   return { thread: row.thread, turn: row.turn, task: row.parent !== null, space }
 }
 
+/** How a held call's reason ends: what reflection reads a hold by. */
+export const HELD = "Follow these, then call again."
+
 /** Claude Code's own tools that change something; the rest (Read, Grep, Glob, …) only look. */
 const WRITES = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"])
 /** The gateway's tools, as an agent session names them. */
@@ -114,14 +118,16 @@ export const hooks = Effect.fnUntraced(function* serving(
     e.pipe(Effect.provideService(Brain, brain), Effect.provideService(Models, models))
 
   // Whether a kind of call changes something. An extension's tool does unless it says it only
-  // looks (readOnlyHint): a send isn't destructive, but it still changes the world.
+  // looks (readOnlyHint) or keeps to Switch (openWorldHint false): a send isn't destructive, but it
+  // still changes the world.
   const changes = (kind: string) => {
     if (!kind.startsWith(APPS)) {
       return WRITES.has(kind)
     }
     const name = kind.slice(APPS.length)
     const listed = gateway.tools().find((l) => `${l.app}_${l.tool.name}` === name)
-    return listed !== undefined && listed.tool.annotations?.readOnlyHint !== true
+    const marks = listed?.tool.annotations
+    return listed !== undefined && marks?.readOnlyHint !== true && marks?.openWorldHint !== false
   }
   const shown = new Map<string, Shown>()
   const shownIn = (thread: string, turn: string) => {
@@ -162,7 +168,7 @@ export const hooks = Effect.fnUntraced(function* serving(
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `<memory>\n${memories}\nFollow these, then call again.\n</memory>`,
+            permissionDecisionReason: `<memory>\n${memories}\n${HELD}\n</memory>`,
           },
         }
       }

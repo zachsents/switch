@@ -161,6 +161,7 @@ const placed = (given: string | undefined) =>
 const create = tool(
   "create_space",
   {
+    closed: true,
     description:
       "Make a space, only when the user's own words ask for one; never to hold an event or a matter on your own (that goes to the space it's about, or Home). `parent` null puts it at the top level.",
     input: Schema.Struct({
@@ -201,6 +202,7 @@ const create = tool(
 const rename = tool(
   "rename_space",
   {
+    closed: true,
     description: "Rename a space. Its old name stays known as an alias.",
     input: Schema.Struct({ space: Schema.String, name: Schema.String, bypass: Bypass }),
   },
@@ -218,6 +220,7 @@ const rename = tool(
 const moveSpace = tool(
   "move_space",
   {
+    closed: true,
     description: "Move a space inside another; `parent` null puts it at the top level.",
     input: Schema.Struct({ space: Schema.String, parent: Schema.NullOr(Schema.String) }),
   },
@@ -232,6 +235,7 @@ const moveSpace = tool(
 const archive = tool(
   "archive_space",
   {
+    closed: true,
     description:
       "Settle a space that's done: archived, it leaves the user's view and takes no new events. `undo` opens it again.",
     input: Schema.Struct({ space: Schema.String, undo: Schema.optionalKey(Schema.Boolean) }),
@@ -257,6 +261,7 @@ const command = (type: string, payload: unknown) =>
 const react = tool(
   "react",
   {
+    closed: true,
     description:
       "React to the user's message, as a tapback: love, like, dislike, laugh, emphasize or question; null takes yours back. Or `emoji`: any one emoji as the reaction instead. `seq`: their message, by default their latest in the space. Reacting again swaps it. An acknowledgement (got it, on it, started) is a reaction, never a message: 🕐 on their message while you work on it; it turns to `like` by itself once that turn and the tasks it delegated are done.",
     input: Schema.Struct({
@@ -306,6 +311,7 @@ const react = tool(
 const move = tool(
   "move_exchange",
   {
+    closed: true,
     description:
       "Move an exchange to the chat of the space it's about: the message at `seq` and the replies to it.",
     input: MoveMessage.payload,
@@ -331,6 +337,7 @@ const widgets = tool(
 const place = tool(
   "place_widget",
   {
+    closed: true,
     description:
       "Show a widget in a space, or move or resize it: an app's, or one you made (`app` `brain`, `name` from show_widget). `index` is its place among the space's widgets (0 first; none, last). `input` is what its tool is called with, `size` its columns and rows in the space's grid; none keeps what it had.",
     input: Schema.Struct({
@@ -349,6 +356,7 @@ const place = tool(
 const unplace = tool(
   "remove_widget",
   {
+    closed: true,
     description: "Take a widget out of its space.",
     input: Schema.Struct({ app: Schema.String, name: Schema.String }),
   },
@@ -406,6 +414,7 @@ const madeView = (input: {
 const show = tool(
   "show_widget",
   {
+    closed: true,
     description: `Show UI in a space's chat. An app's widget: \`app\`, \`name\`, \`input\` (only widgets whose surfaces include chat). Or one you make, with a short \`title\`: \`components\` (and their \`data\`) for what the parts can say, fast and in the house look; or a self-contained HTML \`page\` for drawing they can't, checked first with preview_html, its \`height\` the contentHeight that gave. ${PARTS} Page: ${PAGE_GUIDE}`,
     input: Schema.Struct({
       space: SpaceId,
@@ -523,6 +532,7 @@ const describe = tool(
 const folder = tool(
   "folder",
   {
+    closed: true,
     description:
       "Set a space's project folder on a machine (an empty path clears it). Its turns, and those of spaces inside it, run on a machine that has it, in it.",
     input: Schema.Struct({ space: SpaceId, machine: Schema.String, path: Schema.String }),

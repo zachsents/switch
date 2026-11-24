@@ -288,6 +288,7 @@ const hangsOn = (input: ExpectInput, after: number) =>
 const expect = tool(
   "expect",
   {
+    closed: true,
     description: `X by T, else wake: one primitive for promises, watches and confirmations, judged against the brain. The work that sets it is what it wakes. Each needs what brings it back: a when, the item it hangs on, or a real time.
 - when: a query (as brain_query takes) that finds nothing until it happens: a print done, a reply landing, a page changing. The moment it finds something, you're woken to do \`what\`, and again with anything more it finds after. Use it instead of waiting or polling in a turn: set it and end your turn. It has no time: it waits until it fires or its work is dropped. On the log it looks only at events after now, and stays open after it wakes you: each new event it matches wakes you again, until you drop it or its check holds. It wakes only for what's new: a record that only says something changed (read, delivered, edited) doesn't wake you unless the watch names one of its facts (payload.data.facts.…) or its entity. One that wakes you 3 times in a row with nothing done is closed. On any other source (a work's status, an item) it's met once the turn it woke is over.
 - item: the open item in the user's queue it waits on. You're woken to do \`what\` when they answer it; no time.
@@ -476,6 +477,7 @@ const wait = tool(
 const surpriseTool = tool(
   "surprise",
   {
+    closed: true,
     description:
       "Note what didn't go as expected so it isn't lost: two senses that disagree (disagree), something a space needed that no sense gives you (blind), something that stopped (stopped). The same id again only counts it. dismiss: true with its id and why takes down one that doesn't matter. Trouble in Switch (an id starting stopped:, crashing:, failing:, quiet:, calls:, link: or push:) is never dismissed: it closes itself once it works again; fix it, fix its source if it doesn't matter, or put one ask in the user's queue if only they can.",
     input: Schema.Struct({
@@ -966,6 +968,7 @@ const propose = (raw: typeof itemInput.Type) =>
 const item = tool(
   "action_item",
   {
+    closed: true,
     description:
       "Put something in the user's queue: only what needs them, after you've taken it as far as you can without them. " +
       "kind: task (Done), question (options as keys and/or a typed answer), approval (Approve runs `send`, the committal call, with `drafts` as they left them; put every message you'd send for them in drafts and `{{draft:name}}` in send's args). " +
@@ -988,6 +991,7 @@ const item = tool(
 const closeItem = tool(
   "close_item",
   {
+    closed: true,
     description:
       "Take an item out of the user's queue yourself: done once it's done (you did it, or it no longer needs them), dismissed when it's moot. Say why.",
     input: Schema.Struct({
@@ -1013,6 +1017,7 @@ const closeItem = tool(
 const followItem = tool(
   "follow_item",
   {
+    closed: true,
     description:
       "Wait on an item already in their queue (one another space or an extension opened) rather than asking twice: when it closes, this space wakes with how. follow false stops waiting.",
     input: Schema.Struct({
@@ -1039,6 +1044,7 @@ const followItem = tool(
 const rememberTool = tool(
   "remember",
   {
+    closed: true,
     description:
       "Keep a lesson for good: a rule or preference of the user's, a lasting fact, a procedure that worked. It's merged with what's held and generalized, or dropped if it won't hold next time. When it's the user's own rule, give quote: their exact words, as they said them; they're kept with it, and the message they came from. After a mistake in a call (the user corrected what it did, or it failed) or a go-ahead for a kind of call, say in how which call (the tool, and words in its input): it's shown before the next such call runs.",
     input: Schema.Struct({
@@ -1058,13 +1064,27 @@ const rememberTool = tool(
     }),
 )
 
+/** A resource alarm as its wake rule keeps it, or null without a question or a line to cross. */
+const alarmRule = (
+  name: string,
+  question: string,
+  goal: string,
+  alarm: Readonly<Record<string, unknown>>,
+  from: string,
+) =>
+  question === "" ||
+  (alarm.above === undefined && alarm.below === undefined && alarm.is === undefined)
+    ? null
+    : wakeRuleMemory({ name, question, goal, wakes: {}, at: null, alarm, from })
+
 // docs.md "Being woken" (Switchboard's): the agent adds a kernel whose body is a turn, or a trigger,
 // as data; here a wake rule the user's triage reads (rules.ts), global as kernels were.
 const wakeRuleTool = tool(
   "wake_rule",
   {
+    closed: true,
     description:
-      "Be woken by what your senses record. Nothing they record starts a turn by itself: when something should (the user asks to be woken for it, new mail that needs them, a failed payment, an order), add a wake rule. `wakes` picks the records: `streams` and `kinds` as they're recorded (a record's `stream` and `kind`, like comms/gmail and observation); `match`: fields that must equal a value, by dotted path into the record (body.facts.inbox); `not_from`: sources it leaves out; `first`: only the first record about a thing counts, not the ones that say it changed; `batch_s`: how long a burst gathers, so it wakes one turn (default 120). A decision model reads each burst against `question` and lets through what's at least `at` likely (default 0.5) to be worth a turn; with `at` 0 every match wakes one, so keep that for what's rare. `trigger: true` makes it rules alone, no model, for what's rule-tight (a DM from someone else, an order paid): `unless` names fields that rule a record out, and a burst gathers 60 s by default. What it lets through starts a turn in the space the record belongs to, for `goal`. The same name again changes it; `retired: true` ends it. Give quote: the user's exact words, when it rests on them.",
+      "Be woken by what your senses record. Nothing they record starts a turn by itself: when something should (the user asks to be woken for it, new mail that needs them, a failed payment, an order), add a wake rule. `wakes` picks the records: `streams` and `kinds` as they're recorded (a record's `stream` and `kind`, like comms/gmail and observation); `match`: fields that must equal a value, by dotted path into the record (body.facts.inbox); `not_from`: sources it leaves out; `first`: only the first record about a thing counts, not the ones that say it changed; `batch_s`: how long a burst gathers, so it wakes one turn (default 120). A decision model reads each burst against `question` and lets through what's at least `at` likely (default 0.5) to be worth a turn; with `at` 0 every match wakes one, so keep that for what's rare. `trigger: true` makes it rules alone, no model, for what's rule-tight (a DM from someone else, an order paid): `unless` names fields that rule a record out, and a burst gathers 60 s by default. What it lets through starts a turn in the space the record belongs to, for `goal`. `alarm` in the place of `wakes` makes it a resource alarm on machines' vitals, rules alone: `on` a field of a reading (diskFreeGb, swapGb, swapGrowthGbPerHour, pressure, load5, or one over another, load5/cores), `above` or `below` a number or `is` some words, `clear` where it's over (a number, or words), `by` memory or cpu for whose processes are heaviest. It rings once an episode, on each machine, and wakes the work whose processes are heaviest there, else Home, with the numbers and those processes. The same name again changes it; `retired: true` ends it. Give quote: the user's exact words, when it rests on them.",
     input: Schema.Struct({
       space: SpaceId,
       name: Schema.String,
@@ -1082,6 +1102,18 @@ const wakeRuleTool = tool(
       ),
       trigger: Schema.optionalKey(Schema.Boolean),
       unless: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+      alarm: Schema.optionalKey(
+        Schema.Struct({
+          on: Schema.String,
+          above: Schema.optionalKey(Schema.Number),
+          below: Schema.optionalKey(Schema.Number),
+          is: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+          clear: Schema.optionalKey(
+            Schema.Union([Schema.Number, Schema.String, Schema.Array(Schema.String)]),
+          ),
+          by: Schema.optionalKey(Schema.Literals(["memory", "cpu"])),
+        }),
+      ),
       goal: Schema.optionalKey(Schema.String),
       retired: Schema.optionalKey(Schema.Boolean),
       quote: Schema.optionalKey(Schema.String),
@@ -1107,32 +1139,45 @@ const wakeRuleTool = tool(
         return { retired: name }
       }
       const question = (input.question ?? input.goal ?? "").trim()
-      const { wakes } = input
-      if (wakes === undefined || wakes.streams.length === 0 || question === "") {
-        return yield* new Rejected({
-          reason: "Give a question (or a trigger's goal) and wakes.streams",
+      const { alarm, wakes } = input
+      const from = `Written by the agent in ${space}.`
+      let kept: ReturnType<typeof wakeRuleMemory>
+      let trigger = true
+      if (alarm === undefined) {
+        if (wakes === undefined || wakes.streams.length === 0 || question === "") {
+          return yield* new Rejected({
+            reason: "Give a question (or a trigger's goal) and wakes.streams",
+          })
+        }
+        const thread = yield* callerOf("autonomy_wake_rule", gave("name", input.name))
+        const warning = yield* unlessBypassed(
+          yield* wakesWarning(wakes.streams, wakes.kinds ?? []),
+          bypassOf(input.bypass),
+          { check: "wake_rule", objections: ["names"], work: thread ?? space, space },
+        )
+        if (warning !== null) {
+          return { warning }
+        }
+        trigger = input.trigger === true
+        const { at, ...rest } = wakes
+        kept = wakeRuleMemory({
+          name: input.name,
+          question,
+          goal: input.goal ?? "",
+          wakes: rest,
+          at: trigger ? null : (at ?? 0.5),
+          ...(input.unless !== undefined && { unless: input.unless }),
+          from,
         })
+      } else {
+        const rung = alarmRule(input.name, question, input.goal ?? "", alarm, from)
+        if (rung === null) {
+          return yield* new Rejected({
+            reason: "Give a question and the alarm's line: above, below or is",
+          })
+        }
+        kept = rung
       }
-      const thread = yield* callerOf("autonomy_wake_rule", gave("name", input.name))
-      const warning = yield* unlessBypassed(
-        yield* wakesWarning(wakes.streams, wakes.kinds ?? []),
-        bypassOf(input.bypass),
-        { check: "wake_rule", objections: ["names"], work: thread ?? space, space },
-      )
-      if (warning !== null) {
-        return { warning }
-      }
-      const trigger = input.trigger === true
-      const { at, ...rest } = wakes
-      const kept = wakeRuleMemory({
-        name: input.name,
-        question,
-        goal: input.goal ?? "",
-        wakes: rest,
-        at: trigger ? null : (at ?? 0.5),
-        ...(input.unless !== undefined && { unless: input.unless }),
-        from: `Written by the agent in ${space}.`,
-      })
       const said =
         input.quote === undefined
           ? null
@@ -1225,6 +1270,7 @@ const saidLately = (db: Database, space: string, since: number) =>
 const sayTool = tool(
   "say",
   {
+    closed: true,
     description:
       "Say something to the user: the only way your words reach them. Your other text is your own. It goes to this conversation, and notifies them when they're away. A result, an answer or a real question, never an acknowledgement or progress (react; a task's stage). `files`: paths on this machine to show with it. `detail`: optional and rare, the long version opened on demand; it never repeats the text.",
     input: Schema.Struct({
@@ -1348,6 +1394,7 @@ const sayTool = tool(
 const nothingTool = tool(
   "nothing",
   {
+    closed: true,
     description:
       "End this turn with nothing for the user: nothing to say, react to or put in their queue. `note`: a private word on why, for your own record.",
     input: Schema.Struct({ note: Schema.optionalKey(Schema.String) }),
@@ -1358,6 +1405,7 @@ const nothingTool = tool(
 const settingTool = tool(
   "setting",
   {
+    closed: true,
     description: `Move one of your dials when you learn the user wants it otherwise: a correction ("just do it", "stop pinging me"), a pattern in what they dismiss or let stand. It's yours to move; the user sees it in this space's chat with Undo. Give quote: their exact words, when it rests on them. Without key, lists the dials as they stand. The dials: ${Object.entries(
       DIALS,
     )
@@ -1391,6 +1439,7 @@ const settingTool = tool(
 const coverTool = tool(
   "cover",
   {
+    closed: true,
     description:
       "Set a space's cover, the picture shown behind its name, from an image you have: `image`, a path on this machine or a blob. Without `image`, clears it. Make a cover in the look the user wants for covers (their wishes in memory); autonomy_image draws one.",
     input: Schema.Struct({ space: Schema.String, image: Schema.optionalKey(Schema.String) }),

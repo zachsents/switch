@@ -137,21 +137,83 @@ export const ruleOf = (m: {
   wakes: filterOf(m.body),
 })
 
-/**
- * The user's wake rules (`wake-rule-…`: Switchboard's kernels and triggers brought across, and the ones
- * the agent writes from the user's words), for the spaces given: triage reads every one against what
- * comes in, as Switchboard read every kernel.
- */
-export const wakeRulesOf = (db: Database, spaces: readonly Scope[]): WakeRule[] => {
-  const scopes = new Set<string>(spaces.flatMap((s) => scopesOf(db, s)))
-  return db
+const liveRules = (db: Database) =>
+  db
     .query<{ name: string; description: string; body: string; scope: string }, []>(
       "SELECT name, description, body, scope FROM memories WHERE status = 'live' AND name LIKE 'wake-rule-%' ORDER BY written_at",
     )
     .all()
-    .filter((m) => scopes.has(m.scope))
+
+/**
+ * A resource alarm's `Alarm: {…}` line: what of a machine's vitals it reads (`on`, a field of the
+ * reading, or one over another, `load5/cores`), the line it crosses (`above` or `below` a number, or
+ * `is` one of some words), where it's over (`clear`: a number past which, or the words; else back
+ * over its line), and what its heaviest processes are heaviest in (`by`: memory or cpu).
+ */
+export interface AlarmLine {
+  readonly on: string
+  readonly above: number | null
+  readonly below: number | null
+  readonly is: readonly string[]
+  readonly clear: number | readonly string[] | null
+  readonly by: "memory" | "cpu"
+}
+
+export interface Alarm {
+  readonly name: string
+  readonly title: string
+  readonly question: string
+  readonly goal: string
+  readonly alarm: AlarmLine
+}
+
+const words = (v: unknown) => (typeof v === "string" ? [v] : texts(v))
+
+/** The `Alarm: {…}` line of a rule's body, or null when it isn't an alarm. */
+const alarmOf = (body: string): AlarmLine | null => {
+  const a = jsonLine(body, "Alarm")
+  if (a === null || typeof a.on !== "string" || a.on === "") {
+    return null
+  }
+  const above = typeof a.above === "number" ? a.above : null
+  const below = typeof a.below === "number" ? a.below : null
+  const is = words(a.is)
+  if (above === null && below === null && is.length === 0) {
+    return null
+  }
+  const { clear } = a
+  return {
+    on: a.on,
+    above,
+    below,
+    is,
+    clear: typeof clear === "number" || clear === undefined ? (clear ?? null) : words(clear),
+    by: a.by === "cpu" ? "cpu" : "memory",
+  }
+}
+
+/**
+ * The user's wake rules (`wake-rule-…`: Switchboard's kernels and triggers brought across, and the ones
+ * the agent writes from the user's words), for the spaces given: triage reads every one against what
+ * comes in, as Switchboard read every kernel. A resource alarm is the alarms' (`alarmsOf`), not triage's.
+ */
+export const wakeRulesOf = (db: Database, spaces: readonly Scope[]): WakeRule[] => {
+  const scopes = new Set<string>(spaces.flatMap((s) => scopesOf(db, s)))
+  return liveRules(db)
+    .filter((m) => scopes.has(m.scope) && alarmOf(m.body) === null)
     .map(ruleOf)
 }
+
+/** The wake rules that are resource alarms, read against each machine's vitals (core alarms.ts). */
+export const alarmsOf = (db: Database): Alarm[] =>
+  liveRules(db).flatMap((m) => {
+    const alarm = alarmOf(m.body)
+    if (alarm === null) {
+      return []
+    }
+    const rule = ruleOf(m)
+    return [{ name: m.name, title: rule.title, question: rule.question, goal: rule.goal, alarm }]
+  })
 
 /** A wake rule's memory name: `wake-rule-` and its name in lowercase words. */
 export const wakeRuleName = (name: string) =>
@@ -177,10 +239,29 @@ const wokeOn = (wakes: Readonly<Record<string, unknown>>, at: number | null) =>
     .filter((x) => x !== "")
     .join("; ")
 
+/** What an alarm rings on, in words. */
+const rungOn = (a: Readonly<Record<string, unknown>>) => {
+  let line = `is ${JSON.stringify(a.is)}`
+  if (typeof a.above === "number") {
+    line = `above ${String(a.above)}`
+  } else if (typeof a.below === "number") {
+    line = `below ${String(a.below)}`
+  }
+  return [
+    `${String(a.on)} ${line}`,
+    a.clear === undefined ? "" : `clear at ${JSON.stringify(a.clear)}`,
+    `the heaviest by ${a.by === "cpu" ? "cpu" : "memory"}`,
+    "once an episode, rules alone, no model",
+  ]
+    .filter((x) => x !== "")
+    .join("; ")
+}
+
 /**
  * A wake rule as a memory keeps it: its question (the description, with what it wakes on), and a body
  * of the question, what it wakes on, what its turn is for, Switchboard's `wakes` as JSON (with `at`,
  * null for a trigger), a trigger's `unless`, and where it came from. Triage reads it back (`wakeRulesOf`).
+ * A resource alarm keeps its `Alarm` line in the place of `Wakes` (`alarmsOf`).
  */
 export const wakeRuleMemory = (input: {
   readonly name: string
@@ -189,9 +270,10 @@ export const wakeRuleMemory = (input: {
   readonly wakes: Readonly<Record<string, unknown>>
   readonly at: number | null
   readonly unless?: Readonly<Record<string, unknown>>
+  readonly alarm?: Readonly<Record<string, unknown>>
   readonly from: string
 }) => {
-  const on = wokeOn(input.wakes, input.at)
+  const on = input.alarm === undefined ? wokeOn(input.wakes, input.at) : rungOn(input.alarm)
   const unless = input.unless ?? {}
   return {
     name: wakeRuleName(input.name),
@@ -201,7 +283,9 @@ export const wakeRuleMemory = (input: {
       `Name: ${input.name}`,
       `Woke on: ${on}.`,
       input.goal === "" ? "" : `Its turn: ${input.goal}`,
-      `Wakes: ${JSON.stringify({ ...input.wakes, at: input.at })}`,
+      input.alarm === undefined
+        ? `Wakes: ${JSON.stringify({ ...input.wakes, at: input.at })}`
+        : `Alarm: ${JSON.stringify(input.alarm)}`,
       Object.keys(unless).length === 0 ? "" : `Unless: ${JSON.stringify(unless)}`,
       input.from,
     ]

@@ -158,8 +158,9 @@ export const unheard = (db: Database, space: SpaceId, thread: ThreadId, seen: nu
 
 /** The senses watch's own (senses.ts): each resolves itself once a look no longer finds it. */
 export const SENSED = ["stopped:", "crashing:", "failing:", "quiet:", "calls:", "link:"]
-/** Trouble in Switch itself (the senses watch's, and a push that reached no phone, trouble.ts). */
-export const TROUBLE = [...SENSED, "push:"]
+/** Trouble in Switch itself (the senses watch's, and a push that reached no phone, trouble.ts), and
+ * on a machine it runs on (a resource alarm, core alarms.ts). */
+export const TROUBLE = [...SENSED, "push:", "alarm:"]
 export const isTrouble = (id: string) => TROUBLE.some((p) => id.startsWith(p))
 
 /** Why trouble isn't dismissed: dismissed, it went unseen for a day though nothing was fixed. */
@@ -268,11 +269,11 @@ export const resolve = (id: string) =>
 
 /**
  * Trouble in Switch itself: raised once, and a newly open one wakes its space's work at once, never
- * the user's chat (core trouble.ts). `to` reaches the work.
+ * the user's chat (core trouble.ts), or the work given in `wakes`. `to` reaches the work.
  */
-export const troubled = (s: Raise, to: Waker) =>
+export const troubled = (s: Raise, to: Waker, wakes?: ThreadId) =>
   Effect.gen(function* raising() {
-    const thread = to.threadOf(s.space ?? HOME)
+    const thread = wakes ?? to.threadOf(s.space ?? HOME)
     // Its wake waits in the record from the write that raised it, by an id derived from that raise,
     // so it's recorded once and a restart can't lose it.
     const fresh = yield* raise(s, (raised) => [

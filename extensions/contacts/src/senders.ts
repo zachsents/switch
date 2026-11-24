@@ -1,5 +1,5 @@
-// Everyone who messages the user, from the brain: texts and iMessage, Gmail and Instagram. Each
-// message is a brain event the extension follows, its record in `payload.data` (`stream`,
+// Everyone who messages the user, from the brain: texts and iMessage, Gmail, Instagram and Slack.
+// Each message is a brain event the extension follows, its record in `payload.data` (`stream`,
 // `data.facts`).
 import type { Followed } from "switch-ext-kit"
 
@@ -13,6 +13,7 @@ export const FOLLOWS = [
   "texts.message",
   "google.gmail.message",
   "instagram-dms.thread",
+  "slack.message",
 ] as const
 
 /** One message's record. */
@@ -23,6 +24,8 @@ export interface Seen {
   readonly kind: string
   readonly space: string | null
   readonly body: Record<string, unknown>
+  /** Who sent it, as the brain's message records say (`handle`, `via`, `name`, `me`, `agent`). */
+  readonly sender: Record<string, unknown>
 }
 
 /** A followed event's record. */
@@ -35,6 +38,7 @@ export const seenOf = (e: Followed): Seen => {
     kind: str(p.kind),
     space: typeof p.space === "string" ? p.space : null,
     body: rec(p.data),
+    sender: rec(p.sender),
   }
 }
 
@@ -163,6 +167,30 @@ const fromInstagram = (r: Seen, get: Get) => {
   }
 }
 
+/** A Slack message's sender, when Slack knows their email: a one to one chat says someone real. */
+const fromSlack = (r: Seen, get: Get) => {
+  const f = rec(r.body.facts)
+  const handle = str(r.sender.handle)
+  if (
+    r.sender.me === true ||
+    r.sender.agent === true ||
+    str(r.sender.via) !== "email" ||
+    !handle.includes("@")
+  ) {
+    return
+  }
+  const s = get("slack", "email", handle)
+  s.last = Math.max(s.last, r.at)
+  s.fromThem += 1
+  const name = str(r.sender.name)
+  if (name !== "" && !name.includes("@")) {
+    s.names.add(name)
+  }
+  if (f.conversation_kind === "dm") {
+    s.create = true
+  }
+}
+
 export const gather = (seen: readonly Seen[]) => {
   const by = new Map<string, Sender>()
   const get: Get = (channel, kind, handle) => {
@@ -197,6 +225,8 @@ export const gather = (seen: readonly Seen[]) => {
       fromGmail(r, get)
     } else if (r.stream === "comms/instagram" && f.group !== true) {
       fromInstagram(r, get)
+    } else if (r.stream === "comms/slack") {
+      fromSlack(r, get)
     }
   }
   return [...by.values()]

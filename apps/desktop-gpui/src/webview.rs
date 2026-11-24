@@ -247,7 +247,11 @@ fn watch_clicks() {
             let p = web.convertPoint_fromView(e.locationInWindow(), None);
             let b = web.bounds();
             if !(p.x >= 0. && p.y >= 0. && p.x < b.size.width && p.y < b.size.height) {
-                w.makeFirstResponder(None);
+                // Back to the app's own view: with no first responder the window keeps the keys
+                // and each one beeps.
+                // SAFETY: the page's clip and gpui's view over it, on the main thread.
+                let app = unsafe { web.superview().and_then(|clip| clip.superview()) };
+                w.makeFirstResponder(app.as_deref().map(|v| &**v as &objc2_app_kit::NSResponder));
             }
         }
         event.as_ptr()
@@ -799,6 +803,20 @@ pub fn start_frame(window: &mut Window, cx: &mut App) {
             p.apply(&covers);
         }
     });
+}
+
+/// The app's own view takes the keyboard back: gpui's focus moved to one of its own fields while a
+/// page (or nothing) had AppKit's, so its keys would go to the page, or beep.
+pub fn keys_to_app(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
+    // SAFETY: gpui's content view, alive as long as the window.
+    let view: &NSView = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    if let Some(w) = view.window()
+        && w.firstResponder().is_none_or(|r| !std::ptr::eq(&*r as *const _ as *const NSView, view as *const NSView))
+    {
+        w.makeFirstResponder(Some(view));
+    }
 }
 
 /// Says that something drawn over the window covers `bounds` this frame: a page under it hides.

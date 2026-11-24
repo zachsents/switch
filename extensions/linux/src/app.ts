@@ -3,10 +3,11 @@
 // CPU's temperature in its battery's place. Its widget's page is made as the extension starts: Bun
 // runs no macros from an installed package.
 import { hostname } from "node:os"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 
 import { AppEvents, defineApp, defineEvent, MCP_CATALOG, surface, tool } from "switch-ext-kit"
 import { beat, Heartbeat, kept, said, watch as watched } from "./health.ts"
+import { load } from "./load.ts"
 import { thisMachine } from "./look.ts"
 import { ratio, vitalsPage } from "./vitals-page.ts"
 import { alerting, alerts, hasTemp, notable, read, reading } from "./vitals.ts"
@@ -51,7 +52,7 @@ const vitals = tool(
   "vitals",
   {
     description:
-      "This Linux machine's vitals now: load, CPU, memory and its pressure, swap, free disk, CPU temperature, uptime.",
+      "This Linux machine's vitals now: load (and over five minutes), CPU, memory and its pressure, swap and how fast it grows, free disk, CPU temperature, uptime.",
     readOnly: true,
   },
   () =>
@@ -62,11 +63,26 @@ const vitals = tool(
     }),
 )
 
+const loadTool = tool(
+  "load",
+  {
+    description:
+      "Whose load this machine carries: each owner (the work or extension whose mark its processes carry, Claude Code session, program) with its CPU and memory and its heaviest process, heaviest first.",
+    readOnly: true,
+    input: Schema.Struct({ top: Schema.optionalKey(Schema.Finite) }),
+  },
+  (input) =>
+    Effect.tryPromise({
+      try: async () => await load(input.top ?? 12),
+      catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+    }),
+)
+
 export const linuxApp = defineApp({
   name: "linux",
   version: "1",
-  instructions: `The Linux machine ${machine}: its vitals.`,
-  tools: [vitals],
+  instructions: `The Linux machine ${machine}: its vitals, and whose load it carries.`,
+  tools: [vitals, loadTool],
   events: [Vitals, Heartbeat],
   widgets: [
     {
