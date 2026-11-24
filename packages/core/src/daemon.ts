@@ -76,7 +76,6 @@ export const run = (command: string | undefined) => {
   } else if (command === "prepare") {
     BunRuntime.runMain(prepare)
   } else if (command === undefined) {
-    watchLoop()
     BunRuntime.runMain(Layer.launch(layerServer()))
   } else {
     // Only a bare `switch` is the core: one started by `switch --help` would reap the live core's
@@ -86,20 +85,4 @@ export const run = (command: string | undefined) => {
     )
     process.exit(2)
   }
-}
-
-const TICK_MS = 250
-const STALL_MS = 1000
-
-/** Logs each time something held the event loop past a second: a sync read, a long parse. */
-const watchLoop = () => {
-  let last = performance.now()
-  setInterval(() => {
-    const now = performance.now()
-    const late = now - last - TICK_MS
-    if (late >= STALL_MS) {
-      console.warn(`event loop stalled ${Math.round(late)} ms`)
-    }
-    last = now
-  }, TICK_MS).unref()
 }

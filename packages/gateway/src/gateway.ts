@@ -124,12 +124,18 @@ export interface Outbound {
   readonly app: string
   readonly tool: string
   readonly args: Record<string, unknown>
-  /** Why the outbound check is wrong this time (brain's bypass.ts): it's held for the user's approval. */
+  /**
+   * Why the outbound check is wrong this time (brain's bypass.ts): past what only the user can
+   * settle, it's held for their approval.
+   */
   readonly bypass: string | null
 }
 
 /** Null lets the call run; a result is what the agent gets instead (held for approval, sent back). */
 export type Guard = (call: Outbound) => Promise<CallToolResult | null>
+
+/** Told once a call the guard let through went out, with what came back. */
+export type Sent = (call: Outbound, result: CallToolResult) => Promise<void>
 
 /** Up to this many tools are listed to agents as they are; past it, only search and call. */
 const LISTED_MAX = 24
@@ -536,12 +542,14 @@ export class Gateway extends Context.Service<
   /**
    * Each app's event types are registered with the brain as it connects. `enrich` sees each event
    * before it's ingested; `guard` sees each agent's or extension's call to a tool that speaks for
-   * the user (`speaksForPerson`), and what it answers, if anything, is answered instead.
+   * the user (`speaksForPerson`), and what it answers, if anything, is answered instead; `sent`
+   * hears each it let through that went out.
    */
   static readonly layer = (options: {
     readonly plugs: readonly Plug[]
     readonly enrich?: (event: Incoming) => Effect.Effect<Incoming>
     readonly guard?: Guard
+    readonly sent?: Sent
     /** The user's connections, which an extension reaches only for the providers it declared. */
     readonly connections?: ExtensionConnections
     /** The space a thread's work is in: what an agent's call tells the tool it calls (`CALLER`). */
@@ -755,17 +763,22 @@ export class Gateway extends Context.Service<
           const { bypass, ...unbypassed } = args
           const sent = speaks ? unbypassed : args
           const guarded = speaks && !(by !== undefined && approved.covers(by, sent))
-          const held =
-            guarded && options.guard
-              ? await options.guard({
-                  thread: thread ?? passed?.thread ?? null,
-                  app,
-                  tool,
-                  args: sent,
-                  bypass: bypassOf(bypass),
-                })
-              : null
-          return held ?? (await call(name, sent, await callerFor(thread, passed)))
+          const outbound: Outbound = {
+            thread: thread ?? passed?.thread ?? null,
+            app,
+            tool,
+            args: sent,
+            bypass: bypassOf(bypass),
+          }
+          const held = guarded && options.guard ? await options.guard(outbound) : null
+          if (held !== null) {
+            return held
+          }
+          const result = await call(name, sent, await callerFor(thread, passed))
+          if (guarded && options.guard && options.sent && result.isError !== true) {
+            await options.sent(outbound, result)
+          }
+          return result
         }
 
         const callApproved = async (name: string, args: Record<string, unknown>) =>

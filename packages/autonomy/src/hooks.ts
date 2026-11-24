@@ -1,8 +1,12 @@
 // Claude Code hooks, over HTTP: before a tool call, the memories tied to it (triggered recall). A
-// turn's own words reach no one now, so its stop has nothing to check: the reply check reads what's
-// said (autonomy app.ts `say`).
+// call that changes something, with a memory the turn hasn't been shown yet, is held once: denied,
+// the memories its reason, so they're read before it runs rather than beside it; the next call of
+// its kind goes through. What changes something is the tools' to say: an extension's readOnly
+// (MCP's readOnlyHint), and Claude Code's own that write. A turn's own words reach no one now, so
+// its stop has nothing to check: the reply check reads what's said (autonomy app.ts `say`).
 import type { Database } from "bun:sqlite"
 import { Brain } from "@switch/brain"
+import { Gateway } from "@switch/gateway"
 import { Models } from "@switch/models"
 import type { SpaceId, ThreadId, TurnId } from "@switch/brain"
 import { Effect, FiberSet } from "effect"
@@ -62,6 +66,22 @@ const whereIs = (db: Database, session: string, spaceOf: (thread: ThreadId) => S
   return { thread: row.thread, turn: row.turn, task: row.parent !== null, space }
 }
 
+/** Claude Code's own tools that change something; the rest (Read, Grep, Glob, …) only look. */
+const WRITES = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"])
+/** The gateway's tools, as an agent session names them. */
+const APPS = "mcp__apps__"
+
+/** The kind of call: the tool, and for the gateway's `call_tool` the extension's tool it calls. */
+const kindOf = (tool: string, input: unknown) =>
+  tool === `${APPS}call_tool` ? `${APPS}${text(field(input, "name"))}` : tool
+
+/** What a thread's turn has been shown before its calls, and the kinds held for it to call again. */
+interface Shown {
+  readonly turn: string
+  readonly seen: Set<string>
+  readonly held: Set<string>
+}
+
 const toolsSoFar = (db: Database, thread: ThreadId) =>
   db
     .query<{ body: string }, [string]>(
@@ -88,9 +108,31 @@ export const hooks = Effect.fnUntraced(function* serving(
 ) {
   const brain = yield* Brain
   const models = yield* Models
+  const gateway = yield* Gateway
   const run = yield* FiberSet.makeRuntimePromise()
   const provide = <A, E>(e: Effect.Effect<A, E, Brain | Models>) =>
     e.pipe(Effect.provideService(Brain, brain), Effect.provideService(Models, models))
+
+  // Whether a kind of call changes something. An extension's tool does unless it says it only
+  // looks (readOnlyHint): a send isn't destructive, but it still changes the world.
+  const changes = (kind: string) => {
+    if (!kind.startsWith(APPS)) {
+      return WRITES.has(kind)
+    }
+    const name = kind.slice(APPS.length)
+    const listed = gateway.tools().find((l) => `${l.app}_${l.tool.name}` === name)
+    return listed !== undefined && listed.tool.annotations?.readOnlyHint !== true
+  }
+  const shown = new Map<string, Shown>()
+  const shownIn = (thread: string, turn: string) => {
+    const had = shown.get(thread)
+    if (had?.turn === turn) {
+      return had
+    }
+    const fresh: Shown = { turn, seen: new Set(), held: new Set() }
+    shown.set(thread, fresh)
+    return fresh
+  }
 
   const preTool = (body: unknown) =>
     Effect.gen(function* pre() {
@@ -103,14 +145,33 @@ export const hooks = Effect.fnUntraced(function* serving(
       const input = JSON.stringify(field(body, "tool_input") ?? {})
       const before = yield* brain.read((db) => toolsSoFar(db, where.thread))
       const kept = yield* triggered(where.space, tool, input, before)
-      return kept.length === 0
-        ? {}
-        : {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              additionalContext: `<memory>\nBefore this call:\n${renderMemories(kept)}\n</memory>`,
-            },
-          }
+      const kind = kindOf(tool, field(body, "tool_input"))
+      const turn = shownIn(where.thread, where.turn ?? "")
+      const again = turn.held.delete(kind)
+      const unseen = kept.some((m) => !turn.seen.has(m.id))
+      for (const m of kept) {
+        turn.seen.add(m.id)
+      }
+      if (kept.length === 0) {
+        return {}
+      }
+      const memories = `Before this call:\n${renderMemories(kept)}`
+      if (unseen && !again && changes(kind)) {
+        turn.held.add(kind)
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: `<memory>\n${memories}\nFollow these, then call again.\n</memory>`,
+          },
+        }
+      }
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: `<memory>\n${memories}\n</memory>`,
+        },
+      }
     })
 
   return async (request: Request): Promise<Response> => {

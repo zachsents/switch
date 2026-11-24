@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./measures": "./src/measures.ts",
     "./memory-commands": "./src/memory-commands.ts"
   },
   "scripts": {

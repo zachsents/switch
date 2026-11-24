@@ -64,6 +64,11 @@ interface Criterion {
   readonly rule?: string
   /** A dial of the user's (settings.ts, `gate.<exit>.<name>`): its name to them. */
   readonly dial?: string
+  /**
+   * Only the user can settle it: past the outbound check, a bypass holds the send for their
+   * approval (core asks.ts). What any other criterion there objects to is the agent's to fix.
+   */
+  readonly theirs?: boolean
 }
 
 const GUIDE =
@@ -433,8 +438,12 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
   },
   // Switchboard's outbound gate: the plan and privacy at its thresholds, and each of the user's
   // rules asked about on its own (see `rules` below), since one broad question over every rule
-  // acted on nearly every customer reply and could never say which rule it meant. One sent again
-  // past it with a bypass is held for the user's approval (core/asks.ts).
+  // acted on nearly every customer reply and could never say which rule it meant. A bypass holds
+  // a send for the user's approval (core/asks.ts) only past what's theirs to settle (`theirs`).
+  // What else it objects to, an out-of-date plan, something private, a rule it breaks, is the
+  // agent's to fix: the send, or the plan or record it rests on. The user, Nov 24, on a lead's reply
+  // held for him because the plan page was out of date, fixed by the agent minutes later while the
+  // card sat in his queue: "what is this and why am I getting this?"
   outbound: {
     point: "outbound",
     mode: "block",
@@ -458,6 +467,7 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
       // in the user's name on its word alone waits for theirs. A bypass holds it for their approval.
       {
         name: "peer",
+        theirs: true,
         ask: "Does this go out only because another agent asked for it (its words are marked as another agent's, not the user's), with nothing from the user asking for it or approving it?",
         at: 0.6,
         reason:
@@ -1011,11 +1021,16 @@ interface Raised {
   readonly name: string
   readonly ask: string
   readonly reason: string
+  readonly theirs?: boolean
 }
+
+/** What a bypass past the outbound check is told when what it objects to is the agent's to fix. */
+const YOURS =
+  "A bypass doesn't send this or hold it for the user: what the check objects to is yours to fix, in the send or in the plan or record it rests on when that's what's out of date."
 
 /**
  * A bypass's judge, when it's asked: past objections, nothing withheld, and not a call in the user's
- * name, which goes to them as an approval card with the objection on it (core asks.ts).
+ * name, which goes to them as an approval card past what's theirs to settle (core asks.ts).
  */
 const judgeOf = (exit: Exit, input: Gated, raised: readonly Raised[], bypass: string | null) =>
   raised.length === 0 || bypass === null || exit === "outbound"
@@ -1080,8 +1095,13 @@ export const gate = (exit: Exit, input: Gated) =>
       ...(dashed === null ? [] : [{ name: "dash", ask: dashed, reason: dashed }]),
       ...acted,
     ]
-    const judged = yield* judgeOf(exit, input, raised, withheld ? null : bypass)
-    const verdict = settled(raised, withheld ? null : bypass, given, judged)
+    // Nor does a call in the user's name past what's the agent's to fix: it goes back to the agent.
+    const yours = exit === "outbound" && raised.some((c) => c.theirs !== true)
+    const allowed = withheld || yours ? null : bypass
+    const judged = yield* judgeOf(exit, input, raised, allowed)
+    const verdict = settled(raised, allowed, given, judged)
+    const sentBack = yours && bypass !== null && given !== null
+    const recorded = sentBack ? { ...given, refused: true } : verdict.recorded
     const id = crypto.randomUUID()
     yield* Effect.orDie(
       brain.ingest(
@@ -1093,14 +1113,14 @@ export const gate = (exit: Exit, input: Gated) =>
           withheld,
           ms,
           cost: cost + (judged?.cost ?? 0),
-          bypass: verdict.recorded,
+          bypass: recorded,
           bypassed: verdict.bypassed ? raised.map((c) => c.name) : null,
         }),
       ),
     )
     return {
       pass: verdict.pass,
-      reasons: verdict.reasons,
+      reasons: sentBack ? [...verdict.reasons, YOURS] : verdict.reasons,
       withheld,
       bypassed: verdict.bypassed,
       decision: id,

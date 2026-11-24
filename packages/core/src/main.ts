@@ -2,7 +2,8 @@
 // reporting to the core its config names, and running the agent turns the core places there.
 // `switch prepare` readies the brain for this build. `switch sb` is what old appendages call `sb`.
 // `switch event <name> [json]` is a script's event (scripts.ts). `switch light <model> <copy>` makes a
-// model's light copy for the core (light-mesh.ts), off its thread.
+// model's light copy for the core (light-mesh.ts), off its thread. `switch measure <brain>` prints
+// reflection's measures (measure.ts), off it too.
 // `switch guard` is the hook that keeps a turn's shell off heavy work on the user's own laptop: it
 // runs before each shell command, so it loads only what it needs. `switch pairings`, `approve`,
 // `deny`, `revoke` and `rotate` manage credentials.
@@ -34,6 +35,9 @@ if (command === "sb") {
 } else if (command === "light") {
   const { light } = await import("./light-mesh.ts")
   await light(process.argv.slice(3))
+} else if (command === "measure") {
+  const { measure } = await import("./measure.ts")
+  measure(process.argv.slice(3))
 } else if (command === "guard") {
   const { guard } = await import("./guard.ts")
   await guard()

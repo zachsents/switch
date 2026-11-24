@@ -8,6 +8,7 @@ export {
 } from "./autonomy.ts"
 export type { AutonomyConfig } from "./autonomy.ts"
 export {
+  ago,
   DropExpectation,
   Expect,
   expectConfig,

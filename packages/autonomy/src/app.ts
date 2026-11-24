@@ -1040,7 +1040,7 @@ const rememberTool = tool(
   "remember",
   {
     description:
-      "Keep a lesson for good: a rule or preference of the user's, a lasting fact, a procedure that worked. It's merged with what's held and generalized, or dropped if it won't hold next time. When it's the user's own rule, give quote: their exact words, as they said them; they're kept with it, and the message they came from.",
+      "Keep a lesson for good: a rule or preference of the user's, a lasting fact, a procedure that worked. It's merged with what's held and generalized, or dropped if it won't hold next time. When it's the user's own rule, give quote: their exact words, as they said them; they're kept with it, and the message they came from. After a mistake in a call (the user corrected what it did, or it failed) or a go-ahead for a kind of call, say in how which call (the tool, and words in its input): it's shown before the next such call runs.",
     input: Schema.Struct({
       space: SpaceId,
       lesson: Schema.String,

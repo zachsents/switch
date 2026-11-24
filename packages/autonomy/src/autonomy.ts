@@ -63,6 +63,8 @@ export interface AutonomyConfig {
   readonly threadOf: (space: SpaceId) => ThreadId
   /** Dollars per reflection look. */
   readonly reflectUsd?: number
+  /** Reflection's measures (measures.ts), read off the core's thread. */
+  readonly measured?: Effect.Effect<string, unknown>
   /** A condition's line in a space's chat, when it has one. */
   readonly openLine: TriageConfig["openLine"]
   readonly openLines: TriageConfig["openLines"]
@@ -125,6 +127,7 @@ export const autonomyWorkers = (config: AutonomyConfig) =>
       yield* Effect.forkScoped(
         reflecting({
           budgetUsd: config.reflectUsd ?? 2,
+          measured: config.measured ?? Effect.succeed(""),
           // No host now: it waits, and starts once one can (sessions.ts `wait`).
           start: (id, title, task) =>
             sessions.send(id, task, { title }).pipe(

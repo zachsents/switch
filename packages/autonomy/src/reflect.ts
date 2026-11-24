@@ -1,11 +1,15 @@
 // Reflection: the agent looking over what happened on its own, often and cheaply. Each look reads
-// the stretch since the last (repeated hand-work, slow turns, self-started work, ignored output,
-// what's open and what surprised it) and decides: leads worth keeping, each acted on once (a task)
-// or asked about once (a "Find out" question, an action item in its space); standing rules that
-// stop ignored output; senses that disagree and blind spots, as surprises; and when to look again,
-// from 15 minutes to 3 hours. A look with nothing new
-// since the last costs no model call, and the user stepping away brings one sooner. Once a day,
-// upkeep: gates scored, core fields rebuilt.
+// the stretch since the last (slow turns, self-started work, ignored output, what's open and what
+// surprised it) and the day's measures, counted by code (measures.ts: repeated hand-work, slow and
+// failing tools, the core's stalls and extensions' trouble, cost, corrections and repeats), and
+// decides: leads worth keeping, each acted on once (a task) or asked about once (a "Find out"
+// question, an action item in its space); standing rules that stop ignored output; lessons tied to
+// the call they're about, from its mistakes (a call failed or sent back) and the user's go-aheads
+// (asked once, after the same kind of approval passes unchanged again and again), so recall puts
+// them in front of the next such call (hooks.ts); senses that disagree and blind spots, as
+// surprises; and when to look again, from 15 minutes to 3 hours. A look with nothing new since the
+// last costs no model call, and the user stepping away brings one sooner. Once a day, upkeep: gates
+// scored, core fields rebuilt.
 import type { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import type { SpaceId } from "@switch/brain"
@@ -26,7 +30,7 @@ import { Effect, Schema } from "effect"
 import { openExpectations } from "./expect.ts"
 import { gate, gateStats, scoreGates } from "./gate.ts"
 import { items, OpenItem } from "./items.ts"
-import { field, jsonOf, list, text } from "./json.ts"
+import { field, jsonOf, list, strings, text } from "./json.ts"
 import { getLead, heldLeads, LEAD_KINDS, LeadNoted, leadsConfig, LeadTaken } from "./leads.ts"
 import type { Lead } from "./leads.ts"
 import { remember } from "./memory.ts"
@@ -94,14 +98,20 @@ const events = (db: Database, type: string, since: number) =>
     .all(type, since)
     .map((r) => ({ time: r.time, p: parse(r.payload) }))
 
-/** The kind of hand-work a tool call is: the tool, and for a shell the command's first words. */
+/**
+ * The kind of hand-work a tool call is: the tool, for a shell the command's first words, and for
+ * the gateway's `call_tool` the extension's tool it calls.
+ */
 const kindOf = (name: string, input: unknown) => {
   if (name === "Bash") {
     const cmd = text(field(input, "command")).replace(/^cd [^&;]+(?:&&|;)\s*/u, "")
     return `Bash: ${cmd.split(/\s+/u).slice(0, 2).join(" ")}`
   }
-  return name
+  return name === "mcp__apps__call_tool" ? text(field(input, "name")) : name
 }
+
+/** The same kind of approval passed unchanged this often in a month: worth asking about once. */
+const APPROVED_SAME = 3
 
 /** What the day looked like, for the model. */
 const gather = (db: Database, since: number, sinceTime: number) => {
@@ -111,21 +121,7 @@ const gather = (db: Database, since: number, sinceTime: number) => {
       .all()
       .map((r) => [r.thread, r.title]),
   )
-  const kinds = new Map<string, { n: number; examples: string[] }>()
-  for (const { p } of events(db, "turn.tool", since)) {
-    const k = kindOf(text(field(p, "name")), field(p, "input"))
-    const entry = kinds.get(k) ?? { n: 0, examples: [] }
-    entry.n += 1
-    if (entry.examples.length < 3) {
-      entry.examples.push(clip(JSON.stringify(field(p, "input")), 160))
-    }
-    kinds.set(k, entry)
-  }
-  const repeated = [...kinds]
-    .filter(([, v]) => v.n >= 3)
-    .toSorted((a, b) => b[1].n - a[1].n)
-    .slice(0, 25)
-    .map(([k, v]) => `- ${k} ×${v.n}: ${v.examples.join(" | ")}`)
+  const calls = events(db, "turn.tool", since)
   const started = new Map(
     events(db, "turn.started", since).map(({ p }) => [
       text(field(p, "turn")),
@@ -150,7 +146,57 @@ const gather = (db: Database, since: number, sinceTime: number) => {
     .map(
       (e) => `- ${threads.get(e.thread) ?? e.thread}: ${Math.round(e.ms / 1000)} s, ${usd(e.cost)}`,
     )
-  const all = items(db).filter((i) => i.openedAt > sinceTime || i.status === "open")
+  // Calls that failed or were sent back, by kind: where a mistake tied to a tool shows.
+  const byId = new Map(calls.map(({ p }) => [text(field(p, "id")), p]))
+  const failures = new Map<string, { n: number; examples: string[] }>()
+  for (const { p } of events(db, "turn.result", since)) {
+    const call = byId.get(text(field(p, "id")))
+    if (field(p, "error") !== true || call === undefined) {
+      continue
+    }
+    const k = kindOf(text(field(call, "name")), field(call, "input"))
+    const entry = failures.get(k) ?? { n: 0, examples: [] }
+    entry.n += 1
+    if (entry.examples.length < 2) {
+      entry.examples.push(
+        `${clip(JSON.stringify(field(call, "input")), 120)} → ${clip(text(field(p, "output")), 160)}`,
+      )
+    }
+    failures.set(k, entry)
+  }
+  const failed = [...failures]
+    .toSorted((a, b) => b[1].n - a[1].n)
+    .slice(0, 12)
+    .map(([k, v]) => `- ${k} ×${v.n}: ${v.examples.join(" | ")}`)
+  const every = items(db)
+  const all = every.filter((i) => i.openedAt > sinceTime || i.status === "open")
+  // The same kind of approval the user let through as drafted, again and again.
+  const approvals = new Map<string, { n: number; space: SpaceId }>()
+  for (const i of every) {
+    if (
+      i.kind === "approval" &&
+      i.answer?.approved === true &&
+      (i.answer.edited ?? []).length === 0 &&
+      i.send !== undefined &&
+      (i.closedAt ?? 0) > Date.now() - 30 * DAY
+    ) {
+      const k = `${i.send.app}_${i.send.tool}`
+      approvals.set(k, { n: (approvals.get(k)?.n ?? 0) + 1, space: i.space })
+    }
+  }
+  const approved = [...approvals]
+    .filter(([, v]) => v.n >= APPROVED_SAME)
+    .map(([k, v]) => `- ${k} ×${v.n} (last in ${v.space})`)
+  // What the user said to reflection's own questions.
+  const answers = every
+    .filter(
+      (i) =>
+        i.id.startsWith("find-out-") && i.status === "answered" && (i.closedAt ?? 0) > sinceTime,
+    )
+    .map(
+      (i) =>
+        `- ${i.title} (${i.space}): ${clip([i.answer?.choice, i.answer?.text].filter(Boolean).join(": "), 300)}`,
+    )
   const dismissed = all
     .filter((i) => i.status === "dismissed")
     .map((i) => `- ${i.title} (${i.space})`)
@@ -183,30 +229,50 @@ const gather = (db: Database, since: number, sinceTime: number) => {
     (g) =>
       `- ${g.exit}: ${g.decisions} decisions, ${g.bounced} bounced, scored ${g.used} used / ${g.noise} noise`,
   )
-  return { repeated, self, threads, slow, dismissed, stale, wakes, user, active, gates, spaces }
+  return {
+    failed,
+    approved,
+    answers,
+    self,
+    threads,
+    slow,
+    dismissed,
+    stale,
+    wakes,
+    user,
+    active,
+    gates,
+    spaces,
+  }
 }
 
 const SYSTEM = `This is you, Switch, reflecting: every so often, and soon after the user steps away, you look over what happened since your last look and decide whether anything is worth a task now, or a question to the user, and when to look again. It's how you grow on your own instead of only answering. Switch is the user's personal agent; it should do the work and show them only what needs them, less over time. The user's rules and preferences, when given first, say how bold to be: what to start on your own, what to ask, what to leave.
 
+Measures come first, counted by code for the last 24 hours beside the 24 before: hand-work repeated across turns, the slowest and failing tools, the core's stalls and extensions in trouble, cost by space and by day, your messages revised after they were said and the user's words said again. Read each against the day before and against what it costs: a number up sharply, high, or steady and wasteful is a lead; one that's normal for the work isn't. A wait that's slow by design, file editing that is how code gets written, a one-off spike from a single big task are no lead.
+
 Leads are patterns or problems worth remembering even when they aren't worth a task yet, so one that keeps coming up gets acted on in time; not a log. Each is one of:
-- grow: a sense or routine you lack. Look hardest at what keeps being done by hand: the same lookup or site again and again, a chore that recurs, a slow path (hundreds of browser steps where an API or a script would do).
-- fix: something unhealthy: a part offline or quiet, turns failing, a sense reporting something wrong or stale, a routine wasting time, compute or money.
+- grow: a sense or routine you lack. Look hardest at what keeps being done by hand: the same lookup, site or flow again and again across turns, a chore that recurs, a slow path (hundreds of browser steps where an API or a script would do). Its task builds a script or an extension: one coherent, general capability for that repeated work (a site's or a service's whole surface, a check you keep doing), never a category of things, nor a one-off for one case.
+- fix: something unhealthy: a tool slow or failing often, the core's thread stalling, an extension stopped, crashing or quiet, turns failing, a sense reporting something wrong or stale, a routine wasting time, compute or money, claims you had to correct, the user having to ask again. Its task finds the cause and fixes it where it lives.
 - learn: an open question about the user's world whose answer would make you more useful.
-Give same_as with a held lead's id when this stretch shows it again, or when you act on it or ask about it now. A new one gets a name of 2 to 5 words for what would close it. "act": true starts its task now, with "task": a brief another agent can carry out (what to build or fix, where it's used, how to check it works). "ask": one short, specific question for the user instead, saying what you saw and asking the one thing you need, for when what it means is something only they know; never what you could find out yourself. It becomes an action item in "space", the id of the space it bears on, or home. A lead acts or asks, never both, and one already taken (marked) doesn't again. Start or ask only when clearly worth it now; starting nothing is often right.
+Give same_as with a held lead's id when this stretch shows it again, or when you act on it or ask about it now. A new one gets a name of 2 to 5 words for what would close it. "act": true starts its task now, with "task": a brief another agent can carry out (what to build or fix, where it's used, how to check it works). "ask": one short, specific question for the user instead, saying what you saw and asking the one thing you need, for when what it means is something only they know; never what you could find out yourself. It becomes an action item in "space", the id of the space it bears on, or home. A lead acts or asks, never both, and one already taken (marked) doesn't again. Start or ask only when clearly worth it now; starting nothing is often right. The user hears only what needs them: whatever you can build, fix or find out, you do with a task, and never ask them about.
 
 Also:
 - "drops": output that gets ignored (items dismissed, wakes in spaces never answered). Each {"space", "lesson"}: a standing rule that stops it, said generally. Usually none.
+- "lessons": a mistake tied to a tool call that this stretch shows (a call that failed or was sent back, listed, that a lesson would have stopped; most failures are only the work going on, and need none), or a standing go-ahead the user gave in answering your question. Each {"space", "lesson", "tool", "words", "quote"}: the lesson said generally; "tool", the call it's about ("Bash", or an extension's tool as listed); "words", a few lowercase words in that call's input that pick it out; "quote", the user's exact words for a go-ahead. It's put in front of the next such call, before it runs. Usually none.
+- The same kind of approval passed unchanged again and again (listed) is a learn lead whose "ask" is whether it should go ahead without asking from now on, said with what it would let you do; asked once, as every lead is.
 - "surprises": two senses that disagree (kind "disagree"), or something a space needed that no sense gives (kind "blind"): {"name", "kind", "space", "text"}. Usually none.
 - "noticed": what stood out, at most three short lines; where you were passive or slow.
 - "next_minutes": when to look again, 15 to 180, about 60 usual. Sooner when a lot is going on or you just started or asked something; later when it's quiet or your spend is high.
 
 Name patterns, not contents: apps, sites, people and projects, never what anyone wrote.
 
-Answer with JSON only: {"leads": [{"name": "", "kind": "grow|fix|learn", "text": "", "same_as": "", "act": false, "task": "", "ask": "", "space": "home"}], "drops": [], "surprises": [], "noticed": "", "next_minutes": 60}.`
+Answer with JSON only: {"leads": [{"name": "", "kind": "grow|fix|learn", "text": "", "same_as": "", "act": false, "task": "", "ask": "", "space": "home"}], "drops": [], "lessons": [], "surprises": [], "noticed": "", "next_minutes": 60}.`
 
 export interface ReflectConfig {
   /** Starts a self-started task. */
   readonly start: (id: ThreadId, title: string, task: string) => Effect.Effect<void, unknown>
+  /** The day's measures (measures.ts), read off the core's thread. */
+  readonly measured: Effect.Effect<string, unknown>
   /** Dollars per look, core rebuilds included. */
   readonly budgetUsd?: number
 }
@@ -256,10 +322,13 @@ const around = (db: Database) => {
   return { surprises, expected, held, earlier, today }
 }
 
-const promptOf = (day: Day, more: ReturnType<typeof around>) =>
+const promptOf = (day: Day, more: ReturnType<typeof around>, measured: string) =>
   [
     `Looks so far today: ${more.today?.n ?? 0}, ${usd(more.today?.usd ?? 0)}.`,
-    section("Repeated tool calls (kind ×count: examples)", day.repeated),
+    measured,
+    section("Failed or sent-back tool calls (kind ×count: call → result)", day.failed),
+    section("Approved unchanged, last 30 days (kind ×count)", day.approved),
+    section("The user's answers to your questions", day.answers),
     section("Slowest turns", day.slow),
     section(
       "Self-started turns",
@@ -420,7 +489,13 @@ const takeLeads = (config: ReflectConfig, answer: unknown, day: Day, now: number
     return started
   })
 
-/** The rest of the answer: rules that stop ignored output, and surprises. */
+/** A lesson's tie to its call, as a memory's trigger names it: an extension's tool by its words. */
+const tiedTo = (tool: string, words: readonly string[]) =>
+  /^[A-Z]/u.test(tool)
+    ? { tools: [tool], words }
+    : { tools: ["mcp__apps__*"], words: [tool.toLowerCase(), ...words] }
+
+/** The rest of the answer: rules that stop ignored output, lessons tied to calls, and surprises. */
 const keep = (answer: unknown, day: Day) =>
   Effect.gen(function* keeping() {
     const spaces = new Map<string, SpaceId>(day.spaces.map((s) => [s.id, s.id]))
@@ -432,6 +507,26 @@ const keep = (answer: unknown, day: Day) =>
             space: spaces.get(text(field(d, "space"))) ?? HOME,
             lesson,
             why: "Reflection: output that got ignored.",
+          }),
+        )
+      }
+    }
+    for (const l of list(field(answer, "lessons")).slice(0, 3)) {
+      const lesson = text(field(l, "lesson"))
+      const tool = text(field(l, "tool"))
+      const quote = text(field(l, "quote"))
+      if (lesson !== "" && tool !== "") {
+        const tie = tiedTo(
+          tool,
+          strings(field(l, "words")).map((w) => w.toLowerCase()),
+        )
+        yield* Effect.ignore(
+          remember({
+            space: spaces.get(text(field(l, "space"))) ?? HOME,
+            lesson,
+            why: quote === "" ? "Reflection: a mistake in a call." : "The user's go-ahead.",
+            how: `Before a ${tool} call. Trigger: tools ${JSON.stringify(tie.tools)}, words ${JSON.stringify(tie.words)}.`,
+            ...(quote !== "" && { quote }),
           }),
         )
       }
@@ -550,7 +645,9 @@ export const reflect = (config: ReflectConfig) =>
     const sinceTime = previous?.time ?? now - FIRST_MS
     const day = yield* brain.read((db) => gather(db, since, sinceTime))
     const more = yield* brain.read(around)
-    const prompt = promptOf(day, more)
+    // A look goes on without its measures when they can't be read.
+    const measured = yield* Effect.orElseSucceed(config.measured, () => "")
+    const prompt = promptOf(day, more, measured)
     // The user's rules decide how bold a look is: what to start, ask about or leave.
     const preferences = yield* brain.read((db) => rulesAt(db, [HOME], prompt))
     const done = yield* models.complete(

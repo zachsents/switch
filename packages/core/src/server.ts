@@ -78,7 +78,15 @@ import { authLayer, authRoutes, layerMove } from "./auth.ts"
 import { Accounts } from "./account-service.ts"
 import { accountsRoute } from "./account-routes.ts"
 import { accountsApp } from "./accounts.ts"
-import { appAsks, asksWorker, draftsRoute, outboundGuard, sealedRoute } from "./asks.ts"
+import {
+  appAsks,
+  asksConfig,
+  asksWorker,
+  draftsRoute,
+  outboundGuard,
+  outboundSent,
+  sealedRoute,
+} from "./asks.ts"
 import { blobsRoute } from "./blobs.ts"
 import { queryRoute } from "./query.ts"
 import { chatLayer, triageLayer } from "./chat.ts"
@@ -120,6 +128,8 @@ import { systemConfig } from "./system.ts"
 import { clientView, openLine, openLines, viewConfig } from "./view.ts"
 import { web } from "./web.ts"
 import { backupRoute, backupWorker } from "./backup.ts"
+import { measured } from "./measure.ts"
+import { stallsConfig, stallsWatch } from "./stalls.ts"
 
 /** Everything the core's brain knows, for any process that opens the same file. */
 export const brainParts: readonly {
@@ -149,12 +159,14 @@ export const brainParts: readonly {
   reportsConfig,
   systemConfig,
   extensionRunsConfig,
+  stallsConfig,
   extensionFailingConfig,
   findConfig,
   profilesConfig,
   pagesConfig,
   scriptsConfig,
   notifyConfig,
+  asksConfig,
 ]
 
 const layerBrain = Layer.unwrap(
@@ -317,6 +329,7 @@ const layerGateway = Layer.unwrap(
       // Every call that speaks for the user, an agent's or an extension's, through the outbound
       // gate.
       guard: yield* outboundGuard,
+      sent: yield* outboundSent,
       connections: yield* extensionConnections,
       spaceOf: async (thread) =>
         await Effect.runPromise(brain.read((db) => placeOf(db, thread).space)),
@@ -508,7 +521,8 @@ const pauseRoute = Layer.unwrap(
   ),
 )
 
-// Claude Code's hooks: triggered memories before a tool call, the reply gate before a stop.
+// Claude Code's hooks: triggered memories before a tool call, a call that changes something held once
+// for them; the reply gate before a stop.
 const hooksRoute = Layer.unwrap(
   Effect.gen(function* hooking() {
     const fetch = yield* hooks(spaceOf)
@@ -602,7 +616,7 @@ const layerWorkers = Layer.unwrap(
             layerIphonePushes,
             asksWorker,
             appAsks,
-            autonomyWorkers(autonomy),
+            autonomyWorkers({ ...autonomy, measured: measured(c.brain) }),
             layerNotify,
             layerMove,
             migrations,
@@ -634,6 +648,7 @@ export const layerServer = (
     layerBrainApp,
     layerScriptsApp,
     layerWorkers,
+    stallsWatch,
     layerPagesListener,
     LateSessions.fill,
   ).pipe(

@@ -3,7 +3,8 @@
 // refused call sent again with `bypass`, a line on why the check is wrong this time, goes through,
 // and each bypass is recorded, so which checks get bypassed, and how often, can be read. Two never
 // go through: a secret in a memory (a secret's value is never kept), and a call in the user's name,
-// whose bypass becomes an approval card for them with the check's objection on it (core asks.ts).
+// whose bypass becomes an approval card for them past what only they can settle, and otherwise goes
+// back to the agent to fix (autonomy gate.ts, core asks.ts).
 // A bypass answers a refusal that happened: one given before anything refused it is refused itself,
 // and that refusal is the one a bypass sent next answers. The user, Nov 23, on a reply the agent
 // sent with `bypass` already set, so the reply check's objections were never raised: "A bypass must

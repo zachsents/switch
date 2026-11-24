@@ -1,7 +1,7 @@
 export { brainApp } from "./brain.ts"
 export { extensionFailingConfig } from "./failing.ts"
 export { agentRoute, Gateway, inProcess, SPEAKS, stdio, widgetRoute } from "./gateway.ts"
-export type { Guard, Listed, Outbound, Plug, ExtensionConnections } from "./gateway.ts"
+export type { Guard, Listed, Outbound, Plug, ExtensionConnections, Sent } from "./gateway.ts"
 export { Activity, makeIphone } from "./iphone/app.ts"
 export type { IphoneOptions, Note } from "./iphone/app.ts"
 export { inboxApp } from "./inbox/app.ts"

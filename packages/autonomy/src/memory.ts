@@ -542,7 +542,7 @@ const WRITER = `You keep the long-term memory of Switch, the user's personal age
 
 The body: the lesson in a sentence or two, then a line "**Why:** ..." (why it holds, with who said it and when if known), then "**How to apply:** ..." (when and how to use it). Concise. The user's own words, when given, are kept with it as they are: never rewrite or paraphrase them, only write the lesson they teach.
 "from_user": true when it's a rule, preference or fact the user stated, false when it's the agent's own lesson.
-A trigger, only for a memory tied to an action (before deploying, before sending an email, before a purchase): the tool names it applies to (a trailing * matches any suffix; "Bash", "mcp__apps__*") and a few lowercase words, any of which in the call's input fires it.
+A trigger, only for a memory tied to an action (before deploying, before sending an email, before a purchase): the tool names it applies to (a trailing * matches any suffix; "Bash", "mcp__apps__*") and a few lowercase words, any of which in the call's input fires it. An extension's tool is "mcp__apps__*" with its name (app_tool) among the words. A lesson from a mistake in a call (the user corrected what it did, or it failed) and a go-ahead for a kind of call always get one, on that call: it's put in front of the next such call, before it runs. Words narrow it to that call; a trigger that fires on calls it doesn't bear on gets in the way.
 
 Answer with JSON only: {"keep": true, "id": "kebab-case-name", "description": "one line, under 150 characters", "type": "user|feedback|project|reference", "scope": "global or a space id", "body": "...", "replaces": ["ids"], "trigger": {"tools": [], "words": []} or null, "from_user": false}, or {"keep": false, "why": "..."}.`
 

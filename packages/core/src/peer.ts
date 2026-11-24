@@ -104,10 +104,10 @@ const Posting = Schema.Struct({
 })
 const Reading = Schema.Struct({ space: Schema.String, limit: Schema.optionalKey(Schema.Number) })
 
-/** A space by its id or its name, else null. */
+/** A space by its id or its name, else null; an archived one is gone, as `spaces` lists them. */
 const spaceNamed = (db: Database, given: string) => {
   const want = given.trim()
-  const spaces = allSpaces(db)
+  const spaces = allSpaces(db).filter((s) => !s.archived)
   return (
     spaces.find((s) => s.id === want) ??
     spaces.find((s) => s.name.toLowerCase() === want.toLowerCase()) ??
