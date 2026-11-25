@@ -202,11 +202,28 @@ class Account:
         return http(method, f"{API}/{path}", self.token(), body, params)
 
 
-accounts = {a: Account(a) for a in sorted(google.stored())}
-"""Connected accounts by address: every one with a refresh token here."""
+accounts = {}
+"""Connected accounts by address: every Google connection holding drive.file, read again by load_accounts."""
+
+
+def load_accounts():
+    """Takes up every connected account not known yet. The connections can't be read until the server's handshake is
+    done, which is after import, and a consent the core finishes never comes through finish here: so this reads them
+    again in the loop and whenever an account asked for (or any) is missing."""
+    found = google.stored()
+    with lock:
+        for a in sorted(found):
+            accounts.setdefault(a, Account(a))
+
+
+def known(address):
+    a = address.strip().lower()
+    return any(a in (acct.address.lower(), acct.key) for acct in list(accounts.values()))
 
 
 def find_account(address=None):
+    if not (known(address) if address else accounts):
+        load_accounts()
     with lock:
         if address:
             a = address.strip().lower()
@@ -298,6 +315,7 @@ def heartbeat():
 
 def loop():
     while True:
+        load_accounts()
         for acct in list(accounts.values()):
             check(acct)
         heartbeat()
@@ -735,6 +753,7 @@ def files(account=None, limit=25, query=None):
 
 
 def list_accounts():
+    load_accounts()
     out = []
     for acct in accounts.values():
         check(acct)
