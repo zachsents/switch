@@ -16,13 +16,32 @@ export const SOCKET = path.join(HOME, "chrome.sock")
 export const EXTENSION = path.join(HOME, "extension")
 const HOST = "ax.switch.browser"
 const SOURCE = path.join(import.meta.dir, "..", "extension")
-const FILES = ["manifest.json", "background.js", "hands.js"] as const
-const EXTENSION_ID = readFileSync(path.join(SOURCE, "ID"), "utf-8").trim()
+const FILES = [
+  "manifest.json",
+  "background.js",
+  "hands.js",
+  "icons/icon16.png",
+  "icons/icon32.png",
+  "icons/icon48.png",
+  "icons/icon128.png",
+] as const
 
 export type Json = Record<string, unknown>
 export const isJson = (v: unknown): v is Json =>
   typeof v === "object" && v !== null && !Array.isArray(v)
 const str = (v: unknown) => (typeof v === "string" ? v : "")
+
+/**
+ * The extension's ids: loaded unpacked from the files here (its manifest's key fixes it), and the
+ * one the Chrome Web Store gave its listing. The relay answers either.
+ */
+const IDS = (() => {
+  const ids: unknown = JSON.parse(readFileSync(path.join(SOURCE, "ids.json"), "utf-8"))
+  const read = (key: string) => (isJson(ids) ? str(ids[key]) : "")
+  return { unpacked: read("unpacked"), store: read("store") }
+})()
+/** The extension's page in the Chrome Web Store, once it's listed there. */
+export const STORE_URL = IDS.store ? `https://chromewebstore.google.com/detail/${IDS.store}` : null
 
 /** A browser the extension can run in: its app's name, bundle id and user data folder. */
 interface Chromium {
@@ -54,12 +73,18 @@ const installed = () =>
     ),
   )
 
-/** The extension's files, stamped with a hash of them as `version_name`. */
+/** The extension's files, the manifest stamped with a hash of them all as `version_name`. */
 const files = () => {
-  const read = FILES.map((name) => readFileSync(path.join(SOURCE, name), "utf-8"))
-  const version = createHash("sha256").update(read.join("\0")).digest("hex").slice(0, 16)
-  const [manifest = "", ...rest] = read
-  const stamped = manifest.replace("{", `{\n  "version_name": "${version}",`)
+  const read = FILES.map((name) => readFileSync(path.join(SOURCE, name)))
+  const hash = createHash("sha256")
+  for (const file of read) {
+    hash.update(file).update("\0")
+  }
+  const version = hash.digest("hex").slice(0, 16)
+  const [manifest = Buffer.alloc(0), ...rest] = read
+  const stamped = Buffer.from(
+    manifest.toString("utf-8").replace("{", `{\n  "version_name": "${version}",`),
+  )
   return { version, contents: [stamped, ...rest] }
 }
 
@@ -71,12 +96,12 @@ const { version, contents } = files()
  * than these files reloads itself once it says hello. Returns the browsers it registered with.
  */
 export const install = () => {
-  mkdirSync(EXTENSION, { recursive: true })
   for (const [i, name] of FILES.entries()) {
     const file = path.join(EXTENSION, name)
-    const text = contents[i] ?? ""
-    if (!existsSync(file) || readFileSync(file, "utf-8") !== text) {
-      writeFileSync(file, text)
+    const bytes = contents[i] ?? Buffer.alloc(0)
+    mkdirSync(path.dirname(file), { recursive: true })
+    if (!existsSync(file) || !readFileSync(file).equals(bytes)) {
+      writeFileSync(file, bytes)
     }
   }
   const relay = path.join(HOME, "relay")
@@ -90,7 +115,9 @@ export const install = () => {
     description: "Switch's browser extension",
     path: relay,
     type: "stdio",
-    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
+    allowed_origins: [IDS.unpacked, IDS.store]
+      .filter((id) => id !== "")
+      .map((id) => `chrome-extension://${id}/`),
   }
   const browsers = installed()
   for (const b of browsers) {
@@ -190,8 +217,9 @@ const heard = (link: Link, message: Json) => {
     if (link.browser !== null) {
       keepHost(link.browser.bundle)
     }
-    // An extension older than the files just written reloads itself from them.
-    if (message.version !== version) {
+    // An extension loaded unpacked, older than the files just written, reloads itself from them; one
+    // from the Chrome Web Store updates from the store.
+    if (message.store !== true && message.version !== version) {
       send(link, { type: "reload" })
     }
     const woken = hello
@@ -404,9 +432,14 @@ export const reach = async () => {
   if (hasHands()) {
     return
   }
+  if (connected()) {
+    throw new Error(
+      "The Switch extension is connected but hasn't said hello: reload it in chrome://extensions",
+    )
+  }
   throw new Error(
-    connected()
-      ? "The Switch extension is connected but hasn't said hello: reload it in chrome://extensions"
-      : `The Switch extension isn't loaded in ${first.name}: in chrome://extensions, Developer mode on, Load unpacked, ${EXTENSION}`,
+    STORE_URL === null
+      ? `The Switch extension isn't loaded in ${first.name}: in chrome://extensions, Developer mode on, Load unpacked, ${EXTENSION}`
+      : `The Switch extension isn't installed in ${first.name}: add it from the Chrome Web Store, ${STORE_URL}`,
   )
 }
