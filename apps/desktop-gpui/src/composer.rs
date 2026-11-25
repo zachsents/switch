@@ -599,7 +599,3 @@ impl Render for ComposerView {
         crate::boundary::guard("composer", window, cx, |window, cx| self.body(window, cx))
     }
 }
-
-pub fn bindings() -> Vec<gpui::KeyBinding> {
-    vec![gpui::KeyBinding::new("escape", crate::commands::Escape, Some("Composer"))]
-}

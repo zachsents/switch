@@ -46,14 +46,16 @@ struct Shown {
     trail: Vec<String>,
 }
 
-static SHOWN: LazyLock<Mutex<Shown>> = LazyLock::new(Default::default);
-static PENDING: LazyLock<Mutex<Vec<Report>>> = LazyLock::new(|| Mutex::new(load()));
-static SENT_AT: LazyLock<Mutex<std::collections::HashMap<String, f64>>> = LazyLock::new(Default::default);
+base::kept! {
+    static SHOWN: Mutex<Shown> = Mutex::default();
+    static PENDING: Mutex<Vec<Report>> = Mutex::new(load());
+    static SENT_AT: Mutex<std::collections::HashMap<String, f64>> = Mutex::default();
+    static LAST_BEAT: AtomicU64 = AtomicU64::new(0);
+    static HUNG_SINCE: AtomicU64 = AtomicU64::new(0);
+    static FOCUSED: AtomicBool = AtomicBool::new(true);
+    static VISIBLE: AtomicBool = AtomicBool::new(true);
+}
 static DEVICE: LazyLock<String> = LazyLock::new(crate::auth::machine_name);
-static LAST_BEAT: AtomicU64 = AtomicU64::new(0);
-static HUNG_SINCE: AtomicU64 = AtomicU64::new(0);
-static FOCUSED: AtomicBool = AtomicBool::new(true);
-static VISIBLE: AtomicBool = AtomicBool::new(true);
 
 /// Where reports wait: this app's own (the Electrobun app's `~/.switch/desktop-reports.json` is
 /// its own), and a quiet copy's apart from it, never sent.
@@ -83,8 +85,10 @@ fn add(kind: &str, at: f64, summary: String, screen: String, trail: Vec<String>,
     id
 }
 
-/// A section's panic (boundary.rs) not yet known to have left gpui whole: its report's id.
-static UNSURE: Mutex<Option<String>> = Mutex::new(None);
+base::kept! {
+    /// A section's panic (boundary.rs) not yet known to have left gpui whole: its report's id.
+    static UNSURE: Mutex<Option<String>> = Mutex::new(None);
+}
 
 /// The section's panic left gpui whole: it stays an error.
 pub fn section_whole() {
@@ -173,9 +177,11 @@ fn shown(cx: &App) {
     }
 }
 
-/// This launch's word of which build runs here (`client.reported`), once it's in.
-static REPORTED: AtomicBool = AtomicBool::new(false);
-static LAUNCH: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+base::kept! {
+    /// This launch's word of which build runs here (`client.reported`), once it's in.
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    static LAUNCH: String = uuid::Uuid::new_v4().to_string();
+}
 
 /// Which build runs on this machine, for the brain: the published app's only (a build without a
 /// feed is the dev channel, never this machine's app), again until it's in.
@@ -236,7 +242,7 @@ fn flush(cx: &mut App) {
 /// another thread while the app goes on, an error, until a section's turns out to have left gpui
 /// mid-update.
 pub fn hook() {
-    LazyLock::force(&PENDING);
+    let _ = &*PENDING;
     // The device's name now, not while panicking.
     std::thread::spawn(|| LazyLock::force(&DEVICE));
     let before = std::panic::take_hook();

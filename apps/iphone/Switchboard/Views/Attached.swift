@@ -57,12 +57,53 @@ func fitted(_ size: CGSize) -> CGSize {
   return w >= h ? CGSize(width: mediaSide, height: mediaSide * h / w) : CGSize(width: mediaSide * w / h, height: mediaSide)
 }
 
-/// Pictures drawn once per blob and size.
-nonisolated(unsafe) private let drawn = NSCache<NSString, UIImage>()
+/// Pictures drawn once per blob and screen scale, and videos' first frames and shapes, so one drawn
+/// again (a message once it's in, in place of its bubble while it was sent) shows at once.
+enum Drawn {
+  nonisolated(unsafe) fileprivate static let pictures = NSCache<NSString, UIImage>()
+  nonisolated(unsafe) fileprivate static let frames = NSCache<NSString, Frame>()
+
+  final class Frame {
+    let still: UIImage
+    let size: CGSize
+    init(still: UIImage, size: CGSize) {
+      self.still = still
+      self.size = size
+    }
+  }
+
+  /// What an attachment is drawn under: its blob, or its bytes here while it's being sent.
+  static func key(_ a: Attachment) -> String { a.local?.path ?? a.blob }
+
+  static func picture(_ key: String, _ scale: CGFloat) -> UIImage? { pictures.object(forKey: "\(key) \(scale)" as NSString) }
+
+  static func frame(_ key: String) -> Frame? { frames.object(forKey: key as NSString) }
+
+  /// What was drawn under `from` (a file being sent) is what `blob` draws, now that it's up.
+  static func same(_ from: String, as blob: String) {
+    for scale in [1.0, 2.0, 3.0] {
+      if let p = picture(from, scale) { pictures.setObject(p, forKey: "\(blob) \(scale)" as NSString) }
+    }
+    if let f = frame(from) { frames.setObject(f, forKey: blob as NSString) }
+  }
+
+  /// A picture file drawn now under `key`, at this screen's scale, for a message to show at once.
+  static func warm(_ file: URL, as key: String) async {
+    let scale = UITraitCollection.current.displayScale
+    guard picture(key, scale) == nil, let made = await shrunk(file, to: mediaSide * scale) else { return }
+    pictures.setObject(made, forKey: "\(key) \(scale)" as NSString)
+  }
+
+  @concurrent nonisolated fileprivate static func shrunk(_ file: URL, to side: CGFloat) async -> UIImage? {
+    Files.shrunk(file, to: side)
+  }
+}
 
 /// A picture by URL (a blob, or a reply's image), drawn small enough for chat.
 struct RemoteImage: View {
   let url: URL?
+  /// What it's kept under once drawn, when not its URL: an attachment's blob.
+  var key: String? = nil
   /// Drawn at this height and its own width (a gallery's), not fitted in a square.
   var height: CGFloat? = nil
   /// Without the rule round it: edge to edge in a widget's cell.
@@ -72,11 +113,13 @@ struct RemoteImage: View {
   @Environment(\.displayScale) private var scale
 
   var body: some View {
+    // Drawn before under its key (its bubble while it was sent): at once, not after a load.
+    let shown = image ?? Drawn.picture(key ?? url?.absoluteString ?? "", scale)
     Group {
-      if let image, let height {
+      if let image = shown, let height {
         let wide = min(height * image.size.width / max(image.size.height, 1), mediaSide * 1.6)
         Image(uiImage: image).resizable().scaledToFill().frame(width: wide, height: height).clipped().framed(!bare)
-      } else if let image {
+      } else if let image = shown {
         let size = fitted(image.size)
         Image(uiImage: image).resizable().scaledToFit().frame(width: size.width, height: size.height).framed()
       } else {
@@ -93,8 +136,18 @@ struct RemoteImage: View {
         failed = true
         return
       }
-      let key = "\(url.absoluteString) \(scale)" as NSString
-      if let made = drawn.object(forKey: key) {
+      let key = "\(key ?? url.absoluteString) \(scale)" as NSString
+      if let made = Drawn.pictures.object(forKey: key) {
+        image = made
+        return
+      }
+      // One sent from here is read from its bytes on this phone.
+      if url.isFileURL {
+        guard let made = await Drawn.shrunk(url, to: mediaSide * scale) else {
+          failed = true
+          return
+        }
+        Drawn.pictures.setObject(made, forKey: key)
         image = made
         return
       }
@@ -104,7 +157,7 @@ struct RemoteImage: View {
         failed = true
         return
       }
-      drawn.setObject(made, forKey: key)
+      Drawn.pictures.setObject(made, forKey: key)
       image = made
     }
   }
@@ -178,7 +231,7 @@ struct Gallery: View {
         } else {
           Group {
             if let a = p.attachment {
-              RemoteImage(url: Blobs.url(a), height: high, bare: cell).modifier(Opens(attachment: a, taps: false))
+              RemoteImage(url: Blobs.source(a), key: Drawn.key(a), height: high, bare: cell).modifier(Opens(attachment: a, taps: false))
             } else {
               ReplyImage(alt: p.alt, link: p.link, height: high, bare: cell, taps: false)
             }
@@ -215,7 +268,7 @@ struct Gallery: View {
 
 struct BlobImage: View {
   let attachment: Attachment
-  var body: some View { RemoteImage(url: Blobs.url(attachment)) }
+  var body: some View { RemoteImage(url: Blobs.source(attachment), key: Drawn.key(attachment)) }
 }
 
 /// A video in a gallery, at its height and its own shape: its first frame under a play mark until a tap, then
@@ -231,7 +284,11 @@ struct VideoTile: View {
   @State private var size = CGSize(width: 9, height: 16)
 
   var body: some View {
-    let wide = min(height * size.width / max(size.height, 1), mediaSide * 1.6)
+    // Drawn before (its bubble while it was sent): its shape and first frame at once.
+    let kept = still == nil ? Drawn.frame(Drawn.key(attachment)) : nil
+    let shape = kept?.size ?? size
+    let first = still ?? kept?.still
+    let wide = min(height * shape.width / max(shape.height, 1), mediaSide * 1.6)
     Group {
       if let player {
         VideoPlayer(player: player)
@@ -239,7 +296,7 @@ struct VideoTile: View {
         Button(action: play) {
           ZStack {
             Color.black
-            if let still { Image(uiImage: still).resizable().scaledToFit() }
+            if let first { Image(uiImage: first).resizable().scaledToFit() }
             Image(systemName: "play.fill").font(.system(size: 22)).foregroundStyle(.white)
               .frame(width: 52, height: 52).background(.black.opacity(0.5), in: Circle())
           }
@@ -252,7 +309,7 @@ struct VideoTile: View {
     .frame(width: wide, height: height)
     .framed(!bare)
     .task(id: attachment) {
-      guard let url = Blobs.url(attachment) else { return }
+      guard Drawn.frame(Drawn.key(attachment)) == nil, let url = Blobs.source(attachment) else { return }
       let asset = AVURLAsset(url: url)
       if let track = try? await asset.loadTracks(withMediaType: .video).first,
         let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform)
@@ -263,7 +320,11 @@ struct VideoTile: View {
       let frames = AVAssetImageGenerator(asset: asset)
       frames.appliesPreferredTrackTransform = true
       frames.maximumSize = CGSize(width: height * 3, height: height * 3)
-      if let first = try? await frames.image(at: .zero).image { still = UIImage(cgImage: first) }
+      if let first = try? await frames.image(at: .zero).image {
+        let made = UIImage(cgImage: first)
+        still = made
+        Drawn.frames.setObject(Drawn.Frame(still: made, size: size), forKey: Drawn.key(attachment) as NSString)
+      }
     }
     .onReceive(NotificationCenter.default.publisher(for: AVPlayer.rateDidChangeNotification)) { note in
       guard let other = note.object as? AVPlayer, other !== player, other.rate > 0 else { return }
@@ -273,7 +334,7 @@ struct VideoTile: View {
   }
 
   private func play() {
-    guard let url = Blobs.url(attachment) else { return }
+    guard let url = Blobs.source(attachment) else { return }
     try? AVAudioSession.sharedInstance().setCategory(.playback)
     let made = AVPlayer(url: url)
     player = made
@@ -307,7 +368,7 @@ struct BlobAudio: View {
     .background(SIS.paper)
     .framed()
     .task(id: attachment) {
-      guard let url = Blobs.url(attachment) else { return }
+      guard let url = Blobs.source(attachment) else { return }
       let asset = AVURLAsset(url: url)
       if let d = try? await asset.load(.duration), d.seconds.isFinite { length = d.seconds }
     }
@@ -323,7 +384,7 @@ struct BlobAudio: View {
   }
 
   private func toggle() {
-    if player == nil, let url = Blobs.url(attachment) {
+    if player == nil, let url = Blobs.source(attachment) {
       try? AVAudioSession.sharedInstance().setCategory(.playback)
       player = AVPlayer(url: url)
     }
@@ -369,8 +430,9 @@ struct Opens: ViewModifier {
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: SIS.radius))
         .onTapGesture { if taps { fetch { preview = $0 } } }
         .contextMenu {
-          Button("Quick Look", systemImage: "eye") { fetch { preview = $0 } }
+          Button("Copy", systemImage: "doc.on.doc") { fetch { Blobs.copy($0) } }
           Button("Share", systemImage: "square.and.arrow.up") { fetch { shared = Shared(url: $0) } }
+          Button("Quick Look", systemImage: "eye") { fetch { preview = $0 } }
         }
       if let failure {
         HStack(spacing: 6) {

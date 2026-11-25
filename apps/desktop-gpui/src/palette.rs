@@ -1,6 +1,7 @@
 //! ⌘K (the desktop's `ui/palette.tsx` and `palette-choices.tsx`), as old Switchboard's search did:
 //! spaces (archived ones too, once looked for), what was said or kept that holds the words (the
-//! brain's find), and a new space by that name. ↑ ↓ move, Enter chooses, Tab on a space opens the
+//! brain's find), every command by its name with its keys, and a new space by that name, matched
+//! loosely (nucleo's fuzzy matcher, best first). ↑ ↓ move, Enter chooses, Tab on a space opens the
 //! composer aimed at it, Esc closes. A new space is shown at once; if the brain says no, the
 //! palette stays open with its reason.
 
@@ -50,6 +51,7 @@ enum Icon {
     Ring(String),
     Hand,
     New,
+    None,
 }
 
 #[derive(Clone)]
@@ -58,6 +60,8 @@ enum Go {
     Memory,
     /// A new space: its id, name and parent.
     Make(String, String, Option<String>),
+    /// A command, run as its keys would.
+    Run(crate::commands::Command),
 }
 
 #[derive(Clone)]
@@ -70,9 +74,33 @@ struct Choice {
     go: Go,
     /// Found by the brain in what was said or kept: shown whatever the words.
     found: bool,
+    /// A command's keys, at the row's end.
+    keys: String,
 }
 
-fn groups(b: &Brain, here: &str, query: &str, hits: &[Found], made: &str) -> Vec<(&'static str, Vec<Choice>)> {
+/// Every command the palette runs, by its name, with its keys.
+fn commands() -> Vec<Choice> {
+    use crate::commands::{Act, Command, shortcuts, shown_keys};
+    shortcuts()
+        .into_iter()
+        .filter_map(|s| match &s.act {
+            Act::Do(c) if *c != Command::Find => {
+                let section = matches!(c, Command::Settings(k) if k != "general");
+                let label = if section { format!("{} Settings", s.label) } else { s.label.to_string() };
+                Some(Choice { key: format!("c:{label}"), label, also: s.group.to_string(), icon: Icon::None, go: Go::Run(c.clone()), found: false, keys: shown_keys(&s) })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// How well the words match: nucleo's score, none when they don't.
+fn score(pattern: &nucleo_matcher::pattern::Pattern, text: &str, m: &mut nucleo_matcher::Matcher) -> Option<u32> {
+    let mut buf = vec![];
+    pattern.score(nucleo_matcher::Utf32Str::new(text, &mut buf), m)
+}
+
+fn groups(b: &Brain, here: &str, query: &str, hits: &[Found], made: &str, making: bool) -> Vec<(&'static str, Vec<Choice>)> {
     let words = query.trim();
     let space = |id: &str, name: &str| Choice {
         key: format!("s:{id}"),
@@ -81,6 +109,7 @@ fn groups(b: &Brain, here: &str, query: &str, hits: &[Found], made: &str) -> Vec
         icon: Icon::Ring(id.to_string()),
         go: Go::Space(id.to_string(), None),
         found: false,
+        keys: String::new(),
     };
     let mut spaces: Vec<Choice> = warmest(b).into_iter().map(|x| space(&x.id, &x.name)).collect();
     if !words.is_empty() {
@@ -97,28 +126,61 @@ fn groups(b: &Brain, here: &str, query: &str, hits: &[Found], made: &str) -> Vec
             icon: if h.kind == "item" { Icon::Hand } else { Icon::Ring(h.space.clone()) },
             go: if h.kind == "memory" { Go::Memory } else { Go::Space(h.space.clone(), (h.kind == "message").then_some(h.seq)) },
             found: true,
+            keys: String::new(),
         })
         .collect();
-    let make: Vec<Choice> = if words.is_empty() {
+    let make: Vec<Choice> = if words.is_empty() && !making {
         vec![]
     } else {
         vec![Choice {
             key: "c:new".into(),
-            label: format!("New space “{words}”"),
+            label: if words.is_empty() { "New space".into() } else { format!("New space “{words}”") },
             also: words.to_string(),
             icon: Icon::New,
             go: Go::Make(made.to_string(), words.to_string(), (here != HOME).then(|| here.to_string())),
-            found: false,
+            found: true,
+            keys: String::new(),
         }]
     };
-    let q = words.to_lowercase();
-    let q = fold(&q);
-    let keep = |c: &Choice| c.found || q.is_empty() || fold(&format!("{} {}", c.label, c.also)).contains(&q);
-    [("Spaces", spaces), ("Found", found), ("New", make)]
+    if making {
+        return vec![("New", make)];
+    }
+    let q = fold(words);
+    let pattern = nucleo_matcher::pattern::Pattern::new(&q, nucleo_matcher::pattern::CaseMatching::Ignore, nucleo_matcher::pattern::Normalization::Smart, nucleo_matcher::pattern::AtomKind::Fuzzy);
+    let mut m = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+    // How well each matches: by its name, else by where it is too; what was found shows whatever
+    // the words.
+    let mut rate = |items: Vec<Choice>| -> Vec<(u32, Choice)> {
+        items
+            .into_iter()
+            .filter_map(|c| {
+                if q.is_empty() || c.found {
+                    return Some((0, c));
+                }
+                let by_name = score(&pattern, &fold(&c.label), &mut m);
+                let by_all = score(&pattern, &fold(&format!("{} {}", c.label, c.also)), &mut m);
+                by_name.or(by_all.map(|s| s / 2)).map(|s| (s, c))
+            })
+            .collect()
+    };
+    let rated = [("Spaces", rate(spaces)), ("Commands", rate(commands())), ("Found", rate(found)), ("New", rate(make))];
+    // Loose matches (letters strewn through a name) go when a close one is there: a match keeps
+    // its place within half the best's score. Each group best first, the group with the best first.
+    let best = rated.iter().flat_map(|(_, r)| r.iter().map(|(s, _)| *s)).max().unwrap_or(0);
+    let mut out: Vec<(u32, &'static str, Vec<Choice>)> = rated
         .into_iter()
-        .map(|(g, items)| (g, items.into_iter().filter(keep).collect::<Vec<_>>()))
-        .filter(|(_, items)| !items.is_empty())
-        .collect()
+        .map(|(g, mut r)| {
+            r.retain(|(s, c)| c.found || s * 2 >= best);
+            r.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+            let top = r.iter().filter(|(_, c)| !c.found).map(|(s, _)| *s).max().unwrap_or(0);
+            (top, g, r.into_iter().map(|(_, c)| c).collect::<Vec<_>>())
+        })
+        .filter(|(_, _, items)| !items.is_empty())
+        .collect();
+    if !q.is_empty() {
+        out.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+    }
+    out.into_iter().map(|(_, g, items)| (g, items)).collect()
 }
 
 /// Words as the find compares them: case and accents set aside (the collator's `base`).
@@ -250,12 +312,16 @@ impl Palette {
     /// Closes it: however it closes (Esc, a choice, ⌘K, a click outside), its words and reason are
     /// cleared as it goes (`body`).
     fn close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        Shell::update(cx, |s| s.finding = false);
+        Shell::update(cx, |s| {
+            s.finding = false;
+            s.making = false;
+        });
     }
 
     fn choices(&self, cx: &App) -> Vec<(&'static str, Vec<Choice>)> {
         let here = crate::commands::here(cx);
-        groups(&model(cx).read(cx).brain, &here, &self.query(cx), if self.query(cx).trim().is_empty() { &[] } else { &self.hits }, &self.made)
+        let making = Shell::entity(cx).read(cx).making;
+        groups(&model(cx).read(cx).brain, &here, &self.query(cx), if self.query(cx).trim().is_empty() || making { &[] } else { &self.hits }, &self.made, making)
     }
 
     fn choose(&mut self, c: Choice, window: &mut Window, cx: &mut Context<Self>) {
@@ -268,6 +334,12 @@ impl Palette {
                 crate::settings::open("memory", cx);
                 self.close(window, cx);
             }
+            Go::Run(c) => {
+                // As its keys would, from where the keyboard was before the palette opened.
+                self.close(window, cx);
+                window.defer(cx, move |window, cx| window.dispatch_action(Box::new(crate::commands::Do(c)), cx));
+            }
+            Go::Make(_, name, _) if name.is_empty() => {}
             Go::Make(id, name, parent) => {
                 Nav::open(Page::Space(id.clone()), cx);
                 let this = cx.entity().downgrade();
@@ -280,7 +352,10 @@ impl Palette {
                         if let Some(p) = this.upgrade() {
                             p.update(cx, |p, cx| {
                                 p.error = None;
-                                Shell::update(cx, |s| s.finding = false);
+                                Shell::update(cx, |s| {
+                                    s.finding = false;
+                                    s.making = false;
+                                });
                                 cx.notify();
                             });
                         }
@@ -351,6 +426,7 @@ fn icon(i: &Icon, b: &Derived, l: &Look) -> AnyElement {
         }
         Icon::Hand => marks::hand(l.z(14.), l).into_any_element(),
         Icon::New => div().size(l.z(18.)).rounded_full().border(l.z(2.3)).border_dashed().border_color(l.ink3).into_any_element(),
+        Icon::None => div().into_any_element(),
     }
 }
 
@@ -406,7 +482,8 @@ impl Palette {
                         }))
                         .on_click(cx.listener(move |this, _, window, cx| this.choose(chosen.clone(), window, cx)))
                         .child(div().flex().w(u(18.)).flex_none().justify_center().child(icon(&c.icon, derived, &l)))
-                        .child(div().min_w_0().truncate().child(SharedString::from(c.label.clone())))
+                        .child(div().flex_1().min_w_0().truncate().child(SharedString::from(c.label.clone())))
+                        .when(!c.keys.is_empty(), |d| d.child(div().flex_none().text_color(l.ink2).child(SharedString::from(c.keys.clone()))))
                         .into_any_element(),
                 );
                 i += 1;

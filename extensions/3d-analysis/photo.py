@@ -950,7 +950,7 @@ def heartbeat():
     """Says how it is."""
     error = state["last_error"]
     app.emit("heartbeat", {"entity": f"sense:{NAME}", "summary": f"Last failed: {error}" if error else "Ready",
-                           "facts": dict(state)})
+                           "facts": dict(state, failing=None)})  # a call that failed went back to its caller
 
 
 KEEP_LISTINGS_S = 30 * 86400

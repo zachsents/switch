@@ -3,6 +3,7 @@
 // event after commit is a reactor with a cursor in the brain (reactors.ts). It's the one way in, so
 // every event's secrets are redacted on it (redact.ts).
 import { Database } from "bun:sqlite"
+import { statSync } from "node:fs"
 import {
   Context,
   Deferred,
@@ -20,6 +21,10 @@ import {
 import { Rejected } from "./defs.ts"
 import { EventId } from "./ids.ts"
 import { dependsOf, EVENTS, runQuery, sourceOf, touches } from "./query.ts"
+import { makeReaders, SLOW_READ_MS, timedRead } from "./readers.ts"
+import type { Readers } from "./readers.ts"
+import { defineRead } from "./reads.ts"
+import type { Read } from "./reads.ts"
 import { redactValue } from "./redact.ts"
 import type { Found, Query, QuerySource } from "./query.ts"
 import type { Check, CommandDef, EventDef, On, Projection, StoredEvent, Upcast } from "./defs.ts"
@@ -38,6 +43,11 @@ export interface BrainConfig {
    * of the core's thread on a busy disk (Nov 24). Without it, SQLite checkpoints as it does.
    */
   readonly checkpoint?: () => void
+  /**
+   * The reader threads its reads run in (readers.ts): `start` makes one, from a module that loads
+   * every read and serves them. Without it (a brain in memory, a tool's), reads run here.
+   */
+  readonly readers?: { readonly start: () => Worker; readonly size: number }
 }
 
 /** `id` is the client's: a retry with the same id is a no-op. */
@@ -74,12 +84,21 @@ export interface BrainShape {
   readonly snapshot: Effect.Effect<Snapshot>
   /** Every event after `seq`: the log first, then live, with no gap and no repeat. */
   readonly changes: (seq: number) => Stream.Stream<StoredEvent>
-  readonly read: <A>(f: (db: Database) => A) => Effect.Effect<A>
+  /** A read by name (reads.ts), in a reader thread when the brain has them. */
+  readonly read: <Args extends readonly unknown[], A>(
+    read: Read<Args, A>,
+    ...args: Args
+  ) => Effect.Effect<A>
   /**
    * `f` changing the database in place, in one transaction between the other writes: a migration
    * made live, a page at a time (redaction's sweep). What it frees is zeroed (`secure_delete`).
    */
   readonly migrate: <A>(f: (db: Database) => A) => Effect.Effect<A>
+  /**
+   * Every commit copied into the file and the WAL emptied, between the other writes: what a
+   * redaction rewrote leaves no old page behind in the log. Waits for readers to move past it.
+   */
+  readonly truncateLog: Effect.Effect<void>
   readonly rebuild: (projection: string) => Effect.Effect<void>
   /** Adds an event type while running, as an app connects. Rejected if it's known at another version. */
   readonly register: (def: EventDef) => Effect.Effect<void, Rejected>
@@ -173,19 +192,92 @@ const open = (path: string, elsewhere: boolean) => {
   return db
 }
 
-/** A read that holds the event loop this long is logged, with where it came from. */
-const SLOW_READ_MS = Number(process.env.SWITCH_SLOW_READ_MS ?? 1000)
-
-const timed = <A>(f: (db: Database) => A, db: Database) => {
-  const t0 = performance.now()
-  const out = f(db)
+/** A write (a command, a batch, a migration) that held this thread past SLOW_READ_MS, logged. */
+const slowWrite = (t0: number, what: string) => {
   const ms = performance.now() - t0
   if (ms >= SLOW_READ_MS) {
-    const what = f.toString().replaceAll(/\s+/gu, " ").slice(0, 160)
-    console.warn(`slow brain read: ${Math.round(ms)} ms: ${what}`)
+    console.warn(`slow brain write: ${Math.round(ms)} ms: ${what}`)
   }
-  return out
 }
+
+/** The WAL's size now; 0 when it has none. */
+const sizeOf = (path: string) => {
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}
+
+/** A slow write's parts: its statements, then its commit (the WAL's write, and the sync of its
+ * header when the WAL starts over), with what the process waited on meanwhile. */
+const slowWriteParts = (
+  at: {
+    readonly t0: number
+    readonly statementsDone: number
+    readonly r0: NodeJS.ResourceUsage
+    readonly wal: string
+  },
+  what: string,
+) => {
+  const ms = performance.now() - at.t0
+  if (ms < SLOW_READ_MS) {
+    return
+  }
+  const r = process.resourceUsage()
+  const statements = Math.max(0, at.statementsDone - at.t0)
+  console.warn(
+    `slow brain write: ${Math.round(ms)} ms: ${what}: statements ${Math.round(statements)} ms, commit ${Math.round(ms - statements)} ms, ${r.majorPageFault - at.r0.majorPageFault} page faults, ${r.fsRead - at.r0.fsRead} reads, ${r.fsWrite - at.r0.fsWrite} writes, ${r.voluntaryContextSwitches - at.r0.voluntaryContextSwitches} waits, WAL ${sizeOf(at.wal)} bytes`,
+  )
+}
+
+/** Projections by name, as every thread that reads them knows them (`knowProjections`). */
+const projectionsKnown = new Map<string, Projection>()
+
+/** The projections a brain's snapshot reads: the core and each reader thread say the same. */
+export const knowProjections = (projections: readonly Projection[]) => {
+  for (const p of projections) {
+    projectionsKnown.set(p.name, p)
+  }
+}
+
+/** The head and every named projection's state, in one read: the state is as of that head. */
+const snapshotRead = defineRead("brain/snapshot", (db, names: readonly string[]) => {
+  const seq =
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+  const state: Record<string, unknown> = {}
+  for (const name of names) {
+    const p = projectionsKnown.get(name)
+    if (p === undefined) {
+      throw new Error(`No projection ${name} known here`)
+    }
+    state[name] = p.snapshot(db)
+  }
+  return { seq, state }
+})
+
+/** A query of the log or a read model; the log's source is this thread's own (`EVENTS`). */
+const queryRead = defineRead(
+  "brain/query",
+  (db, sources: readonly QuerySource[], q: Query, now: number) => {
+    const found = runQuery(
+      db,
+      sources.map((source) => (source.name === EVENTS.name ? EVENTS : source)),
+      q,
+      now,
+    )
+    return found instanceof Rejected ? { rejected: found.reason } : { found }
+  },
+)
+
+/** A page of the log after `cursor` through `through`, as stored. */
+const pageRead = defineRead("brain/page", (db, cursor: number, through: number, size: number) =>
+  db
+    .query<Row, [number, number, number]>(
+      "SELECT * FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
+    )
+    .all(cursor, through, size),
+)
 
 const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
   const db = yield* Effect.acquireRelease(
@@ -251,9 +343,27 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
   const head = () => headQuery.get()?.seq ?? 0
   const findCommand = db.query<{ seq: number }, [string]>("SELECT seq FROM commands WHERE id = ?")
   const insertCommand = db.query("INSERT INTO commands (id, seq) VALUES (?, ?)")
-  const page = db.query<Row, [number, number, number]>(
-    "SELECT * FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
-  )
+  knowProjections(config.projections)
+  // Reads go to the reader threads once they've opened the brain and know every read; a brain in
+  // memory has no file for them to open, so its reads run here.
+  const wanted = config.path === ":memory:" ? undefined : config.readers
+  const readers: Readers | null =
+    wanted === undefined
+      ? null
+      : yield* Effect.acquireRelease(
+          Effect.sync(() => makeReaders(config.path, wanted.start, wanted.size)),
+          (r) =>
+            Effect.sync(() => {
+              r.close()
+            }),
+        )
+  if (readers !== null) {
+    yield* Effect.promise(async () => await readers.ready)
+  }
+  const runRead = <Args extends readonly unknown[], A>(read: Read<Args, A>, args: Args) =>
+    readers === null
+      ? Effect.sync(() => timedRead(read.name, () => db.transaction(() => read.run(db, ...args))()))
+      : Effect.promise(async () => await readers.run(read, args))
 
   const prepare = (events: readonly Incoming[]): Prepared[] | Rejected => {
     const out: Prepared[] = []
@@ -277,6 +387,8 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
 
   // The one write: events (skipping ids already in the log), projections, receipt.
   const committed = () => config.checkpoint?.()
+  /** When the last write's statements were done, before its commit. */
+  let statementsDone = 0
   const writing = db.transaction((events: readonly Prepared[], commandId: string | null) => {
     const stored: StoredEvent[] = []
     for (const e of events) {
@@ -294,10 +406,19 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     if (commandId !== null) {
       insertCommand.run(commandId, seq)
     }
+    statementsDone = performance.now()
     return { stored, seq }
   })
+  // Writes stay on this thread, the one writer: one that holds it this long is logged, as a slow
+  // read is, so a stall no read explains is still named, with where its time went.
   const write = (events: readonly Prepared[], commandId: string | null) => {
+    const r0 = process.resourceUsage()
+    const t0 = performance.now()
     const out = writing(events, commandId)
+    slowWriteParts(
+      { t0, statementsDone, r0, wal: `${config.path}-wal` },
+      `${events.length} events (${[...new Set(events.map((e) => e.type))].slice(0, 6).join(", ")})`,
+    )
     committed()
     return out
   }
@@ -311,6 +432,14 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     stored.length > 0 ? Effect.asVoid(PubSub.publishAll(live, stored)) : Effect.void
 
   const decideAndWrite = (command: Command) => {
+    const t0 = performance.now()
+    try {
+      return decidingAndWriting(command)
+    } finally {
+      slowWrite(t0, `command ${command.type}`)
+    }
+  }
+  const decidingAndWriting = (command: Command) => {
     const def = commandDefs.get(command.type)
     if (!def) {
       return new Rejected({ reason: `Unknown command ${command.type}` })
@@ -387,8 +516,8 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
 
   const since = (after: number, through: number) =>
     Stream.paginate(after, (cursor) =>
-      Effect.sync(() => {
-        const rows = page.all(cursor, through, PAGE).map(lifted)
+      Effect.map(runRead(pageRead, [cursor, through, PAGE]), (stored) => {
+        const rows = stored.map(lifted)
         const last = rows.at(-1)
         return [rows, rows.length === PAGE && last ? Option.some(last.seq) : Option.none()] as const
       }),
@@ -415,6 +544,9 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
       db.run(`DROP TABLE IF EXISTS ${table}`)
     }
     db.run(p.create)
+    if (p.indexes !== undefined) {
+      db.run(p.indexes)
+    }
     const types = [...new Set(p.on.map((o) => o.type))]
     const rows = db
       .query<Row, string[]>(
@@ -474,6 +606,9 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     if (versions.get(p.name)?.version !== p.version) {
       rebuildNow(p)
     }
+    if (p.indexes !== undefined) {
+      db.run(p.indexes)
+    }
   }
 
   const register = (def: EventDef) =>
@@ -491,10 +626,9 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
 
   const sources = [EVENTS, ...config.projections.flatMap((p) => p.sources ?? [])]
   const query = (q: Query) =>
-    Effect.suspend(() => {
-      const found = runQuery(db, sources, q)
-      return found instanceof Rejected ? Effect.fail(found) : Effect.succeed(found)
-    })
+    Effect.flatMap(runRead(queryRead, [sources, q, Date.now()]), (r) =>
+      "rejected" in r ? Effect.fail(new Rejected({ reason: r.rejected })) : Effect.succeed(r.found),
+    )
   const liveQuery = (q: Query, spacing = 1000): Stream.Stream<Found, Rejected> =>
     Stream.unwrap(
       Effect.gen(function* living() {
@@ -530,20 +664,26 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     sources,
     query,
     live: liveQuery,
-    snapshot: Effect.sync(() => ({
-      seq: head(),
-      state: Object.fromEntries(config.projections.map((p) => [p.name, p.snapshot(db)])),
-    })),
+    snapshot: runRead(snapshotRead, [config.projections.map((p) => p.name)]),
     changes,
-    read: (f) => Effect.sync(() => timed(f, db)),
+    read: (read, ...args) => runRead(read, args),
+    truncateLog: lane.withPermit(
+      Effect.sync(() => {
+        const t0 = performance.now()
+        db.run("PRAGMA wal_checkpoint(TRUNCATE)")
+        slowWrite(t0, "the log truncated")
+      }),
+    ),
     migrate: (f) =>
       lane.withPermit(
         Effect.sync(() => {
           db.run("PRAGMA secure_delete = ON")
+          const t0 = performance.now()
           try {
             return db.transaction(f)(db)
           } finally {
             db.run("PRAGMA secure_delete = OFF")
+            slowWrite(t0, `migrate: ${f.toString().replaceAll(/\s+/gu, " ").slice(0, 120)}`)
             committed()
           }
         }),

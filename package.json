@@ -13,7 +13,7 @@
     "format": "oxfmt --write .",
     "fix": "bun run lint && bun run format",
     "check": "bun run denylist && bun run captions && bun run look && bun run catalogs && bun run test && bun run fix",
-    "test": "bun run --cwd apps/desktop test && bun run --cwd packages/gateway test",
+    "test": "bun run --cwd apps/desktop test && bun run --cwd packages/gateway test && bun run --cwd packages/brain test && bun run --cwd packages/autonomy test",
     "denylist": "sh scripts/denylist.sh",
     "captions": "ui-captions --allow scripts/ui-captions.allow apps/desktop/src apps/iphone",
     "dev": "bun run --cwd apps/desktop dev",

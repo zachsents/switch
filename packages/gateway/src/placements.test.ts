@@ -2,7 +2,7 @@
 // its tool with that placement's input, asked for by the placement's id, never by the widget's name
 // (Nov 24: a second web preview drew the first one's page).
 import { afterAll, expect, test } from "bun:test"
-import { Brain, spacesConfig, widgetsConfig, WidgetInput } from "@switch/brain"
+import { Brain, defineRead, spacesConfig, widgetsConfig, WidgetInput } from "@switch/brain"
 import { Effect, ManagedRuntime, Option, Schema } from "effect"
 
 import { widgetRouter } from "./gateway.ts"
@@ -68,8 +68,10 @@ const drawn = async (placement: string) => {
   return messages.find((m) => m.updateDataModel)?.updateDataModel?.value.shown
 }
 
-const placed = async () =>
-  await Effect.runPromise(brain.read((db) => db.query("SELECT id FROM widgets").all()))
+const placedRead = defineRead("gateway/placements-test/ids", (db) =>
+  db.query("SELECT id FROM widgets").all(),
+)
+const placed = async () => await Effect.runPromise(brain.read(placedRead))
 
 test("two placements of one widget in one space each render and refresh with their own input", async () => {
   await command("space.create", { id: "board", name: "Board", parent: null })

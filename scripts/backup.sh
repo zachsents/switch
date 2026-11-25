@@ -182,6 +182,18 @@ fi
 used() { df -k "$MNT" | awk 'NR == 2 { print $3 }'; }
 [ "$CAP" -gt 0 ] || CAP=$(df -k "$MNT" | awk 'NR == 2 { print $2 }')
 free_pct() { echo $(((CAP - $(used)) * 100 / CAP)); }
+# Why a step failed, from what its tool said (a file): its "No space left on device" when it said
+# one (rsync's last line is then only the broken pipe it left), with what the image has left, or
+# else its last line.
+why() {
+  e=$(grep -m1 'No space left on device' "$1" 2>/dev/null || grep -v '^$' "$1" 2>/dev/null | tail -1)
+  case $e in
+    *"No space left on device"*)
+      e="$e: the backup image is full, $(gb "$(df -k "$MNT" | awk 'NR == 2 { print $4 }')") left of its $(gb "$CAP")"
+      ;;
+  esac
+  printf %s "${e:-no reason given}"
+}
 snapshots() { ls -1 "$SNAP" | grep -v '\.partial$' | sort; }
 # The newest 5, each of the last 14 days' newest and each of the last 8 weeks' newest are kept;
 # then the oldest go while the image is less than a fifth free (never the newest).
@@ -212,20 +224,35 @@ if [ -d "$SNAP/.resume" ]; then
 fi
 mkdir -p "$new/files"
 
+# Folders the walks below never go into: what's left out, and node_modules, packed on its own.
+prune_dirs() {
+  find "$S" \( -path "$S/releases" -o -path "$S/src" -o -path "$S/app-src" -o -path "$S/release-src" -o -path "$S/gpui-src" -o -path "$S/gpui-target" -o -path "$S/backups" \
+    -o -path "$S/canary" -o -path "$S/updates" -o -path "$S/updates.old" -o -path "$S/updates.new" -o -path "$S/updates-gpui" -o -path "$S/updates-gpui.old" \
+    -o -path "$S/iphone-builds" -o -path "$S/preview" -o -path "$S/procs" -o -path "$S/current" \
+    -o -path "$S/extensions/*/pkg" "$@"
+}
+
 # Left out: what a deploy rebuilds (releases, checkouts, the update feed, builds), each extension's
 # pkg (installed again from its source whenever it starts), its own brain
 # copies (backups/, the canary), what lasts only while running (procs, locks), the browser a page is
 # previewed in, every SQLite file and every node_modules folder, both copied on their own below.
+# And any folder that says it's a cache (a CACHEDIR.TAG in it, as cargo writes in each build tree),
+# wherever it is: a build tree pointed into ~/.switch is tens of GB, and would fill the image.
 cat >"$work/exclude" <<'EOF'
 /releases/
 /current
 /src/
 /app-src/
+/release-src/
+/gpui-src/
+/gpui-target/
 /backups/
 /canary/
 /updates/
 /updates.new/
 /updates.old/
+/updates-gpui/
+/updates-gpui.old/
 /iphone-builds/
 /preview/
 /procs/
@@ -244,12 +271,19 @@ node_modules/
 *.sqlite-shm
 *.sqlite3
 EOF
+# Each cache's folder, from ~/.switch, as a pattern that matches only it (its wildcards escaped).
+prune_dirs -o -name node_modules \) -prune -o -type f -name CACHEDIR.TAG -print |
+  while read -r tag; do
+    rel=$(dirname "${tag#"$S"/}")
+    printf '/%s/\n' "$(printf %s "$rel" | sed 's/[][*?\\]/\\&/g')"
+  done >>"$work/exclude"
 link=''
 [ -z "$prev" ] || link=--link-dest=$SNAP/$prev/files
 rc=0
 # shellcheck disable=SC2086
 # Sockets and devices only mean something while their process runs: -a without -D.
-rsync -rlptgoH --delete --exclude-from="$work/exclude" $link "$S/" "$new/files/" 2>"$work/rsync.err" || rc=$?
+# --delete-excluded: a run carried on from (.resume) drops what it copied that's left out now.
+rsync -rlptgoH --delete --delete-excluded --exclude-from="$work/exclude" $link "$S/" "$new/files/" 2>"$work/rsync.err" || rc=$?
 # Files that went while they were copied (a log rotated, a build replaced) are fine: 24, or 23
 # when every error is a file not found (openrsync says no more).
 gone=''
@@ -258,18 +292,13 @@ if [ "$rc" = 24 ] || { [ "$rc" = 23 ] && ! grep 'error:' "$work/rsync.err" | gre
 fi
 if [ "$rc" != 0 ] && [ -z "$gone" ]; then
   tail -3 "$work/rsync.err" >>"$LOGS/backup.log"
-  fail "Copying files failed: $(tail -1 "$work/rsync.err")"
+  fail "Copying files failed: $(why "$work/rsync.err")"
 fi
 
 # A node_modules folder (an extension's packages: most of the files) as one archive beside it,
 # .node_modules.tar.zst, made again only when its files changed (.node_modules.sig): a snapshot
-# links a few hundred thousand fewer files. restore.sh unpacks them.
-prune_dirs() {
-  find "$S" \( -path "$S/releases" -o -path "$S/src" -o -path "$S/app-src" -o -path "$S/backups" \
-    -o -path "$S/canary" -o -path "$S/updates" -o -path "$S/updates.old" -o -path "$S/updates.new" \
-    -o -path "$S/iphone-builds" -o -path "$S/preview" -o -path "$S/procs" -o -path "$S/current" \
-    -o -path "$S/extensions/*/pkg" "$@"
-}
+# links a few hundred thousand fewer files. restore.sh unpacks them. One in a folder left out (a
+# cache) isn't in the snapshot's copy of it, and isn't packed.
 prune_dirs \) -prune -o -type d -name node_modules -prune -print >"$work/modules"
 packed=0
 : >"$work/module-files"
@@ -295,12 +324,27 @@ while read -r d; do
 done <"$work/modules"
 
 # SQLite files: each a consistent copy (VACUUM INTO reads one transaction), the brain compressed.
+# A whole file streamed past the file cache (F_NOCACHE): `uncached in <file>` to stdout, `uncached
+# out <file>` from stdin. A clone or copy of the brain is a file of its own in the cache, so reading
+# one of brain size through it (a backup's compress, its test, a copy) fills memory with a second
+# brain and pushes the live one's pages out, right as a new core warms after a swap: the core's next
+# writes then read them back from a disk the copy saturates, and stalled it for seconds (84 s once).
+# A pipeline of it runs under pipefail, so a reader cut short fails the step, not a short backup.
+uncached() {
+  perl -e 'my ($d, $p) = @ARGV; open(my $f, $d eq "in" ? "<" : ">", $p) or die "$p: $!\n";
+    fcntl($f, 48, 1) or die "F_NOCACHE $p: $!\n"; binmode $f; binmode STDIN; binmode STDOUT;
+    my ($i, $o) = $d eq "in" ? ($f, \*STDOUT) : (\*STDIN, $f);
+    while (1) { my $n = sysread($i, my $b, 1 << 20); defined $n or die "read $p: $!\n"; last if !$n;
+      for (my $at = 0; $at < $n;) { my $w = syswrite($o, $b, $n - $at, $at); defined $w or die "write $p: $!\n"; $at += $w } }
+    close($f) or die "close $p: $!\n";' "$@"
+}
 sq() { printf %s "$1" | sed "s/'/''/g"; }
 prune_dirs -o -name node_modules \) -prune -o -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print >"$work/dbs"
 while read -r db; do
   rel=${db#"$S"/}
   [ "$rel" != brain.db ] || continue
-  mkdir -p "$(dirname "$new/files/$rel")"
+  # In a folder left out (a cache): the copy of the files left it out too.
+  [ -d "$(dirname "$new/files/$rel")" ] || continue
   sqlite3 "$db" "VACUUM INTO '$(sq "$new/files/$rel")';" 2>"$work/db.err" || {
     # Not SQLite after all, or not readable as one: copied as it is.
     cp -p "$db" "$new/files/$rel" || fail "Can't copy $rel: $(tail -1 "$work/db.err")"
@@ -309,24 +353,37 @@ done <"$work/dbs"
 # The brain, compressed into the snapshot, the image the only place a copy of it is made. A deploy's
 # copy (taken at rest, checkpointed) is held by a hard link first, an instant that costs nothing,
 # since the deploy's tidy compresses it meanwhile: it's compressed as it is, or once tidy has,
-# its .zst taken as it is (read through a copy in the image). The live brain, or a copy with a WAL
-# beside it, is compacted into the image first (VACUUM INTO reads one transaction).
+# its .zst taken as it is, tested where it landed as a stream (nothing of the brain's size is
+# written), its head the one tidy wrote beside it (<brain>.head; one compressed before tidy wrote
+# heads is read through a copy in the image). The live brain, or a copy with a WAL beside it, is
+# compacted into the image first (VACUUM INTO reads one transaction).
 copy=$SNAP/.brain.db
+head=''
 if [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ] && ln "$brain" "$work/brain.db" 2>/dev/null; then
   read=$work/brain.db
-  zstd -q -T0 -10 "$read" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
+  (set -o pipefail; uncached in "$read" | zstd -q -T0 -10 -c | uncached out "$new/files/brain.db.zst") 2>"$work/zstd.err" ||
+    fail "Can't compress the brain: $(why "$work/zstd.err")"
 elif [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ] && ln "$brain.zst" "$work/brain.db.zst" 2>/dev/null; then
-  cp "$work/brain.db.zst" "$new/files/brain.db.zst" || fail "Can't copy $brain.zst"
-  zstd -q -d "$work/brain.db.zst" -o "$copy" || fail "Can't decompress $brain.zst"
-  read=$copy
+  head=$(cat "$brain.head" 2>/dev/null || true)
+  case $head in '' | *[!0-9]*) head='' ;; esac
+  (set -o pipefail; uncached in "$work/brain.db.zst" | uncached out "$new/files/brain.db.zst") 2>"$work/cp.err" ||
+    fail "Can't copy $brain.zst into the backup image: $(why "$work/cp.err")"
+  (set -o pipefail; uncached in "$new/files/brain.db.zst" | zstd -q -t) 2>"$work/zstd.err" ||
+    fail "The brain's copy in the backup image is damaged: $(why "$work/zstd.err")"
+  if [ -z "$head" ]; then
+    (set -o pipefail; uncached in "$work/brain.db.zst" | zstd -q -d -c | uncached out "$copy") 2>"$work/zstd.err" ||
+      fail "Can't decompress $brain.zst into the backup image: $(why "$work/zstd.err")"
+    read=$copy
+  fi
 else
   sqlite3 "$brain" "VACUUM INTO '$(sq "$copy")';" 2>"$work/db.err" ||
-    fail "Can't copy the brain: $(tail -1 "$work/db.err")"
+    fail "Can't copy the brain: $(why "$work/db.err")"
   read=$copy
-  zstd -q -T0 -10 "$copy" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
+  (set -o pipefail; uncached in "$copy" | zstd -q -T0 -10 -c | uncached out "$new/files/brain.db.zst") 2>"$work/zstd.err" ||
+    fail "Can't compress the brain: $(why "$work/zstd.err")"
 fi
 # Read as immutable: nothing (no -shm, no WAL) is written beside it.
-head=$(sqlite3 -readonly "file:$read?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;") ||
+[ -n "$head" ] || head=$(sqlite3 -readonly "file:$read?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;") ||
   fail "Can't read the brain's copy"
 rm -f "$copy" "$work"/brain.db*
 

@@ -14,6 +14,7 @@ import { Effect, Schema } from "effect"
 import { Brain } from "./brain.ts"
 import { defineEvent } from "./defs.ts"
 import { EventId } from "./ids.ts"
+import { defineRead } from "./reads.ts"
 
 export const CheckBypassed = defineEvent(
   "check.bypassed",
@@ -75,6 +76,18 @@ export const recordBypass = (p: typeof CheckBypassed.payload.Type) =>
     yield* Effect.orDie(brain.ingest([bypassEvent(p)]))
   })
 
+/** Whether a refusal of the same check, work and objections was recorded in the last hour. */
+const answersRead = defineRead(
+  "brain/bypass/answers",
+  (db, check: string, work: string, objections: string, now: number) =>
+    db
+      .query(
+        `SELECT 1 FROM events WHERE type = ? AND time > ? AND json_extract(payload, '$.check') = ?
+           AND json_extract(payload, '$.work') = ? AND json(json_extract(payload, '$.objections')) = json(?) LIMIT 1`,
+      )
+      .get(CheckRefused.type, now - ANSWERS_MS, check, work, objections) !== null,
+)
+
 /**
  * A plain check's refusal; null when there's none, or it's bypassed, and then the bypass is
  * recorded. A refusal is recorded, and a bypass goes only past one recorded for the same check and
@@ -92,17 +105,7 @@ export const unlessBypassed = (
     const brain = yield* Brain
     const objections = JSON.stringify(at.objections)
     const answers =
-      bypass !== null &&
-      (yield* brain.read(
-        (db) =>
-          db
-            .query(
-              `SELECT 1 FROM events WHERE type = ? AND time > ? AND json_extract(payload, '$.check') = ?
-                 AND json_extract(payload, '$.work') = ? AND json(json_extract(payload, '$.objections')) = json(?) LIMIT 1`,
-            )
-            .get(CheckRefused.type, Date.now() - ANSWERS_MS, at.check, at.work, objections) !==
-          null,
-      ))
+      bypass !== null && (yield* brain.read(answersRead, at.check, at.work, objections, Date.now()))
     if (bypass !== null && answers) {
       yield* recordBypass({ ...at, reason: bypass })
       return null

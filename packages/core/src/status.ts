@@ -10,7 +10,7 @@ import { allAccounts } from "@switch/agent"
 import type { Account } from "@switch/agent"
 import { openSurprises } from "@switch/autonomy"
 import type { Surprise } from "@switch/autonomy"
-import { Brain, extensionsEvent, seqAt } from "@switch/brain"
+import { Brain, defineRead, extensionsEvent, seqAt } from "@switch/brain"
 import { BASIC_CATALOG, defineApp, SWITCH_CATALOG, tool } from "switch-ext-kit"
 import { Effect } from "effect"
 
@@ -467,6 +467,9 @@ const REFRESH = [
   "*.vitals",
 ]
 
+/** Every part of Switch and how it stands, as of `now`. */
+const statusRead = defineRead("core/status/status", statusOf)
+
 const status = tool(
   "status",
   {
@@ -480,7 +483,7 @@ const status = tool(
       const c = yield* CoreConfig
       const runtime = yield* Runtime
       const { machines } = yield* runtime.machines
-      return yield* brain.read((db) => statusOf(db, c.dir, machines, Date.now()))
+      return yield* brain.read(statusRead, c.dir, machines, Date.now())
     }),
 )
 

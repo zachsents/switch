@@ -288,7 +288,9 @@ def color_groups(rgb, area, k=None, max_k=6):
         how = "one colour"
         for kk in range(2, max_k + 1):
             c2, in2, share = fit(kk)
-            gaps = [np.linalg.norm(c2[i] - c2[j]) for i in range(len(c2)) for j in range(i + 1, len(c2))]
+            if len(c2) < kk:  # k-means++ found no colour left apart from the centres it had: no more to split
+                break
+            gaps =[np.linalg.norm(c2[i] - c2[j]) for i in range(len(c2)) for j in range(i + 1, len(c2))]
             if share.min() < 0.005 or min(gaps) < 14 or in2 > inertia * 0.55:
                 break
             c, inertia, how = c2, in2, f"{kk} colours stand apart"

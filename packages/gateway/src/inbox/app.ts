@@ -3,7 +3,7 @@
 // extension. Its widgets: the inbox, for Home, and a conversation's messages, which a `thread` call
 // shows in chat.
 import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Effect, Schema } from "effect"
 
 import { BASIC_CATALOG, defineApp, messageOf, SWITCH_CATALOG, tool } from "switch-ext-kit"
@@ -96,6 +96,10 @@ const conversations = (db: Database, limit: number): Conversation[] => {
   )
 }
 
+const conversationsRead = defineRead("gateway/inbox/conversations", (db, limit: number) =>
+  conversations(db, limit),
+)
+
 const inbox = tool(
   "inbox",
   {
@@ -107,7 +111,7 @@ const inbox = tool(
   (input) =>
     Effect.gen(function* reading() {
       const brain = yield* Brain
-      const list = yield* brain.read((db) => conversations(db, input.limit ?? 8))
+      const list = yield* brain.read(conversationsRead, input.limit ?? 8)
       return {
         unread: list.reduce((n, c) => n + c.unread, 0),
         conversations: list.map((c) => ({
@@ -154,6 +158,57 @@ const withPerson = (db: Database, p: Person, limit: number) => {
   }
 }
 
+/** One conversation by its id, or everything with a person (`with`): what `thread` shows. */
+const threadRead = defineRead(
+  "gateway/inbox/thread",
+  (
+    db,
+    input: { readonly conversation?: string; readonly with?: string; readonly limit?: number },
+  ) => {
+    const who = input.conversation === undefined ? input.with : undefined
+    if (who !== undefined) {
+      const people = peopleFor(db, who)
+      const [one] = people
+      if (people.length > 1) {
+        return {
+          ...none,
+          candidates: people.map((p) => ({ person: p.id, name: p.name, handles: p.handles })),
+        }
+      }
+      const p = one ?? stranger(who)
+      if (p !== null) {
+        return withPerson(db, p, input.limit ?? 20)
+      }
+    }
+    // Someone Contacts doesn't know, by the name they write under.
+    const all = recent(db)
+    const want = who?.toLowerCase()
+    const first =
+      input.conversation === undefined
+        ? all.find(
+            (m) =>
+              want === undefined ||
+              m.sender.handle.toLowerCase().includes(want) ||
+              whoOf(db, m).toLowerCase().includes(want),
+          )
+        : all.find((m) => m.conversation === input.conversation)
+    if (first === undefined) {
+      return none
+    }
+    const ms = all
+      .filter((m) => m.conversation === first.conversation)
+      .slice(0, input.limit ?? 12)
+      .toReversed()
+    const them = ms.find((m) => m.sender.me !== true) ?? first
+    return {
+      title: whoOf(db, them),
+      channel: first.channel,
+      conversation: first.conversation,
+      messages: ms.map((m) => shown(db, m, false)),
+    }
+  },
+)
+
 const thread = tool(
   "thread",
   {
@@ -169,49 +224,7 @@ const thread = tool(
   (input) =>
     Effect.gen(function* reading() {
       const brain = yield* Brain
-      return yield* brain.read((db) => {
-        const who = input.conversation === undefined ? input.with : undefined
-        if (who !== undefined) {
-          const people = peopleFor(db, who)
-          const [one] = people
-          if (people.length > 1) {
-            return {
-              ...none,
-              candidates: people.map((p) => ({ person: p.id, name: p.name, handles: p.handles })),
-            }
-          }
-          const p = one ?? stranger(who)
-          if (p !== null) {
-            return withPerson(db, p, input.limit ?? 20)
-          }
-        }
-        // Someone Contacts doesn't know, by the name they write under.
-        const all = recent(db)
-        const want = who?.toLowerCase()
-        const first =
-          input.conversation === undefined
-            ? all.find(
-                (m) =>
-                  want === undefined ||
-                  m.sender.handle.toLowerCase().includes(want) ||
-                  whoOf(db, m).toLowerCase().includes(want),
-              )
-            : all.find((m) => m.conversation === input.conversation)
-        if (first === undefined) {
-          return none
-        }
-        const ms = all
-          .filter((m) => m.conversation === first.conversation)
-          .slice(0, input.limit ?? 12)
-          .toReversed()
-        const them = ms.find((m) => m.sender.me !== true) ?? first
-        return {
-          title: whoOf(db, them),
-          channel: first.channel,
-          conversation: first.conversation,
-          messages: ms.map((m) => shown(db, m, false)),
-        }
-      })
+      return yield* brain.read(threadRead, input)
     }),
 )
 

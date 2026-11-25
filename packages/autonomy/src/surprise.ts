@@ -7,6 +7,7 @@ import {
   Brain,
   defineCommand,
   defineEvent,
+  defineRead,
   EventId,
   HOME,
   on,
@@ -141,6 +142,22 @@ export const surprises: Projection = {
   ],
 }
 
+/** A surprise's status, and when it was dismissed. */
+const wasRead = defineRead("autonomy/surprise/was", (db, id: string) =>
+  db
+    .query<Pick<Row, "status" | "dismissed_at">, [string]>(
+      "SELECT status, dismissed_at FROM surprises WHERE id = ?",
+    )
+    .get(id),
+)
+
+/** Whether a surprise is open. */
+const isOpenRead = defineRead(
+  "autonomy/surprise/is-open",
+  (db, id: string) =>
+    db.query("SELECT 1 FROM surprises WHERE id = ? AND status = 'open'").get(id) !== null,
+)
+
 /** Open ones, newest first; in `spaces` when given. */
 export const openSurprises = (db: Database, spaces?: readonly string[]): Surprise[] => {
   const rows = db
@@ -214,13 +231,7 @@ export const raise = (
 ) =>
   Effect.gen(function* raising() {
     const brain = yield* Brain
-    const was = yield* brain.read((db) =>
-      db
-        .query<Pick<Row, "status" | "dismissed_at">, [string]>(
-          "SELECT status, dismissed_at FROM surprises WHERE id = ?",
-        )
-        .get(s.id),
-    )
+    const was = yield* brain.read(wasRead, s.id)
     const open = was?.status === "open"
     if ((open && s.count !== true) || (was?.dismissed_at ?? 0) > Date.now() - DAY) {
       return false
@@ -250,9 +261,7 @@ export const raise = (
 export const resolve = (id: string) =>
   Effect.gen(function* resolving() {
     const brain = yield* Brain
-    const open = yield* brain.read(
-      (db) => db.query("SELECT 1 FROM surprises WHERE id = ? AND status = 'open'").get(id) !== null,
-    )
+    const open = yield* brain.read(isOpenRead, id)
     if (open) {
       yield* Effect.orDie(
         brain.ingest([

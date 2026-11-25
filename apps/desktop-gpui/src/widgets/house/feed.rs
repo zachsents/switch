@@ -32,7 +32,7 @@ struct Frame {
     tag: String,
 }
 
-thread_local! {
+base::kept_local! {
     /// Each feed's last frame, in memory only.
     static LAST: RefCell<HashMap<String, Frame>> = RefCell::new(HashMap::new());
 }

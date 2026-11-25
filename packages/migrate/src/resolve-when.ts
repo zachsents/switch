@@ -2,7 +2,7 @@
 // ran again until its first row closed the ask: core/watches.rs:319) get that query back, as a
 // revision appended to the log (`item.revised`, every field as it stands plus the query): nothing
 // past is rewritten. One that can't run here, or already finds something, is said and left as it is.
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { fieldsOf, ItemRevised, items, prepareQuery, runQueryText } from "@switch/autonomy"
 import { Effect } from "effect"
 
@@ -10,14 +10,29 @@ import { num, obj, str, Switchboard } from "./source.ts"
 
 const PREFIX = "sb:item:"
 
+/** The open asks carried from Switchboard that have no resolve_when. */
+const openRead = defineRead("migrate/resolve-when/open", (db) =>
+  items(db, { status: "open" }).filter(
+    (i) => i.id.startsWith(PREFIX) && (i.resolveWhen ?? "").trim() === "",
+  ),
+)
+
+/** What a query finds here now, counted, or why it doesn't run. */
+const checkedRead = defineRead(
+  "migrate/resolve-when/checked",
+  (db, query: string, zone: string): { rows: number } | { error: string } => {
+    try {
+      return { rows: runQueryText(db, prepareQuery(query, zone), Date.now(), zone).rows.length }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+  },
+)
+
 export const resolveWhens = Effect.gen(function* restoring() {
   const sb = yield* Switchboard
   const brain = yield* Brain
-  const open = yield* brain.read((db) =>
-    items(db, { status: "open" }).filter(
-      (i) => i.id.startsWith(PREFIX) && (i.resolveWhen ?? "").trim() === "",
-    ),
-  )
+  const open = yield* brain.read(openRead)
   if (open.length === 0) {
     return ["No open imported ask without its resolve_when"]
   }
@@ -38,13 +53,7 @@ export const resolveWhens = Effect.gen(function* restoring() {
       said.push(`${item.id}: none there`)
       continue
     }
-    const checked = yield* brain.read((db) => {
-      try {
-        return { rows: runQueryText(db, prepareQuery(query, zone), Date.now(), zone).rows.length }
-      } catch (error) {
-        return { error: error instanceof Error ? error.message : String(error) }
-      }
-    })
+    const checked = yield* brain.read(checkedRead, query, zone)
     if ("error" in checked) {
       said.push(`${item.id}: left as it is, its query doesn't run here (${checked.error})`)
       continue

@@ -6,13 +6,15 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 
 use serde_json::json;
 
 use super::helpers::native_helper;
 
-static HELPER: LazyLock<Mutex<Option<Child>>> = LazyLock::new(Default::default);
+base::kept! {
+    static HELPER: Mutex<Option<Child>> = Mutex::default();
+}
 
 pub fn show(files: &[PathBuf], at: usize) -> Result<(), String> {
     let path = native_helper("switch-quicklook").ok_or("No Quick Look helper")?;

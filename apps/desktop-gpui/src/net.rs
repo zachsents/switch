@@ -556,6 +556,7 @@ async fn fire(net: Net, id: String, after: Duration, wake: Arc<tokio::sync::Noti
         for f in &files {
             match upload_kept(&net.http, &a.core, &a.token, f).await {
                 Ok(up) => {
+                    crate::own::up(&up.blob, &f.id, &f.name);
                     outbox::update(&id, |e| {
                         if let Some(fs) = e.files.as_mut() {
                             for g in fs.iter_mut().filter(|g| g.id == f.id) {

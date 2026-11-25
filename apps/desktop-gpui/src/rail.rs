@@ -3,11 +3,13 @@
 //! only this space's own rows, a space's marks counting the spaces inside it. It scrolls as a whole,
 //! in UI SDK's scroll area.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ObjectFit, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div, img, prelude::*, px,
+    AnyElement, App, Bounds, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, canvas, div, img, prelude::*, px,
 };
 use ui_sdk::components::scroll_area::{ScrollArea, ScrollAreaOptions, ScrollAreaOrientation};
 use ui_sdk::kernel::roles::Role;
@@ -24,6 +26,15 @@ use crate::time::{age_of, now_ms, span_of};
 /// How many spaces show before the rest fold.
 const SHOWN: usize = 9;
 
+/// Where each row was last drawn, by its id: the keys bring the one they move to into view.
+type Places = Rc<RefCell<HashMap<String, Bounds<Pixels>>>>;
+
+/// A row's place, kept as it's drawn.
+fn placed(id: String, places: &Places) -> impl IntoElement {
+    let places = places.clone();
+    canvas(move |bounds, _, _| { places.borrow_mut().insert(id, bounds); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+}
+
 pub struct Rail {
     /// Each space's rail keeps its own place.
     scrolls: std::collections::HashMap<String, Entity<ScrollArea>>,
@@ -33,11 +44,20 @@ pub struct Rail {
     live: bool,
     /// The work row under the pointer: its Stop shows at its end.
     hovered: Option<String>,
-    /// Each work row's focus and its Stop's: Stop shows while either has keyboard focus too.
-    focus: std::collections::HashMap<String, (gpui::FocusHandle, gpui::FocusHandle)>,
+    /// Each work row's Stop's focus: Stop shows while it or its row has keyboard focus too.
+    focus: std::collections::HashMap<String, gpui::FocusHandle>,
     /// Work a Stop is under way for, and work whose Stop didn't go through.
     stopping: HashSet<String>,
     stop_failed: HashSet<String>,
+    /// Each row's focus, by its id, and the rows in the order drawn: ↑ and ↓ move through them.
+    handles: std::collections::HashMap<String, gpui::FocusHandle>,
+    order: Vec<String>,
+    /// The row with the keyboard when last drawn, and its place in the order: gone (approved,
+    /// dismissed, stopped, folded away), the row now in its place takes the keyboard.
+    held: Option<(String, usize)>,
+    places: Places,
+    /// The space whose rail was last drawn: a thread's page draws none.
+    drawn: Option<String>,
     /// The asks' ages again every 30 seconds (needs-you.tsx's `now`, `useNow`).
     _ticking: gpui::Task<()>,
 }
@@ -61,7 +81,127 @@ impl Rail {
                 }
             }
         });
-        Rail { scrolls: Default::default(), more_open: HashSet::new(), live: false, hovered: None, focus: Default::default(), stopping: HashSet::new(), stop_failed: HashSet::new(), _ticking: ticking }
+        Rail { scrolls: Default::default(), more_open: HashSet::new(), live: false, hovered: None, focus: Default::default(), stopping: HashSet::new(), stop_failed: HashSet::new(), handles: Default::default(), order: vec![], held: None, places: Default::default(), drawn: None, _ticking: ticking }
+    }
+
+    /// A row's focus, made once, and its place in the keys' order.
+    fn keyed(&mut self, id: &str, cx: &mut Context<Self>) -> gpui::FocusHandle {
+        self.order.push(id.to_string());
+        self.handles.entry(id.to_string()).or_insert_with(|| cx.focus_handle()).clone()
+    }
+
+    /// The row with the keyboard, by its id.
+    fn focused(&self, window: &Window) -> Option<String> {
+        self.order.iter().find(|id| self.handles.get(*id).is_some_and(|h| h.is_focused(window))).cloned()
+    }
+
+    /// ⌘J: the keyboard to the first row of `space`'s rail, unless a row has it already (it goes
+    /// back to the box).
+    pub fn focus_first(&mut self, space: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.focused(window).is_some() || self.drawn.as_deref() != Some(space) {
+            return false;
+        }
+        self.go(0, window, cx)
+    }
+
+    /// ↑ ↓: the row before or after the one with the keyboard; none has it, the first.
+    fn step(&mut self, by: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.focused(window).and_then(|id| self.order.iter().position(|x| *x == id));
+        let to = match at {
+            Some(i) => (i as isize + by).clamp(0, self.order.len() as isize - 1) as usize,
+            None => 0,
+        };
+        self.go(to, window, cx);
+    }
+
+    /// The keyboard to the row at `to` in the order, scrolled into view.
+    fn go(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.order.get(to).cloned() else { return false };
+        let Some(h) = self.handles.get(&id).cloned() else { return false };
+        window.focus(&h, cx);
+        self.reveal(id, window, cx);
+        cx.notify();
+        true
+    }
+
+    /// Scrolls the rail just enough to show a row, once it's drawn where it now is.
+    fn reveal(&self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(scroll) = self.drawn.as_ref().and_then(|s| self.scrolls.get(s)) else { return };
+        let handle = scroll.read(cx).scroll_handle().clone();
+        let places = self.places.clone();
+        window.on_next_frame(move |window, _| {
+            let Some(row) = places.borrow().get(&id).copied() else { return };
+            let seen = handle.bounds();
+            let mut at = handle.offset();
+            if row.bottom() > seen.bottom() {
+                at.y -= row.bottom() - seen.bottom();
+            }
+            if row.top() < seen.top() {
+                at.y += seen.top() - row.top();
+            }
+            if at != handle.offset() {
+                handle.set_offset(at);
+                window.refresh();
+            }
+        });
+    }
+
+    /// After the rows are laid out: the row that had the keyboard and is gone hands it to the one
+    /// now in its place (or the box, with none left); rows gone forget their focus.
+    fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id, at)) = self.held.take()
+            && !self.order.contains(&id)
+            && self.handles.get(&id).is_some_and(|h| h.is_focused(window))
+        {
+            if self.order.is_empty() {
+                cx.defer_in(window, |_, window, cx| window.dispatch_action(Box::new(crate::app::ToBox), cx));
+            } else {
+                let to = at.min(self.order.len() - 1);
+                cx.defer_in(window, move |this, window, cx| {
+                    this.go(to, window, cx);
+                });
+            }
+        }
+        let order: HashSet<&String> = self.order.iter().collect();
+        self.handles.retain(|id, _| order.contains(id));
+        self.focus.retain(|thread, _| order.contains(&format!("work-{thread}")));
+        self.places.borrow_mut().retain(|id, _| order.contains(id));
+        self.held = self.focused(window).and_then(|id| self.order.iter().position(|x| *x == id).map(|i| (id, i)));
+    }
+
+    /// ⌘↵ and ⌘⌫ on a row: an ask's Approve or Dismiss, in its window (where its Undo is); a running
+    /// row's Stop.
+    fn act(&mut self, approve: bool, window: &Window, cx: &mut Context<Self>) {
+        let Some(id) = self.focused(window) else { return };
+        if let Some(ask) = id.strip_prefix("ask-") {
+            crate::asks::window::open_to(ask, if approve { crate::asks::window::Then::Approve } else { crate::asks::window::Then::Dismiss }, cx);
+        } else if let Some(thread) = id.strip_prefix("work-")
+            && !approve
+        {
+            self.stop(thread.to_string(), cx);
+        }
+    }
+
+    fn stop(&mut self, thread: String, cx: &mut Context<Self>) {
+        if self.stopping.contains(&thread) {
+            return;
+        }
+        self.stopping.insert(thread.clone());
+        self.stop_failed.remove(&thread);
+        let task = model(cx).read(cx).stop(&thread, cx);
+        cx.spawn(async move |this, cx| {
+            let got = task.await;
+            this.update(cx, |this, cx| {
+                this.stopping.remove(&thread);
+                if got.is_err() {
+                    this.stop_failed.insert(thread);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 }
 
@@ -88,9 +228,10 @@ fn heading(mark: Option<AnyElement>, label: &'static str, count: usize, l: &Look
 use crate::kit::focusable;
 
 /// A row's whole width and height are its click; the pointer lights only its background. It takes
-/// Tab, Enter and Space.
-fn row(id: impl Into<SharedString>, l: &Look) -> gpui::Stateful<gpui::Div> {
-    focusable(bare_row(id, l), l)
+/// Tab, Enter and Space, and ↑ ↓ move from it to the next.
+fn row(id: impl Into<SharedString>, focus: &gpui::FocusHandle, places: &Places, l: &Look) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    focusable(bare_row(id.clone(), l).track_focus(focus).key_context("Row"), l).relative().child(placed(id.to_string(), places))
 }
 
 fn bare_row(id: impl Into<SharedString>, l: &Look) -> gpui::Stateful<gpui::Div> {
@@ -120,7 +261,7 @@ fn quiet(l: &Look) -> gpui::Div {
 }
 
 impl Rail {
-    fn spaces(&mut self, here: &str, step: usize, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn spaces(&mut self, here: &str, step: usize, l: &Look, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let model = model(cx);
         let m = model.read(cx);
         let d = &m.derived;
@@ -158,11 +299,14 @@ impl Rail {
                 move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| crate::band::space_menu(&id, window, cx)
             };
             let name = SharedString::from(space_name.clone());
+            let focus = self.keyed(&format!("space-{id}"), cx);
+            // A banner's cover would hide a ring drawn under it: its ring is drawn over it.
+            let ringed = focus.is_focused(window) && window.last_input_was_keyboard();
             if banners {
                 let cover = cover.as_ref().and_then(|c| Pictures::get(c, gpui::ImageFormat::Jpeg, cx).map(|i| (c, i)));
                 rows.push(
                     // Its cover is its look under the pointer: it doesn't light.
-                    focusable(div().id(ElementId::Name(format!("banner-{id}").into())), l)
+                    focusable(div().id(ElementId::Name(format!("banner-{id}").into())).track_focus(&focus).key_context("Row"), l)
                         .role(gpui::Role::Button)
                         .aria_label(space_name.clone())
                         .flex()
@@ -178,6 +322,8 @@ impl Rail {
                         .on_click(go)
                         .on_mouse_down(gpui::MouseButton::Right, menu)
                         .children(cover.map(|(_, i)| img(i).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover)))
+                        .when(ringed, |d| d.child(div().absolute().top_0().left_0().size_full().border_2().border_color(l.ink2)))
+                        .child(placed(format!("space-{id}"), &self.places))
                         .child(
                             div()
                                 .relative()
@@ -226,7 +372,7 @@ impl Rail {
                 );
             } else {
                 rows.push(
-                    row(format!("space-{id}"), l)
+                    row(format!("space-{id}"), &focus, &self.places, l)
                         .aria_label(space_name.clone())
                         .h(u(36.))
                         .gap(u(9.))
@@ -262,8 +408,9 @@ impl Rail {
         }
         if folds {
             let here = here.to_string();
+            let focus = self.keyed("more", cx);
             rows.push(
-                row("more", l)
+                row("more", &focus, &self.places, l)
                     .aria_label(if open { "Fewer".to_string() } else { format!("{} more", inside.len() - SHOWN) })
                     .h(u(32.))
                     .px(u(14.))
@@ -285,7 +432,8 @@ impl Rail {
     /// shows at its end, over the row.
     fn work_row(&mut self, w: &Work, space_name: &str, here: &str, step: usize, l: &Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let size = l.z(14.);
-        let (row_focus, stop_focus) = self.focus.entry(w.thread.clone()).or_insert_with(|| (cx.focus_handle(), cx.focus_handle())).clone();
+        let row_focus = self.keyed(&format!("work-{}", w.thread), cx);
+        let stop_focus = self.focus.entry(w.thread.clone()).or_insert_with(|| cx.focus_handle()).clone();
         let focused = row_focus.is_focused(window) || stop_focus.is_focused(window);
         let under = w.stage.clone();
         let (thread, space) = (w.thread.clone(), here.to_string());
@@ -296,7 +444,8 @@ impl Rail {
         div()
             .relative()
             .child(
-                focusable(row(format!("work-{}", w.thread), l).track_focus(&row_focus), l)
+                row(format!("work-{}", w.thread), &row_focus, &self.places, l)
+                    .key_context("Row Work")
                     .aria_label(if w.title.is_empty() { space_name.to_string() } else { w.title.clone() })
                     .min_h(u(36.))
                     .gap(u(9.))
@@ -336,25 +485,7 @@ impl Rail {
                         .gap(u(6.))
                         .pr(u(4.))
                         .when(failed, |d| d.child(marks::warn(l.z(14.), l)))
-                        .child(crate::kit::press(crate::kit::button(ElementId::Name(format!("stop-{}", w.thread).into()), crate::kit::Btn::Danger, !stopping, l).track_focus(&stop_focus), !stopping, cx.listener(move |this, _, _, cx| {
-                            let thread = stop_id.clone();
-                            this.stopping.insert(thread.clone());
-                            this.stop_failed.remove(&thread);
-                            let task = model(cx).read(cx).stop(&thread, cx);
-                            cx.spawn(async move |this, cx| {
-                                let got = task.await;
-                                this.update(cx, |this, cx| {
-                                    this.stopping.remove(&thread);
-                                    if got.is_err() {
-                                        this.stop_failed.insert(thread);
-                                    }
-                                    cx.notify();
-                                })
-                                .ok();
-                            })
-                            .detach();
-                            cx.notify();
-                        })).aria_label("Stop").child("Stop")),
+                        .child(crate::kit::press(crate::kit::button(ElementId::Name(format!("stop-{}", w.thread).into()), crate::kit::Btn::Danger, !stopping, l).track_focus(&stop_focus), !stopping, cx.listener(move |this, _, _, cx| this.stop(stop_id.clone(), cx))).aria_label("Stop").child("Stop")),
                 )
             })
             .into_any_element()
@@ -369,9 +500,10 @@ impl Rail {
         let step = Beat::step(cx);
         let model = model(cx);
         self.live = false;
+        self.order.clear();
         let size = l.z(14.);
         let mut sections: Vec<AnyElement> = vec![];
-        if let Some(s) = self.spaces(&here, step, &l, cx) {
+        if let Some(s) = self.spaces(&here, step, &l, window, cx) {
             sections.push(s);
         }
         let m = model.read(cx);
@@ -379,12 +511,16 @@ impl Rail {
 
         let asks = d.asks.get(&here).cloned().unwrap_or_default();
         let now = now_ms();
+        let ask_focus: Vec<gpui::FocusHandle> = asks.iter().map(|a| self.keyed(&format!("ask-{}", a.id), cx)).collect();
+        let m = model.read(cx);
+        let d = &m.derived;
         let ask_rows: Vec<AnyElement> = asks
             .iter()
-            .map(|a| {
+            .zip(&ask_focus)
+            .map(|(a, focus)| {
                 let st = d.station(&a.space);
                 let id = a.id.clone();
-                row(format!("ask-{}", a.id), &l)
+                row(format!("ask-{}", a.id), focus, &self.places, &l)
                     .aria_label(a.title.clone())
                     .h(u(44.))
                     .gap(u(9.))
@@ -413,7 +549,8 @@ impl Rail {
         self.live |= count > 0;
         let mut run_rows: Vec<AnyElement> = running.iter().map(|w| self.work_row(w, &space_name, &here, step, &l, window, cx)).collect();
         for a in &activities {
-            run_rows.push(activity_row(a, now, step, &l));
+            let focus = self.keyed(&format!("activity-{}", a.id), cx);
+            run_rows.push(activity_row(a, &focus, &self.places, now, step, &l));
         }
         sections.push(
             div()
@@ -430,6 +567,8 @@ impl Rail {
                 .into_any_element(),
         );
 
+        self.drawn = Some(here.clone());
+        self.settle(window, cx);
         let count = sections.len();
         let body = div().flex().flex_col().children(sections.into_iter().enumerate().map(|(i, s)| {
             div().when(i > 0, |d| d.border_t(px(l.w_section)).border_color(l.line_section)).child(s)
@@ -450,6 +589,19 @@ impl Rail {
             .with(|el, state| el.opacity(if state.visible { 1. } else { 0. }))
             .child(thumb);
         ScrollArea::root(&scroll, cx)
+            .key_context("Rail")
+            .on_action(cx.listener(|this, _: &crate::commands::NextRow, window, cx| this.step(1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::PreviousRow, window, cx| this.step(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::Approve, window, cx| this.act(true, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::Dismiss, window, cx| this.act(false, window, cx)))
+            // Esc from a row: back to the box.
+            .on_action(cx.listener(|this, _: &crate::commands::Escape, window, cx| {
+                if this.focused(window).is_some() {
+                    window.dispatch_action(Box::new(crate::app::ToBox), cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .size_full()
             .relative()
             .child(
@@ -471,7 +623,7 @@ impl Render for Rail {
 
 /// An extension's long job on Running: its state's mark, its title, its line, when it ends or how far
 /// along it is, and that as a bar along the row's foot. The row opens its space.
-fn activity_row(a: &crate::brain::Activity, now: f64, step: usize, l: &Look) -> AnyElement {
+fn activity_row(a: &crate::brain::Activity, focus: &gpui::FocusHandle, places: &Places, now: f64, step: usize, l: &Look) -> AnyElement {
     use crate::brain::ActivityState;
     let size = l.z(14.);
     let space = a.space.clone();
@@ -485,9 +637,8 @@ fn activity_row(a: &crate::brain::Activity, now: f64, step: usize, l: &Look) -> 
         (None, Some(p)) => Some(format!("{}%", (p * 100.).round() as i64)),
         _ => None,
     };
-    row(format!("activity-{}", a.id), l)
+    row(format!("activity-{}", a.id), focus, places, l)
         .aria_label(a.title.clone())
-        .relative()
         .h(u(36.))
         .gap(u(9.))
         .px(u(14.))

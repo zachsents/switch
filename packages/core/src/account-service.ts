@@ -25,7 +25,7 @@ import {
   startSignIn,
 } from "@switch/agent"
 import type { Host, SignIn } from "@switch/agent"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { isLoginProvider, LOGIN_PROVIDERS, PROVIDER_LAUNCHES, SUBSCRIPTIONS } from "@switch/models"
 import type { LoginProvider } from "@switch/models"
 import { Context, Effect, Layer, Semaphore } from "effect"
@@ -42,6 +42,8 @@ const WAIT_MS = 10 * 60_000
 const validId = (id: string) => /^[a-z0-9][a-z0-9-]{0,31}$/u.test(id)
 const fail = (message: string) => Effect.fail(new Error(message))
 const label = (provider: LoginProvider) => PROVIDER_LAUNCHES[provider].label
+/** The core's logins, as recorded. */
+const loginsRead = defineRead("core/account-service/logins", allLogins)
 
 const make = Effect.gen(function* making() {
   const c = yield* CoreConfig
@@ -172,7 +174,7 @@ const make = Effect.gen(function* making() {
         if (
           SUBSCRIPTIONS.some((s) => s === id) ||
           hosts.get(id) !== undefined ||
-          (yield* brain.read(allLogins)).some((l) => l.id === id) ||
+          (yield* brain.read(loginsRead)).some((l) => l.id === id) ||
           LOGIN_PROVIDERS.some((p) => existsSync(path.join(addedDir(c.dir, p), id)))
         ) {
           return yield* fail("Name taken")
@@ -306,7 +308,7 @@ const make = Effect.gen(function* making() {
     lock(
       id,
       Effect.gen(function* removing() {
-        const login = (yield* brain.read(allLogins)).find((l) => l.id === id)
+        const login = (yield* brain.read(loginsRead)).find((l) => l.id === id)
         if (login === undefined) {
           return yield* fail("No account")
         }

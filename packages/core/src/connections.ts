@@ -27,6 +27,7 @@ import {
   allConnections,
   Brain,
   BYPASS,
+  defineRead,
   Bypass,
   ConnectionAdded,
   ConnectionRemoved,
@@ -324,6 +325,42 @@ const askedFor = (item: {
   readonly action?: { readonly args?: Readonly<Record<string, unknown>> }
 }) => str(item.action?.args?.account) || (pending(item.id)?.account ?? "")
 
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/** Every connection. */
+const connectionsRead = defineRead("core/connections/all", (db) => allConnections(db))
+
+/** Whether the user declined what this preference (`connections.allowed.<provider>:<account>`) names. */
+const declinedRead = defineRead(
+  "core/connections/declined",
+  (db, pref: string) => prefs(db)[pref] === false,
+)
+
+/** Every installed extension that reads. */
+const installedRead = defineRead("core/connections/installed", (db) => installedExtensions(db))
+
+/** The open action items. */
+const openItemsRead = defineRead("core/connections/open-items", (db) =>
+  items(db, { status: "open" }),
+)
+
+/** When a keychain service's grants last moved to connections, with any moved; else null. */
+const migratedAtRead = defineRead(
+  "core/connections/migrated-at",
+  (db, service: string) =>
+    db
+      .query<{ time: number }, [string, string]>(
+        "SELECT time FROM events WHERE type = ? AND json_extract(payload, '$.service') = ? AND json_array_length(payload, '$.ids') > 0",
+      )
+      .get(ConnectionsMigrated.type, service)?.time ?? null,
+)
+
+/** Where an ask goes: the space given, else the asker's, else Home. */
+const spaceForRead = defineRead(
+  "core/connections/space-for",
+  (db, given: string | undefined, asker: string | null) => spaceFor(db, given, asker),
+)
+
 const MINUTE = 60_000
 const WAIT = 10 * MINUTE
 
@@ -504,9 +541,9 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
         return [...by.values()]
       }
 
-      const connected = brain.read((db) => allConnections(db))
+      const connected = brain.read(connectionsRead)
       const declined = (provider: string, account?: string) =>
-        brain.read((db) => prefs(db)[`connections.allowed.${provider}:${account ?? ""}`] === false)
+        brain.read(declinedRead, `connections.allowed.${provider}:${account ?? ""}`)
 
       const clientsFor = (provider: string) =>
         Effect.gen(function* findingClients() {
@@ -551,32 +588,30 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
 
       /** What installed extensions declare in their manifests: known whether or not they run. */
       const installedNeed = (name: string) =>
-        brain
-          .read((db) => installedExtensions(db))
-          .pipe(
-            Effect.map((extensions): Option.Option<ProviderNeed> => {
-              const found = extensions.flatMap((s) =>
-                (s.manifest.connections ?? [])
-                  .filter((n) => n.provider === name)
-                  .map((n) => ({ n, extension: s.extension })),
-              )
-              const [first] = found
-              if (first === undefined) {
-                return Option.none()
-              }
-              return Option.some({
-                provider: name,
-                label: PROVIDERS.find((p) => p.name === name)?.label ?? first.n.label ?? name,
-                kind: first.n.kind ?? "oauth",
-                scopes: [...new Set(found.flatMap((f) => f.n.scopes))].toSorted(),
-                multiple: found.some((f) => f.n.multiple),
-                apps: [...new Set(found.map((f) => f.extension))],
-                sessions: found.flatMap((f) =>
-                  f.n.session === undefined ? [] : [{ app: f.extension, ...f.n.session }],
-                ),
-              })
-            }),
-          )
+        brain.read(installedRead).pipe(
+          Effect.map((extensions): Option.Option<ProviderNeed> => {
+            const found = extensions.flatMap((s) =>
+              (s.manifest.connections ?? [])
+                .filter((n) => n.provider === name)
+                .map((n) => ({ n, extension: s.extension })),
+            )
+            const [first] = found
+            if (first === undefined) {
+              return Option.none()
+            }
+            return Option.some({
+              provider: name,
+              label: PROVIDERS.find((p) => p.name === name)?.label ?? first.n.label ?? name,
+              kind: first.n.kind ?? "oauth",
+              scopes: [...new Set(found.flatMap((f) => f.n.scopes))].toSorted(),
+              multiple: found.some((f) => f.n.multiple),
+              apps: [...new Set(found.map((f) => f.extension))],
+              sessions: found.flatMap((f) =>
+                f.n.session === undefined ? [] : [{ app: f.extension, ...f.n.session }],
+              ),
+            })
+          }),
+        )
 
       const declared = (name: string) =>
         Effect.gen(function* declaring() {
@@ -641,7 +676,7 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
       /** The open asks an account answers: its own and those naming no account. */
       const asksFor = (provider: string, account: string) =>
         brain
-          .read((db) => items(db, { status: "open" }))
+          .read(openItemsRead)
           .pipe(
             Effect.map((open) =>
               open.filter(
@@ -757,7 +792,7 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
             return yield* Effect.fail(new Error("The user declined connecting this account"))
           }
           const p = yield* declared(input.provider)
-          const open = yield* brain.read((db) => items(db, { status: "open" }))
+          const open = yield* brain.read(openItemsRead)
           // An oauth ask is a Connect key; a key's is sealed and opens only with its own private half.
           // One ask per account for a provider that supports several accounts.
           const wanted = p.kind === "key" ? (input.account ?? "default") : (input.account ?? "")
@@ -1090,7 +1125,7 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
         }).pipe(Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))))
 
       const repair = Effect.gen(function* repairing() {
-        const open = yield* brain.read((db) => items(db, { status: "open" }))
+        const open = yield* brain.read(openItemsRead)
         for (const i of open.filter(
           (entry) =>
             entry.id.startsWith("connect-") &&
@@ -1523,14 +1558,7 @@ export const migrate = (service: string, provider: string, kind: Kind) =>
     const brain = yield* Brain
     const connections = yield* Connections
     // Moved once something was: a mark with none (what it held couldn't be read then) counts not.
-    const at = yield* brain.read(
-      (db) =>
-        db
-          .query<{ time: number }, [string, string]>(
-            "SELECT time FROM events WHERE type = ? AND json_extract(payload, '$.service') = ? AND json_array_length(payload, '$.ids') > 0",
-          )
-          .get(ConnectionsMigrated.type, service)?.time ?? null,
-    )
+    const at = yield* brain.read(migratedAtRead, service)
     const grants = keychain
       .accounts(service)
       .filter((a) => !a.startsWith("oauth-client") && !a.startsWith("client:"))
@@ -1544,7 +1572,7 @@ export const migrate = (service: string, provider: string, kind: Kind) =>
     if (at !== null || grants.length === 0) {
       return "done" satisfies Migrated
     }
-    const have = new Set((yield* brain.read((db) => allConnections(db))).map((c) => c.id))
+    const have = new Set((yield* brain.read(connectionsRead)).map((c) => c.id))
     for (const { account, id, grant } of grants) {
       if (have.has(id)) {
         continue
@@ -1686,7 +1714,7 @@ const request = tool(
       // Where it's asked: the space given, else the asking work's, else Home (spaceFor).
       const caller = yield* Caller
       const brain = yield* Brain
-      const space = yield* brain.read((db) => spaceFor(db, input.space, caller.space))
+      const space = yield* brain.read(spaceForRead, input.space, caller.space)
       // Keyed by the asking work, as Switchboard's gates were (kernels/gates.rs:648).
       const asker = yield* callerOf("connections_request", gave("provider", input.provider))
       const verdict = yield* gate("item", {

@@ -17,6 +17,8 @@ actions!(switch_menu, [About, Hide, HideOthers, ShowAll, CloseWindow, Minimize, 
 pub struct MenuModel {
     pub spaces: Vec<(String, String)>,
     pub inside: Vec<(String, String)>,
+    /// Home's spaces in its order, the first eight: ⌘2 to ⌘9.
+    pub top: Vec<String>,
     pub here: SpaceMenu,
     /// The window in front is full screen: the View menu offers to exit it.
     pub full: bool,
@@ -30,6 +32,7 @@ pub fn model_of(cx: &App) -> MenuModel {
     MenuModel {
         spaces: warmest(b).into_iter().map(|x| (x.id.clone(), x.name.clone())).collect(),
         inside: m.derived.children.get(&at).cloned().unwrap_or_default().iter().map(|id| (id.clone(), name(id))).collect(),
+        top: m.derived.children.get(HOME).cloned().unwrap_or_default().iter().take(8).map(name).collect(),
         here: space_menu_of(b, &at),
         full: crate::platform::lifecycle::full_screen(cx),
     }
@@ -41,7 +44,7 @@ fn item(label: &str, c: Command) -> MenuItem {
 
 /// What can be done to a space, in its right-click menu and the Space menu.
 pub fn space_items(m: &SpaceMenu) -> Vec<MenuItem> {
-    let copy = item("Copy Link", Command::CopyLink(m.id.clone()));
+    let copy = item("Copy Link", Command::CopyLink(Some(m.id.clone())));
     let split = item("Split Off", Command::Split(Some(m.id.clone())));
     if m.home {
         return vec![split, copy];
@@ -52,12 +55,12 @@ pub fn space_items(m: &SpaceMenu) -> Vec<MenuItem> {
     }
     to.extend(m.move_to.iter().map(|(id, name)| item(name, Command::Move(m.id.clone(), Some(id.clone())))));
     vec![
-        item("Rename…", Command::Rename(m.id.clone())),
+        item("Rename…", Command::Rename(Some(m.id.clone()))),
         split,
         MenuItem::submenu(Menu { name: "Move To".into(), items: to, disabled: false }),
         copy,
         MenuItem::separator(),
-        if m.archived { item("Unarchive", Command::Unarchive(m.id.clone())) } else { item("Archive", Command::Archive(m.id.clone())) },
+        if m.archived { item("Unarchive", Command::Unarchive(m.id.clone())) } else { item("Archive", Command::Archive(Some(m.id.clone()))) },
     ]
 }
 
@@ -68,16 +71,23 @@ fn menu(name: &str, items: Vec<MenuItem>) -> Menu {
 pub fn build(model: &MenuModel) -> Vec<Menu> {
     // The app's own items carry its name, as macOS's roles do.
     let app = crate::platform::appkit::app_name();
-    // The Space menu's Split Off is the one open's, on ⇧⌘N.
+    // The Space menu's items are the one open's, on their keys.
     let mut here = space_items(&model.here);
     for i in &mut here {
-        if let MenuItem::Action { name, action, .. } = i
-            && name.as_ref() == "Split Off"
-        {
-            *action = Box::new(Do(Command::Split(None)));
+        if let MenuItem::Action { name, action, .. } = i {
+            let open = match name.as_ref() {
+                "Split Off" => Some(Command::Split(None)),
+                "Rename…" => Some(Command::Rename(None)),
+                "Copy Link" => Some(Command::CopyLink(None)),
+                "Archive" => Some(Command::Archive(None)),
+                _ => None,
+            };
+            if let Some(c) = open {
+                *action = Box::new(Do(c));
+            }
         }
     }
-    let mut space = vec![item("Stop", Command::Stop), MenuItem::separator()];
+    let mut space = vec![item("Stop", Command::Stop), item("Attach Files…", Command::Attach), MenuItem::separator()];
     space.extend(here);
     space.extend([MenuItem::separator(), item("Connections", Command::Connections), item("Memory", Command::Memory)]);
     if !model.inside.is_empty() {
@@ -99,7 +109,7 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 MenuItem::action(format!("Quit {app}"), crate::Quit),
             ],
         ),
-        menu("File", vec![item("New Message", Command::Message), item("Chat", Command::Chat), MenuItem::separator(), MenuItem::action("Close Window", CloseWindow)]),
+        menu("File", vec![item("New Message", Command::Message), item("Chat", Command::Chat), item("New Space…", Command::NewSpace), MenuItem::separator(), MenuItem::action("Close Window", CloseWindow)]),
         menu(
             "Edit",
             vec![
@@ -117,7 +127,22 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 item("Find in Chat", Command::FindIn),
             ],
         ),
-        menu("View", vec![item("Find", Command::Find), item("Composer", Command::Compose), MenuItem::separator(), MenuItem::action("Zoom", Zoom), MenuItem::action(if model.full { "Exit Full Screen" } else { "Enter Full Screen" }, FullScreen)]),
+        menu(
+            "View",
+            vec![
+                item("Find…", Command::Find),
+                item("Composer", Command::Compose),
+                item("Sidebar", Command::Sidebar),
+                MenuItem::separator(),
+                item("Actual Size", Command::TextSize(0)),
+                item("Bigger Text", Command::TextSize(1)),
+                item("Smaller Text", Command::TextSize(-1)),
+                item("Light or Dark", Command::Appearance),
+                MenuItem::separator(),
+                MenuItem::action("Zoom", Zoom),
+                MenuItem::action(if model.full { "Exit Full Screen" } else { "Enter Full Screen" }, FullScreen),
+            ],
+        ),
         menu(
             "Go",
             vec![
@@ -128,8 +153,15 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 item("Enclosing Space", Command::Up),
                 item("Previous Space", Command::Previous),
                 item("Next Space", Command::Next),
+                MenuItem::separator(),
+            ]
+            .into_iter()
+            .chain(model.top.iter().enumerate().map(|(i, name)| item(name, Command::Nth(i + 1))))
+            .chain([
+                MenuItem::separator(),
                 MenuItem::submenu(menu("Spaces", model.spaces.iter().map(|(id, name)| item(if id == HOME { "Home" } else { name }, Command::Space(id.clone()))).collect())),
-            ],
+            ])
+            .collect(),
         ),
         menu("Space", space),
         menu("Window", vec![MenuItem::action("Minimize", Minimize), MenuItem::action("Zoom", Zoom), MenuItem::separator(), MenuItem::action("Bring All to Front", BringAllToFront)]),
@@ -168,21 +200,6 @@ pub fn init(cx: &mut App) {
             });
         }
     });
-    cx.bind_keys([
-        // A field's own edits, so the Edit menu shows their keys (in a field they're its own).
-        gpui::KeyBinding::new("cmd-z", text_field::Undo, Some("TextField")),
-        gpui::KeyBinding::new("cmd-shift-z", text_field::Redo, Some("TextField")),
-        gpui::KeyBinding::new("cmd-x", text_field::Cut, Some("TextField")),
-        gpui::KeyBinding::new("cmd-c", text_field::Copy, Some("TextField")),
-        gpui::KeyBinding::new("cmd-v", text_field::Paste, Some("TextField")),
-        gpui::KeyBinding::new("cmd-a", text_field::SelectAll, Some("TextField")),
-        gpui::KeyBinding::new("cmd-h", Hide, None),
-        gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
-        gpui::KeyBinding::new("cmd-w", CloseWindow, None),
-        gpui::KeyBinding::new("cmd-m", Minimize, None),
-        gpui::KeyBinding::new("ctrl-cmd-f", FullScreen, None),
-        gpui::KeyBinding::new("cmd-alt-shift-v", PasteAndMatchStyle, None),
-    ]);
 }
 
 /// The window's roles: each window answers them for itself. Closing the main window hides it, and

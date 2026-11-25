@@ -17,6 +17,7 @@ import {
   allSpaces,
   Brain,
   defineEvent,
+  defineRead,
   EventId,
   HOME,
   ItemId,
@@ -378,6 +379,10 @@ const around = (db: Database) => {
   return { surprises, expected, held, earlier, today }
 }
 
+const gatherRead = defineRead("autonomy/reflect/gather", gather)
+
+const aroundRead = defineRead("autonomy/reflect/around", around)
+
 const promptOf = (day: Day, more: ReturnType<typeof around>, measured: string) =>
   [
     `Looks so far today: ${more.today?.n ?? 0}, ${usd(more.today?.usd ?? 0)}.`,
@@ -423,11 +428,21 @@ const short = (s: string) => createHash("sha256").update(s).digest("hex").slice(
 const TITLE: Readonly<Record<Lead["kind"], string>> = { grow: "Grow", fix: "Fix", learn: "Learn" }
 
 /** A question only the user can answer: an action item in the space it bears on, or Home. */
+/** The user's rules and preferences in these spaces that bear on `about`. */
+const rulesRead = defineRead(
+  "autonomy/reflect/rules",
+  (db, spaces: readonly SpaceId[], about: string) => rulesAt(db, spaces, about),
+)
+
+const leadRead = defineRead("autonomy/reflect/lead", (db, id: string) => getLead(db, id))
+
+const memoryRead = defineRead("autonomy/reflect/memory", (db, id: string) => getMemory(db, id))
+
 const findOut = (lead: Lead, question: string, space: SpaceId) =>
   Effect.gen(function* asking() {
     const brain = yield* Brain
     const asked = `${question}\n${lead.text}`
-    const preferences = yield* brain.read((db) => rulesAt(db, [space], asked))
+    const preferences = yield* brain.read(rulesRead, [space], asked)
     const verdict = yield* gate("item", {
       key: `item:find-out-${lead.id}`,
       space,
@@ -460,7 +475,7 @@ const noteLead = (l: unknown, now: number) =>
   Effect.gen(function* noting() {
     const brain = yield* Brain
     const name = text(field(l, "name"))
-    const known = yield* brain.read((db) => getLead(db, text(field(l, "same_as"))))
+    const known = yield* brain.read(leadRead, text(field(l, "same_as")))
     if (known === null && name === "") {
       return null
     }
@@ -481,7 +496,7 @@ const noteLead = (l: unknown, now: number) =>
         },
       ]),
     )
-    return yield* brain.read((db) => getLead(db, id))
+    return yield* brain.read(leadRead, id)
   })
 
 const taken = (lead: Lead, how: "task" | "ask", ref: string) =>
@@ -597,7 +612,7 @@ const keep = (answer: unknown, day: Day) =>
     }
     for (const n of list(field(answer, "narrow")).slice(0, 5)) {
       const words = strings(field(n, "words")).map((w) => w.toLowerCase())
-      const m = yield* brain.read((db) => getMemory(db, text(field(n, "id"))))
+      const m = yield* brain.read(memoryRead, text(field(n, "id")))
       if (m?.trigger && words.length > 0) {
         yield* Effect.orDie(
           brain.ingest([
@@ -653,6 +668,13 @@ const lastLook = (db: Database) => {
     next: Number.isFinite(next) && next > 0 ? next : row.time + WAIT_MS,
   }
 }
+
+/** The last look, and the log's head: what a look reads from and through. */
+const lookedRead = defineRead("autonomy/reflect/looked", (db) => ({
+  previous: lastLook(db),
+  through:
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+}))
 
 const MINUTE = 60_000
 const SOONEST = 15 * MINUTE
@@ -726,20 +748,16 @@ export const reflect = (config: ReflectConfig) =>
     const brain = yield* Brain
     const models = yield* Models
     const now = Date.now()
-    const { previous, through } = yield* brain.read((db) => ({
-      previous: lastLook(db),
-      through:
-        db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
-    }))
+    const { previous, through } = yield* brain.read(lookedRead)
     const since = previous?.through ?? 0
     const sinceTime = previous?.time ?? now - FIRST_MS
-    const day = yield* brain.read((db) => gather(db, since, sinceTime))
-    const more = yield* brain.read(around)
+    const day = yield* brain.read(gatherRead, since, sinceTime)
+    const more = yield* brain.read(aroundRead)
     // A look goes on without its measures when they can't be read.
     const measured = yield* Effect.orElseSucceed(config.measured, () => "")
     const prompt = promptOf(day, more, measured)
     // The user's rules decide how bold a look is: what to start, ask about or leave.
-    const preferences = yield* brain.read((db) => rulesAt(db, [HOME], prompt))
+    const preferences = yield* brain.read(rulesRead, [HOME], prompt)
     const done = yield* models.complete(
       "gate",
       SYSTEM,
@@ -826,12 +844,15 @@ export const selfStartedToday = (db: Database, now: number) => {
 const UPKEEP_HOUR = 4
 const SETTLE = 5 * MINUTE
 
-const lastUpkeep = (db: Database) =>
-  db
-    .query<{ time: number | null }, []>(
-      "SELECT max(time) AS time FROM events WHERE type = 'reflection.upkept'",
-    )
-    .get()?.time ?? null
+const lastUpkeepRead = defineRead(
+  "autonomy/reflect/last-upkeep",
+  (db) =>
+    db
+      .query<{ time: number | null }, []>(
+        "SELECT max(time) AS time FROM events WHERE type = 'reflection.upkept'",
+      )
+      .get()?.time ?? null,
+)
 
 /** Is a look due now: its chosen time came, or the user just stepped away. */
 const lookDue = (db: Database, now: number) => {
@@ -845,6 +866,8 @@ const lookDue = (db: Database, now: number) => {
   return due && newsSince(db, last.through)
 }
 
+const lookDueRead = defineRead("autonomy/reflect/look-due", lookDue)
+
 /** Looks when one is due, checked each minute; upkeep each day at 4 am, or on start when overdue. */
 export const reflecting = (config: ReflectConfig) =>
   Effect.gen(function* scheduling() {
@@ -856,10 +879,10 @@ export const reflecting = (config: ReflectConfig) =>
       Effect.gen(function* minute() {
         yield* Effect.sleep(`${MINUTE} millis`)
         const now = Date.now()
-        if (yield* brain.read((db) => lookDue(db, now))) {
+        if (yield* brain.read(lookDueRead, now)) {
           yield* Effect.ignore(reflect(config), { log: "Warn", message: "Reflection failed" })
         }
-        const kept = yield* brain.read(lastUpkeep)
+        const kept = yield* brain.read(lastUpkeepRead)
         const hour = new Date(now).getHours()
         if (
           kept === null ||

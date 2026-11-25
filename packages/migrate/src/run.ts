@@ -1,7 +1,7 @@
 // A run: everything in Switchboard's log since the last run, in log order, into the brain. Each
 // page is converted and ingested in one batch, then filed: tagged with its space (as the tagger
 // would, so it never asks a model about history) and, for the user's words, read.
-import type { Database } from "bun:sqlite"
+import { Database } from "bun:sqlite"
 import { TurnEnded } from "@switch/agent"
 import type { TurnEnd } from "@switch/agent"
 import { Brain, EventId, HOME, MessageRead, SpaceTagged } from "@switch/brain"
@@ -124,13 +124,22 @@ export interface RunResult {
   readonly counts: Counts
 }
 
-/** `start`: read from this seq instead of where the last run ended, to bring over kinds it left. */
-export const run = (start?: number) =>
+/**
+ * The brain's file on a read-only connection of the run's own: the converter and the filing read it
+ * between the run's writes, each read seeing what the last ingest committed.
+ */
+const opened = (path: string) =>
+  Effect.sync(() => {
+    const db = new Database(path, { readonly: true, strict: true })
+    db.run("PRAGMA busy_timeout = 5000")
+    return db
+  })
+
+const runOn = (db: Database, start: number | undefined) =>
   Effect.gen(function* running() {
     const started = performance.now()
     const sb = yield* Switchboard
     const brain = yield* Brain
-    const db = yield* brain.read((d) => d)
     const counts: Counts = { in: new Map(), out: new Map() }
     let events = 0
 
@@ -386,3 +395,17 @@ export const run = (start?: number) =>
     events += cuts.length + 1
     return { from, through: Math.max(from, head), records, events, ms, counts } satisfies RunResult
   })
+
+/**
+ * A run into the brain at `path`. `start`: read from this seq instead of where the last run ended,
+ * to bring over kinds it left.
+ */
+export const run = (path: string, start?: number) =>
+  Effect.acquireUseRelease(
+    opened(path),
+    (db) => runOn(db, start),
+    (db) =>
+      Effect.sync(() => {
+        db.close()
+      }),
+  )

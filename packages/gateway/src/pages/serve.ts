@@ -2,7 +2,7 @@
 // `/p/<token>` is the page; `/pdf` it printed; `/calendar.ics` its dated plans as a calendar;
 // `/blobs/<hash>` an image it shows, and only one it shows. A page taken down says so (410). These
 // are all a pages-only listener serves, which is what a public proxy points at.
-import { Blobs, Brain, hashOf } from "@switch/brain"
+import { Blobs, Brain, defineRead, hashOf } from "@switch/brain"
 import { Effect, Option, Schema } from "effect"
 
 import { Preview } from "../preview.ts"
@@ -27,6 +27,9 @@ const PAGE_POLICY =
 
 const decodeBody = Schema.decodeUnknownOption(Schema.fromJsonString(PageBody))
 const decodeEvents = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(PageEvent)))
+
+/** Every page, by name (reads.ts), so it's read in a reader thread. */
+const pagesRead = defineRead("gateway/pages-serve/pages", (db) => allPages(db))
 
 const answer = (
   status: number,
@@ -84,7 +87,7 @@ export const pagesRoute = Effect.gen(function* routing() {
     if (!/^[0-9a-f]{32}$/u.test(token)) {
       return null
     }
-    const rows = await Effect.runPromise(brain.read(allPages))
+    const rows = await Effect.runPromise(brain.read(pagesRead))
     if (!byToken.has(token)) {
       for (const row of rows) {
         byToken.set(pages.tokenOf(row.id), row.id)

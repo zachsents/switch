@@ -4,9 +4,8 @@
 // on the time. The first row it finds closes the item as resolved, with what it found, and whoever
 // waits on it hears (core/asks.ts). Nothing here asks a model; an item whose `resolveWhen` isn't a
 // query is left to triage, which reads it as words.
-import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
-import type { StoredEvent } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
+import type { BrainShape, StoredEvent } from "@switch/brain"
 import { Effect, Stream } from "effect"
 
 import { CloseItem, getItem, items } from "./items.ts"
@@ -57,17 +56,32 @@ const watchOf = (i: ActionItem | null, zone: string): Watch | null => {
   }
 }
 
-/** Its first row now, or why it can't run. */
-const firstRow = (db: Database, p: Prepared, zone: string) => {
+/**
+ * Its first row now, or why it can't run; with the entities the run read (`members`), which the
+ * run keeps on the query it was given, a copy in the reader, for `firstRow` to keep on the watch's.
+ */
+const firstRowRead = defineRead("autonomy/resolve/first-row", (db, p: Prepared, zone: string) => {
   try {
-    return { row: run(db, p, Date.now(), zone).rows[0] ?? null }
+    return { row: run(db, p, Date.now(), zone).rows[0] ?? null, members: p.members }
   } catch (error) {
-    return { error: messageOf(error) }
+    return { error: messageOf(error), members: p.members }
   }
-}
+})
 
-const head = (db: Database) =>
-  db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+/** Its first row now, or why it can't run. */
+const firstRow = (brain: BrainShape, p: Prepared, zone: string) =>
+  Effect.map(brain.read(firstRowRead, p, zone), (found) => {
+    p.members = found.members
+    return found
+  })
+
+const headRead = defineRead(
+  "autonomy/resolve/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+const openRead = defineRead("autonomy/resolve/open", (db) => items(db, { status: "open" }))
+const itemRead = defineRead("autonomy/resolve/item", getItem)
 
 export const resolveWatch = Effect.gen(function* watching() {
   const brain = yield* Brain
@@ -83,8 +97,8 @@ export const resolveWatch = Effect.gen(function* watching() {
   }
 
   // Listening from before reading, so nothing between slips by.
-  const from = yield* brain.read(head)
-  for (const i of yield* brain.read((db) => items(db, { status: "open" }))) {
+  const from = yield* brain.read(headRead)
+  for (const i of yield* brain.read(openRead)) {
     keep(i.id, i)
   }
   const arrived = (e: StoredEvent) =>
@@ -92,7 +106,7 @@ export const resolveWatch = Effect.gen(function* watching() {
       noteType(e)
       const id = field(e.payload, "id")
       if (e.type.startsWith("item.") && typeof id === "string") {
-        keep(id, yield* brain.read((db) => getItem(db, id)))
+        keep(id, yield* brain.read(itemRead, id))
         return
       }
       for (const watch of watches.values()) {
@@ -126,7 +140,7 @@ export const resolveWatch = Effect.gen(function* watching() {
         continue
       }
       const started = performance.now()
-      const found = yield* brain.read((db) => firstRow(db, watch.prepared, zone))
+      const found = yield* firstRow(brain, watch.prepared, zone)
       const took = performance.now() - started
       watch.ran = Date.now()
       watch.dirty = false

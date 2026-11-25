@@ -1,4 +1,7 @@
-export { Brain } from "./brain.ts"
+export { Brain, knowProjections } from "./brain.ts"
+export { defineRead, readNames } from "./reads.ts"
+export type { Read } from "./reads.ts"
+export { makeReaders, serveReads, SLOW_READ_MS } from "./readers.ts"
 export { behind, checkpointing } from "./checkpoint.ts"
 export {
   Fingerprints,

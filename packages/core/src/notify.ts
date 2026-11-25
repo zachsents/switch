@@ -15,6 +15,7 @@ import { dialNumber, rulesAt } from "@switch/autonomy"
 import {
   Brain,
   defineEvent,
+  defineRead,
   EventId,
   HOME,
   on,
@@ -30,7 +31,7 @@ import { Models } from "@switch/models"
 import type { Question } from "@switch/models"
 import { Effect, Layer, Option, Schema } from "effect"
 
-import { spaceAbout } from "./asks.ts"
+import { spaceAboutRead } from "./asks.ts"
 import { threadOf } from "./context.ts"
 import { here, macs } from "./presence.ts"
 import { pushFailed, pushWorks } from "./trouble.ts"
@@ -304,6 +305,53 @@ const spaceName = (db: Database, id: string) =>
   db.query<{ name: string }, [string]>("SELECT name FROM spaces WHERE id = ?").get(id)?.name ??
   "Home"
 
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/** The user's rules in a space for these words. */
+const rulesRead = defineRead("core/notify/rules", (db, space: SpaceId, words: string) =>
+  rulesAt(db, [space], words),
+)
+
+/** A space's name, Home when it has none. */
+const spaceNameRead = defineRead("core/notify/space-name", (db, id: string) => spaceName(db, id))
+
+/** The Mac the user is at, else null. */
+const hereRead = defineRead("core/notify/here", (db, now: number) => here(db, now))
+
+/** Each Mac's last word of attention, the latest first. */
+const macsRead = defineRead("core/notify/macs", (db, now: number) => macs(db, now))
+
+/** Whether the user read a space through `seq`, or touched Switch at all, since `since`. */
+const seenRead = defineRead(
+  "core/notify/seen",
+  (db, space: SpaceId, seq: number, since: number) =>
+    readThrough(db, space) >= seq || touched(db, since),
+)
+
+/** What waits to notify. */
+const queuedRead = defineRead("core/notify/queued", (db) => queued(db))
+
+/** What an activity's end last told, else null. */
+const toldRead = defineRead("core/notify/told", (db, id: string, seq: number) =>
+  toldOf(db, id, seq),
+)
+
+/** A task's report in a space before `seq`, else null. */
+const reportInRead = defineRead("core/notify/report-in", (db, space: SpaceId, seq: number) =>
+  reportIn(db, space, seq),
+)
+
+/** Whether the last words before `seq` in a space that weren't the agent's are a peer's. */
+const answersPeerRead = defineRead("core/notify/answers-peer", (db, space: string, seq: number) =>
+  answersPeer(db, space, seq),
+)
+
+/** How long a reply waits to notify, and the key of the reply already waiting in a space. */
+const waitingRead = defineRead("core/notify/waiting", (db, space: string) => ({
+  minutes: dialNumber(db, "notify.after"),
+  waiting: replyWaiting(db, space),
+}))
+
 const SETTLE_MS = 5000
 const LONGEST_MS = 20_000
 
@@ -370,7 +418,7 @@ export const notifier = (phone: Phone) =>
         Effect.gen(function* reading() {
           const kind = n.kind === "item" || n.kind === "report" ? n.kind : "reply"
           const said = saidOf(n)
-          const rules = yield* brain.read((db) => rulesAt(db, [n.space], said))
+          const rules = yield* brain.read(rulesRead, n.space, said)
           if (rules === "") {
             return true
           }
@@ -384,7 +432,7 @@ export const notifier = (phone: Phone) =>
       /** Through the desktop extension on `machine`: true if it took it, shown or held back. */
       const onMac = (machine: string, n: Note) =>
         Effect.gen(function* mac() {
-          const name = yield* brain.read((db) => spaceName(db, n.space))
+          const name = yield* brain.read(spaceNameRead, n.space)
           const result = yield* Effect.tryPromise(
             async () =>
               await gateway.call(`desktop-${machine}_notify`, {
@@ -405,7 +453,7 @@ export const notifier = (phone: Phone) =>
       const send = (n: Note) =>
         Effect.gen(function* sending() {
           const now = Date.now()
-          const at = yield* brain.read((db) => here(db, now))
+          const at = yield* brain.read(hereRead, now)
           if (at !== null && (yield* onMac(at.machine, n))) {
             return
           }
@@ -425,7 +473,7 @@ export const notifier = (phone: Phone) =>
               : pushFailed(n.space, clipTo(lineOfNote(n), 70), pushed.reason)
             return
           }
-          const [last] = yield* brain.read((db) => macs(db, now))
+          const [last] = yield* brain.read(macsRead, now)
           if (last !== undefined && last.machine !== at?.machine) {
             yield* onMac(last.machine, n)
           }
@@ -450,9 +498,7 @@ export const notifier = (phone: Phone) =>
         Effect.gen(function* checking() {
           const n = q.note
           if (n.kind === "reply" || n.kind === "report") {
-            const read = yield* brain.read(
-              (db) => readThrough(db, n.space) >= (n.seq ?? 0) || touched(db, q.since),
-            )
+            const read = yield* brain.read(seenRead, n.space, n.seq ?? 0, q.since)
             if (read) {
               yield* record([done(q.key)])
               return
@@ -498,7 +544,7 @@ export const notifier = (phone: Phone) =>
           Effect.gen(function* ticking() {
             yield* Effect.sleep("1 second")
             const now = Date.now()
-            const all = yield* brain.read(queued)
+            const all = yield* brain.read(queuedRead)
             yield* Effect.forEach(
               all.filter((q) => !q.ready && q.due <= now),
               (q) => Effect.ignore(check(q), { log: "Warn" }),
@@ -517,7 +563,7 @@ export const notifier = (phone: Phone) =>
           if (a?.follow !== true || (a.state !== "done" && a.state !== "failed")) {
             return
           }
-          const told = yield* brain.read((db) => toldOf(db, a.id, e.seq))
+          const told = yield* brain.read(toldRead, a.id, e.seq)
           if (told === a.state) {
             return
           }
@@ -537,7 +583,7 @@ export const notifier = (phone: Phone) =>
         Effect.gen(function* handling() {
           const alerted = alertOf(e)
           if (alerted !== null) {
-            const space = yield* brain.read((db) => spaceAbout(db, alerted.about ?? []))
+            const space = yield* brain.read(spaceAboutRead, alerted.about ?? [])
             const { data } = alerted
             // An app's own notification goes as `sb notify` sent it, at once.
             yield* queue(
@@ -594,21 +640,18 @@ export const notifier = (phone: Phone) =>
           // (notify.rs:262-266, 277-280). What the post tool said is news only as a task's report,
           // said once a task the space's thread started finished (notify.rs:212-227, 422-430).
           const report =
-            posted.turn === undefined ? yield* brain.read((db) => reportIn(db, space, e.seq)) : null
+            posted.turn === undefined ? yield* brain.read(reportInRead, space, e.seq) : null
           if (posted.turn === undefined && report === null) {
             return
           }
           // An answer to another agent is between agents: what needs the user from it goes in their
           // queue.
-          if (yield* brain.read((db) => answersPeer(db, space, e.seq))) {
+          if (yield* brain.read(answersPeerRead, space, e.seq)) {
             return
           }
           // A reply waiting to be read, by space: a newer one stands for the one before it
           // (notify.rs:178-185 `replaces`), due when the first was.
-          const { minutes, waiting } = yield* brain.read((db) => ({
-            minutes: dialNumber(db, "notify.after"),
-            waiting: replyWaiting(db, space),
-          }))
+          const { minutes, waiting } = yield* brain.read(waitingRead, space)
           yield* queue(
             e,
             {

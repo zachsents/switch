@@ -8,6 +8,7 @@ import {
   allSpaces,
   Brain,
   defineEvent,
+  defineRead,
   EventId,
   HOME,
   ItemId,
@@ -224,9 +225,9 @@ export const notesSince = (db: Database, space: SpaceId, since: number): Note[] 
 
 const SYSTEM = `You triage events for Switch, the user's personal agent. Switch keeps a tree of spaces (projects and sub-projects), each with one master thread and an agent working in it. Every event below already lives in one space (given). For each event decide:
 
-- "v": "wake" when the space's agent should take care of it now: a person's message to the user or their business (a text, an email, a DM) that bears on the space, whatever it asks or says, so the agent drafts the reply, does the work or decides nothing's needed; and the user waiting on it, something broken or about to break, a deadline near, a job the agent started failing or finishing (the work that started it hears it). "note" only for what asks nothing of anyone, which the agent reads next time it looks: automated notices, status changes, receipts, updates on something already handled. Anything that needs a reply or action is "wake", never "note". A person's message in a conversation the user handles themselves (marked so) goes by "acts" below instead. "ignore" when no one working on its space needs it (noise, spam, marketing, routine state nothing hinges on).
+- "v": "wake" when the space's agent should take care of it now: a person's message to the user or their business (a text, an email, a DM) with something in it to act on ("acts" below), so the agent drafts the reply or does the work; and the user waiting on it, something broken or about to break, a deadline near, a job the agent started failing or finishing (the work that started it hears it). "note" only for what asks nothing of anyone, which the agent reads next time it looks: automated notices, status changes, receipts, updates on something already handled. Anything that needs a reply or action is "wake", never "note". A person's message goes by "acts" below. "ignore" when no one working on its space needs it (noise, spam, marketing, routine state nothing hinges on).
 - "person": true when the event is a message a person wrote to the user or their business, not an automated sender (a notification, alert, newsletter, receipt or no-reply address).
-- "acts": only for a message marked as in a conversation the user handles themselves: true when it holds business, logistics Switch should act on (a booking, a delivery, a payment, something to schedule or look up) or an ask of Switch; false when it's personal (chatter, feelings, plans or questions between the two of them, however pressing it sounds), which the user is answering already. False for every other event.
+- "acts": for a person's message: true when it holds something Switch should act on: business, logistics (a booking, a delivery, a payment, something to schedule or look up), a request or a question waiting on the user's answer, or an ask of Switch. False when it's personal with nothing to act on (chatter, news, jokes, feelings, a photo or file shared, a reaction), from family, friends or anyone, which the user reads themselves: it's a note. In a conversation the user handles themselves (marked so), personal plans or questions between the two of them are false too, however pressing they sound: the user is answering already. False for every other event.
 - "note": for note or wake, one line under 120 characters saying what changed, with the names and numbers that matter, about this event's own subject only: never restate other lines or other events. Empty for ignore.
 - "line": true only for an app's event the user would want to see in its space's chat as it happens: an outcome such as an order paid, a delivery arrived, a print the user asked for done. Never for routine state, progress, messages or chatter, nor for the agent's own jobs (a build, a simulation, a script, a render it started), whose work hears how they end, nor for trouble in Switch itself (an extension or source down or crash-looping, an error): that is the agent's to fix, a "wake", not the user's to watch. Most events are false.
 - "same": for a line, the line it continues when its subject has one: an id from "Lines in its space's chat now" ("L123"), or an earlier event in this batch that makes a line ("e2"). One subject is one line, revised in place to its latest state however it moves or is worded: an order placed, shipped and delivered is one line; "delayed", "still delayed", "delayed again, now Friday" are one delay. Its note then says the latest, with since when. "" only for a subject no line has yet (another order, another printer, a new job).
@@ -380,6 +381,40 @@ export interface TriageConfig {
   readonly openLine: (db: Database, space: SpaceId, key: string) => OpenLine | null
   /** A space's chat lines revised lately, newest first: what a line can continue. */
   readonly openLines: (db: Database, space: SpaceId) => readonly OpenLine[]
+  /**
+   * The name its functions are registered under in every thread (`registerTriage`), `TRIAGE` when
+   * unset: triage's reads run in the brain's reader threads, where a function can't be handed over.
+   */
+  readonly lines?: string
+}
+
+/** What triage's reads call of its config. */
+export type TriageLines = Pick<TriageConfig, "line" | "threadOf" | "openLine" | "openLines">
+
+/** The name the core registers its triage functions under. */
+export const TRIAGE = "core"
+
+const registered = new Map<string, TriageLines>()
+
+/**
+ * Triage's functions by name, for its reads to call wherever they run: the core registers its own
+ * at a module's top level, so each reader thread, loading the same modules, has them too.
+ */
+export const registerTriage = (name: string, lines: TriageLines) => {
+  registered.set(name, {
+    line: lines.line,
+    threadOf: lines.threadOf,
+    openLine: lines.openLine,
+    openLines: lines.openLines,
+  })
+}
+
+const linesOf = (name: string) => {
+  const lines = registered.get(name)
+  if (lines === undefined) {
+    throw new Error(`No triage functions registered as ${name} in this thread (registerTriage)`)
+  }
+  return lines
 }
 
 /** Whether a rule decided on this record lately. */
@@ -511,8 +546,8 @@ const context = (
     byId,
     meetable: new Set([...expected.map((x) => x.id), ...resolving.map((i) => i.id)]),
     resolving: new Set<string>(resolving.map((i) => i.id)),
-    lines: (space: SpaceId): ReadonlySet<number> =>
-      new Set((lines.get(space) ?? []).map((o) => o.seq)),
+    /** Each space's chat lines now, by seq. */
+    shown: new Map([...lines].map(([space, l]) => [space, new Set(l.map((o) => o.seq))] as const)),
   }
 }
 
@@ -774,28 +809,22 @@ const handledBy = (db: Database, t: Tagged) => {
 }
 
 /**
- * A person's message it doesn't ignore wakes its space: the agent takes care of it. One a source
- * brought in long after it was sent (a backfill of history) goes by the model's verdict. One in a
- * conversation the user handles themselves wakes only for what Switch should act on ("acts"), and
- * is a note otherwise, whatever the verdict: the model's "wake" there has contradicted its own note
- * ("personal, leave it to him").
+ * A person's message it doesn't ignore wakes its space only for what Switch should act on ("acts"),
+ * and is a note otherwise, whatever the verdict: the model's "wake" for personal chatter has
+ * contradicted its own note ("personal, no action needed"). One a source brought in long after it
+ * was sent (a backfill of history) wakes only when the model says wake too.
  */
 const verdictOf = (
   a: { readonly verdict: Sorting; readonly person: boolean; readonly acts: boolean },
   t: Tagged,
   handled: boolean,
 ) => {
-  if (handled && fromSomeone(t) && a.verdict !== "ignore") {
-    return a.acts ? "wake" : "note"
+  if (a.verdict === "ignore" || !fromSomeone(t) || !(a.person || handled)) {
+    return a.verdict
   }
   const m = messageOf(t.event.type, t.event.payload, t.event.time)
-  return a.verdict === "note" &&
-    a.person &&
-    fromSomeone(t) &&
-    m !== null &&
-    m.at >= t.event.time - LATE_MS
-    ? "wake"
-    : a.verdict
+  const late = m === null || m.at < t.event.time - LATE_MS
+  return a.acts && (a.verdict === "wake" || !late) ? "wake" : "note"
 }
 
 /**
@@ -896,52 +925,321 @@ const placed = (db: Database, t: Tagged): Tagged => {
   return { ...t, home }
 }
 
+// Switchboard's `wakes.first`: only the first record about an entity counts, never the ones that
+// say it changed (a status said again, an ETA moved, another layer printed). Each entity's first
+// seq, by its type, as this connection found it: a record's seq on the log never changes.
+const firstSeqs = new WeakMap<Database, Map<string, number>>()
+const firstAbout = (db: Database, t: Tagged, entity: string | undefined) => {
+  if (entity === undefined || entity === "") {
+    return true
+  }
+  const firsts = firstSeqs.get(db) ?? new Map<string, number>()
+  firstSeqs.set(db, firsts)
+  const key = `${t.event.type}\n${entity}`
+  let seq = firsts.get(key)
+  if (seq === undefined) {
+    seq =
+      db
+        .query<{ seq: number | null }, [string, string]>(
+          "SELECT min(seq) AS seq FROM events WHERE type = ? AND json_extract(payload, '$.data.entity') = ?",
+        )
+        .get(t.event.type, entity)?.seq ?? t.event.seq
+    firsts.set(key, seq)
+  }
+  return seq === t.event.seq
+}
+
+// What's said again or answered already: a job's record when it says what its last did.
+const laterIn = (db: Database, batch: readonly Tagged[], owners: ReadonlyMap<number, ThreadId>) =>
+  new Set(
+    batch
+      .filter((t) =>
+        owners.has(t.event.seq)
+          ? repeats(db, t.event)
+          : ownWords(t) ||
+            answered(db, t) ||
+            recordedBefore(db, t) ||
+            (!fromSomeone(t) && !firstAbout(db, t, t.line.entity)),
+      )
+      .map((t) => t.event.seq),
+  )
+
+/** The rules whose filters let this record in, as Switchboard gathered records for each kernel. */
+const hitsOf = (
+  db: Database,
+  threadOf: TriageConfig["threadOf"],
+  wakeRules: readonly WakeRule[],
+  t: Tagged,
+) => {
+  // Never the work it wakes (ponder.rs:80): its own turns would wake it again.
+  const stream = text(field(t.event.payload, "stream"))
+  if (stream.startsWith("work/") && stream === `work/${threadOf(placed(db, t).home)}`) {
+    return []
+  }
+  // A rule's `first` is by the record's own entity (ponder.rs:252-257), which a message's line
+  // (mail marked read, seen again) doesn't carry.
+  const entity = text(field(bodyOf(t.event.payload), "entity"))
+  return wakeRules.flatMap((rule) =>
+    rule.wakes !== null &&
+    lets(rule.wakes, t.event) &&
+    (!rule.wakes.first || firstAbout(db, t, entity))
+      ? [rule]
+      : [],
+  )
+}
+
+/** Whether the bearing kernel reads this record (bearing.ts), first by its own entity too. */
+const bears = (db: Database, t: Tagged) =>
+  BEARING.wakes !== null &&
+  lets(BEARING.wakes, t.event) &&
+  firstAbout(db, t, text(field(bodyOf(t.event.payload), "entity")))
+
+// Triage's reads, by name, so they run in the core's reader threads (brain's reads.ts). `lines`
+// names the config's functions (registerTriage).
+
+const openLineRead = defineRead(
+  "autonomy/triage/open-line",
+  (db, lines: string, space: SpaceId, key: string) => linesOf(lines).openLine(db, space, key),
+)
+
+/** When the user last wrote in each event's conversation, for those they handle themselves. */
+const handledRead = defineRead(
+  "autonomy/triage/handled",
+  (db, batch: readonly Tagged[]) =>
+    new Map(
+      batch.flatMap((t) => {
+        const last = handledBy(db, t)
+        return last === null ? [] : [[t.event.seq, last] as const]
+      }),
+    ),
+)
+
+const contextRead = defineRead(
+  "autonomy/triage/context",
+  (db, lines: string, batch: readonly Tagged[], handled: ReadonlyMap<number, number>) => {
+    const l = linesOf(lines)
+    return context(db, batch, (e) => l.line(e)?.text ?? "", l.openLines, handled)
+  },
+)
+
+/** The events of a batch the fast path woke already. */
+const fastWokeRead = defineRead(
+  "autonomy/triage/fast-woke",
+  (db, batch: readonly Tagged[]) =>
+    new Set(
+      batch.flatMap((t) =>
+        db.query("SELECT 1 FROM triage_woke WHERE seq = ?").get(t.event.seq) === null
+          ? []
+          : [t.event.seq],
+      ),
+    ),
+)
+
+/** The work that started each job a record of the batch reports on. */
+const ownersRead = defineRead(
+  "autonomy/triage/owners",
+  (db, batch: readonly Tagged[]) =>
+    new Map(
+      batch.flatMap((t) => {
+        const owner = ownerOf(db, t.event)
+        return owner === null ? [] : [[t.event.seq, owner] as const]
+      }),
+    ),
+)
+
+const laterRead = defineRead(
+  "autonomy/triage/later",
+  (db, batch: readonly Tagged[], owners: ReadonlyMap<number, ThreadId>) =>
+    laterIn(db, batch, owners),
+)
+
+/** The wakes a batch gives: read late, only those whose work hasn't had a turn since `through`. */
+const wakingRead = defineRead(
+  "autonomy/triage/waking",
+  (
+    db,
+    wakes: readonly (readonly [ThreadId, string[]])[],
+    late: boolean,
+    owed: ReadonlySet<ThreadId>,
+    through: number,
+  ) => wakes.filter(([thread]) => !late || owed.has(thread) || !turnSince(db, thread, through)),
+)
+
+const readTagsRead = defineRead(
+  "autonomy/triage/read-tags",
+  (db, lines: string, tags: readonly StoredEvent[]) => readTags(db, tags, linesOf(lines).line),
+)
+
+/** The tags at these seqs, read as a batch. */
+const tagsAtRead = defineRead(
+  "autonomy/triage/tags-at",
+  (db, lines: string, seqs: readonly number[]) => {
+    const get = db.query<EventRow, [number]>("SELECT * FROM events WHERE seq = ?")
+    const tags = seqs.flatMap((seq) => {
+      const row = get.get(seq)
+      return row ? [stored(row)] : []
+    })
+    return readTags(db, tags, linesOf(lines).line)
+  },
+)
+
+const headRead = defineRead(
+  "autonomy/triage/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+
+const decidedForRead = defineRead("autonomy/triage/decided-for", (db, rule: string, seq: number) =>
+  decidedFor(db, rule, seq),
+)
+
+/** A burst's records, each once, that no batch woke its space for, where each belongs by now. */
+const burstFreshRead = defineRead("autonomy/triage/burst-fresh", (db, records: readonly Tagged[]) =>
+  records
+    .filter(
+      (t, i) =>
+        records.findIndex((r) => r.event.seq === t.event.seq) === i && !batchWoke(db, t.event.seq),
+    )
+    .map((t) => placed(db, t)),
+)
+
+/** The Mac each extension runs on, when it's placed. */
+const machinesRead = defineRead("autonomy/triage/machines", (db, sources: readonly string[]) => {
+  const get = db.query<{ machine: string }, [string]>(
+    "SELECT machine FROM extension_placements WHERE extension = ?",
+  )
+  return new Map(sources.map((source) => [source, get.get(source)?.machine ?? null]))
+})
+
+/** Each rule gathering since `after`, and the seq it gathers again from. */
+const pendingRead = defineRead("autonomy/triage/pending", (db, after: number) =>
+  db
+    .query<{ rule: string; seq: number }, [number]>(
+      `SELECT rule, max(first, decided + 1) AS seq FROM (
+         SELECT json_extract(g.payload, '$.rule') AS rule, min(json_extract(g.payload, '$.seq')) AS first,
+           coalesce((
+             SELECT max(json_extract(r.value, '$.seq')) FROM events d, json_each(json_extract(d.payload, '$.records')) r
+             WHERE d.type = 'triage.decided' AND json_extract(d.payload, '$.rule') = json_extract(g.payload, '$.rule')), 0) AS decided
+         FROM events g WHERE g.type = 'triage.gathering' AND g.time > ?
+         GROUP BY rule)`,
+    )
+    .all(after),
+)
+
+/** The records a rule may read from `from` on, after `after` (a time). */
+const recordsFromRead = defineRead(
+  "autonomy/triage/records-from",
+  (db, lines: string, from: number, after: number) =>
+    db
+      .query<EventRow, [number, number]>(
+        "SELECT * FROM events WHERE seq >= ? AND time > ? AND (json_extract(payload, '$.stream') IS NOT NULL OR type IN ('item.opened', 'turn.started', 'item.answered')) ORDER BY seq",
+      )
+      .all(from, after)
+      .map(stored)
+      .flatMap((e) => recordOf(db, asRecord(db, e), linesOf(lines).line) ?? []),
+)
+
+/**
+ * The wake rules (by their place in `wakeRules`) whose filters let a record in, when `ruled`, and
+ * whether the bearing kernel reads it, when `bearing`.
+ */
+const hitsRead = defineRead(
+  "autonomy/triage/hits",
+  (
+    db,
+    lines: string,
+    wakeRules: readonly WakeRule[],
+    t: Tagged,
+    ruled: boolean,
+    bearing: boolean,
+  ) => {
+    const hit = ruled
+      ? new Set(hitsOf(db, linesOf(lines).threadOf, wakeRules, t))
+      : new Set<WakeRule>()
+    return {
+      rules: wakeRules.flatMap((rule, i) => (hit.has(rule) ? [i] : [])),
+      bears: bearing && bears(db, t),
+    }
+  },
+)
+
+/** Batches deferred and not read since, the oldest `limit`, each by its latest deferral. */
+const deferredRead = defineRead("autonomy/triage/deferred", (db, limit: number) =>
+  db
+    .query<{ through: number; tags: string; late: number | null; model: string | null }, [number]>(
+      // The latest deferral of a batch says how it's read.
+      `SELECT json_extract(d.payload, '$.through') AS through, json_extract(d.payload, '$.tags') AS tags,
+         json_extract(d.payload, '$.late') AS late, json_extract(d.payload, '$.model') AS model
+       FROM events d WHERE d.type = 'triage.deferred' AND NOT EXISTS (
+         SELECT 1 FROM events s WHERE s.id = 'sorted:' || json_extract(d.payload, '$.through'))
+         AND d.seq = (SELECT max(o.seq) FROM events o WHERE o.type = 'triage.deferred'
+           AND json_extract(o.payload, '$.through') = json_extract(d.payload, '$.through'))
+       ORDER BY d.seq LIMIT ?`,
+    )
+    .all(limit),
+)
+
+const firstAboutRead = defineRead(
+  "autonomy/triage/first-about",
+  (db, t: Tagged, entity: string | undefined) => firstAbout(db, t, entity),
+)
+
+const quickRead = defineRead("autonomy/triage/quick", (db, lines: string, t: Tagged) => {
+  const l = linesOf(lines)
+  return quick(db, t, (e) => l.line(e)?.text ?? "")
+})
+
+/** The records rules may read among these events. */
+const recordsOfRead = defineRead(
+  "autonomy/triage/records-of",
+  (db, lines: string, events: readonly StoredEvent[]) =>
+    events.flatMap((e) => recordOf(db, e, linesOf(lines).line) ?? []),
+)
+
+/** The records among these events that the bearing kernel reads. */
+const bearingRead = defineRead(
+  "autonomy/triage/bearing",
+  (db, lines: string, events: readonly StoredEvent[]) =>
+    events.flatMap((e) => {
+      const t = recordOf(db, asRecord(db, e), linesOf(lines).line)
+      return t !== null && bears(db, t) ? [t] : []
+    }),
+)
+
+/** The tags the fast path decides on: news, on time, in no conversation the user handles. */
+const fastTagsRead = defineRead(
+  "autonomy/triage/fast-tags",
+  (db, lines: string, tags: readonly StoredEvent[], now: number) =>
+    readTags(db, tags, linesOf(lines).line).filter(
+      (t) =>
+        t.line.home === undefined &&
+        t.line.fast !== true &&
+        !ownWords(t) &&
+        !cameLate(t, now) &&
+        // A message said again is no news; one in a conversation the user handles
+        // themselves waits for its batch, which weighs what it asks.
+        !recordedBefore(db, t) &&
+        handledBy(db, t) === null &&
+        // Read again after a restart, one it woke already isn't decided twice.
+        db.query("SELECT 1 FROM triage_woke WHERE seq = ?").get(t.event.seq) === null,
+    ),
+)
+
+const readThroughRead = defineRead("autonomy/triage/read-through", readThrough)
+
+const notesSinceRead = defineRead(
+  "autonomy/triage/notes-since",
+  (db, space: SpaceId, since: number) => notesSince(db, space, since),
+)
+
 /** Sorts the tags in each batch the brain commits; returns the turns to wake. */
 export const makeTriage = (config: TriageConfig) =>
   Effect.gen(function* triaging() {
     const brain = yield* Brain
     const models = yield* Models
-
-    // Switchboard's `wakes.first`: only the first record about an entity counts, never the ones that
-    // say it changed (a status said again, an ETA moved, another layer printed). Each entity's
-    // first seq, by its type.
-    const firsts = new Map<string, number>()
-    const firstAbout = (db: Database, t: Tagged, entity: string | undefined) => {
-      if (entity === undefined || entity === "") {
-        return true
-      }
-      const key = `${t.event.type}\n${entity}`
-      let seq = firsts.get(key)
-      if (seq === undefined) {
-        seq =
-          db
-            .query<{ seq: number | null }, [string, string]>(
-              "SELECT min(seq) AS seq FROM events WHERE type = ? AND json_extract(payload, '$.data.entity') = ?",
-            )
-            .get(t.event.type, entity)?.seq ?? t.event.seq
-        firsts.set(key, seq)
-      }
-      return seq === t.event.seq
-    }
-
-    // What's said again or answered already: a job's record when it says what its last did.
-    const laterIn = (
-      db: Database,
-      batch: readonly Tagged[],
-      owners: ReadonlyMap<number, ThreadId>,
-    ) =>
-      new Set(
-        batch
-          .filter((t) =>
-            owners.has(t.event.seq)
-              ? repeats(db, t.event)
-              : ownWords(t) ||
-                answered(db, t) ||
-                recordedBefore(db, t) ||
-                (!fromSomeone(t) && !firstAbout(db, t, t.line.entity)),
-          )
-          .map((t) => t.event.seq),
-      )
+    // Its functions, for its reads in this thread; the core's are registered for every thread.
+    const registeredAs = config.lines ?? TRIAGE
+    registerTriage(registeredAs, config)
 
     // A line's condition, and the line it revises: the one the model named for its subject (a line
     // in its space's chat, or one an earlier event of the batch makes), else the same condition
@@ -962,8 +1260,7 @@ export const makeTriage = (config: TriageConfig) =>
         const { space } = at
         const key = conditionKey(t.event, t.line)
         const where = `${space}\n${key}`
-        const open =
-          shown.get(where) ?? (yield* brain.read((db) => config.openLine(db, space, key)))
+        const open = shown.get(where) ?? (yield* brain.read(openLineRead, registeredAs, space, key))
         const said =
           open !== null && t.event.time - open.updated < LINE_FRESH && open.said === t.line.text
             ? open.seq
@@ -1007,45 +1304,22 @@ export const makeTriage = (config: TriageConfig) =>
           .filter((x) => x !== "")
           .join("\n\n")
         const stable = read === "" ? SYSTEM : `${SYSTEM}\n\n${read}`
-        const handled = yield* brain.read(
-          (db) =>
-            new Map(
-              batch.flatMap((t) => {
-                const last = handledBy(db, t)
-                return last === null ? [] : [[t.event.seq, last] as const]
-              }),
-            ),
-        )
-        const c = yield* brain.read((db) =>
-          context(db, batch, (e) => config.line(e)?.text ?? "", config.openLines, handled),
-        )
+        const handled = yield* brain.read(handledRead, batch)
+        const sortedIn = yield* brain.read(contextRead, registeredAs, batch, handled)
+        const c = {
+          ...sortedIn,
+          lines: (space: SpaceId): ReadonlySet<number> => sortedIn.shown.get(space) ?? new Set(),
+        }
         const done = yield* model === undefined
           ? models.complete("triage", stable, c.item)
           : models.completeOn(model, stable, c.item)
         const reply = jsonOf(done.text)
         // What the fast path woke already: noted here, not woken twice.
-        const woke = yield* brain.read(
-          (db) =>
-            new Set(
-              batch.flatMap((t) =>
-                db.query("SELECT 1 FROM triage_woke WHERE seq = ?").get(t.event.seq) === null
-                  ? []
-                  : [t.event.seq],
-              ),
-            ),
-        )
+        const woke = yield* brain.read(fastWokeRead, batch)
         // The work that started each job a record reports on: its record wakes that work, never
         // the user's chat, and only when it says something new.
-        const owners = yield* brain.read(
-          (db) =>
-            new Map(
-              batch.flatMap((t) => {
-                const owner = ownerOf(db, t.event)
-                return owner === null ? [] : [[t.event.seq, owner] as const]
-              }),
-            ),
-        )
-        const later = yield* brain.read((db) => laterIn(db, batch, owners))
+        const owners = yield* brain.read(ownersRead, batch)
+        const later = yield* brain.read(laterRead, batch, owners)
         const items: (typeof TriageSorted.payload.Type)["items"][number][] = []
         const wakes = new Map<ThreadId, string[]>()
         // Work someone's message wakes: a turn since may not have heard it.
@@ -1120,11 +1394,7 @@ export const makeTriage = (config: TriageConfig) =>
             }
           }
         }
-        const waking = yield* brain.read((db) =>
-          [...wakes].filter(
-            ([thread]) => !late || owed.has(thread) || !turnSince(db, thread, through),
-          ),
-        )
+        const waking = yield* brain.read(wakingRead, [...wakes], late, owed, through)
         yield* Effect.orDie(
           brain.ingest([
             ...extra,
@@ -1152,7 +1422,7 @@ export const makeTriage = (config: TriageConfig) =>
         for (let i = 0; i < tags.length; i += BATCH) {
           const chunk = tags.slice(i, i + BATCH)
           const through = chunk.at(-1)?.seq ?? 0
-          const batch = yield* brain.read((db) => readTags(db, chunk, config.line))
+          const batch = yield* brain.read(readTagsRead, registeredAs, chunk)
           if (batch.length === 0) {
             yield* Effect.orDie(brain.ingest([sorted(through, [], 0, 0)]))
             continue
@@ -1178,31 +1448,6 @@ export const makeTriage = (config: TriageConfig) =>
         return out
       })
 
-    /** The rules whose filters let this record in, as Switchboard gathered records for each kernel. */
-    const hitsOf = (db: Database, wakeRules: readonly WakeRule[], t: Tagged) => {
-      // Never the work it wakes (ponder.rs:80): its own turns would wake it again.
-      const stream = text(field(t.event.payload, "stream"))
-      if (stream.startsWith("work/") && stream === `work/${config.threadOf(placed(db, t).home)}`) {
-        return []
-      }
-      // A rule's `first` is by the record's own entity (ponder.rs:252-257), which a message's line
-      // (mail marked read, seen again) doesn't carry.
-      const entity = text(field(bodyOf(t.event.payload), "entity"))
-      return wakeRules.flatMap((rule) =>
-        rule.wakes !== null &&
-        lets(rule.wakes, t.event) &&
-        (!rule.wakes.first || firstAbout(db, t, entity))
-          ? [rule]
-          : [],
-      )
-    }
-
-    /** Whether the bearing kernel reads this record (bearing.ts), first by its own entity too. */
-    const bears = (db: Database, t: Tagged) =>
-      BEARING.wakes !== null &&
-      lets(BEARING.wakes, t.event) &&
-      firstAbout(db, t, text(field(bodyOf(t.event.payload), "entity")))
-
     // Each rule's burst, gathering (ponder.rs:180-196): due its `batch_s` after the first record.
     interface Burst {
       readonly rule: WakeRule
@@ -1211,15 +1456,12 @@ export const makeTriage = (config: TriageConfig) =>
     }
     const bursts = new Map<string, Burst>()
     // What it reads again after a restart (from where it left off) that a rule decided already.
-    const startedAt = yield* brain.read(
-      (db) =>
-        db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
-    )
+    const startedAt = yield* brain.read(headRead)
     const gather = (rule: WakeRule, t: Tagged, due: number) =>
       Effect.gen(function* gathering() {
         if (
           t.event.seq <= startedAt &&
-          (yield* brain.read((db) => decidedFor(db, rule.name, t.event.seq)))
+          (yield* brain.read(decidedForRead, rule.name, t.event.seq))
         ) {
           return
         }
@@ -1259,15 +1501,7 @@ export const makeTriage = (config: TriageConfig) =>
               .map((t) => t.event),
           ).pipe(Effect.provideService(Brain, brain), Effect.provideService(Models, models))
         }
-        const fresh = yield* brain.read((db) =>
-          burst.records
-            .filter(
-              (t, i) =>
-                burst.records.findIndex((r) => r.event.seq === t.event.seq) === i &&
-                !batchWoke(db, t.event.seq),
-            )
-            .map((t) => placed(db, t)),
-        )
+        const fresh = yield* brain.read(burstFreshRead, burst.records)
         if (fresh.length === 0) {
           return []
         }
@@ -1283,14 +1517,10 @@ export const makeTriage = (config: TriageConfig) =>
           // One decision per 40, as Switchboard asked it (ponder.rs:292-366): its guide, the kernel's
           // name and question, each record's line; a predicate each, at the rule's threshold.
           const stable = `${GUIDE}\n\nThe kernel: ${rule.title}. Its question: ${rule.question}`
-          const machines = yield* brain.read((db) => {
-            const get = db.query<{ machine: string }, [string]>(
-              "SELECT machine FROM extension_placements WHERE extension = ?",
-            )
-            return new Map(
-              fresh.map((t) => [t.event.source, get.get(t.event.source)?.machine ?? null]),
-            )
-          })
+          const machines = yield* brain.read(
+            machinesRead,
+            fresh.map((t) => t.event.source),
+          )
           for (let i = 0; i < fresh.length; i += AT_ONCE) {
             const chunk = fresh.slice(i, i + AT_ONCE)
             const now = Date.now()
@@ -1370,40 +1600,28 @@ export const makeTriage = (config: TriageConfig) =>
      * last one it kept; one fully decided has nothing past it but a burst gathering since.
      */
     const refill = Effect.gen(function* refilling() {
-      const pending = yield* brain.read((db) =>
-        db
-          .query<{ rule: string; seq: number }, [number]>(
-            `SELECT rule, max(first, decided + 1) AS seq FROM (
-               SELECT json_extract(g.payload, '$.rule') AS rule, min(json_extract(g.payload, '$.seq')) AS first,
-                 coalesce((
-                   SELECT max(json_extract(r.value, '$.seq')) FROM events d, json_each(json_extract(d.payload, '$.records')) r
-                   WHERE d.type = 'triage.decided' AND json_extract(d.payload, '$.rule') = json_extract(g.payload, '$.rule')), 0) AS decided
-               FROM events g WHERE g.type = 'triage.gathering' AND g.time > ?
-               GROUP BY rule)`,
-          )
-          .all(Date.now() - GIVE_UP_MS),
-      )
+      const pending = yield* brain.read(pendingRead, Date.now() - GIVE_UP_MS)
       if (pending.length === 0) {
         return
       }
       const from = Math.min(...pending.map((p) => p.seq))
       const now = Date.now()
-      const records = yield* brain.read((db) =>
-        db
-          .query<EventRow, [number, number]>(
-            "SELECT * FROM events WHERE seq >= ? AND time > ? AND (json_extract(payload, '$.stream') IS NOT NULL OR type IN ('item.opened', 'turn.started', 'item.answered')) ORDER BY seq",
-          )
-          .all(from, now - GIVE_UP_MS)
-          .map(stored)
-          .flatMap((e) => recordOf(db, asRecord(db, e), config.line) ?? []),
-      )
+      const records = yield* brain.read(recordsFromRead, registeredAs, from, now - GIVE_UP_MS)
       const wakeRules = config.wakeRules ? yield* config.wakeRules([HOME]) : []
       for (const t of records) {
         // The user's answers to asks are bearing's, as they come (`urgent`), not the rules'.
-        const hits = yield* brain.read((db) => [
-          ...(t.event.type === ANSWER ? [] : hitsOf(db, wakeRules, t)),
-          ...(bears(db, t) ? [BEARING] : []),
-        ])
+        const hit = yield* brain.read(
+          hitsRead,
+          registeredAs,
+          wakeRules,
+          t,
+          t.event.type !== ANSWER,
+          true,
+        )
+        const hits = [
+          ...hit.rules.flatMap((i) => wakeRules[i] ?? []),
+          ...(hit.bears ? [BEARING] : []),
+        ]
         for (const rule of hits) {
           const p = pending.find((x) => x.rule === rule.name)
           if (p !== undefined && t.event.seq >= p.seq) {
@@ -1419,34 +1637,11 @@ export const makeTriage = (config: TriageConfig) =>
     // next try, a minute on.
     let deferredDue = 0
     const again = Effect.gen(function* readingAgain() {
-      const left = yield* brain.read((db) =>
-        db
-          .query<
-            { through: number; tags: string; late: number | null; model: string | null },
-            [number]
-          >(
-            // The latest deferral of a batch says how it's read.
-            `SELECT json_extract(d.payload, '$.through') AS through, json_extract(d.payload, '$.tags') AS tags,
-               json_extract(d.payload, '$.late') AS late, json_extract(d.payload, '$.model') AS model
-             FROM events d WHERE d.type = 'triage.deferred' AND NOT EXISTS (
-               SELECT 1 FROM events s WHERE s.id = 'sorted:' || json_extract(d.payload, '$.through'))
-               AND d.seq = (SELECT max(o.seq) FROM events o WHERE o.type = 'triage.deferred'
-                 AND json_extract(o.payload, '$.through') = json_extract(d.payload, '$.through'))
-             ORDER BY d.seq LIMIT ?`,
-          )
-          .all(AGAIN_AT_ONCE),
-      )
+      const left = yield* brain.read(deferredRead, AGAIN_AT_ONCE)
       const out: Wake[] = []
       for (const d of left) {
         const seqs = parseSeqs(d.tags)
-        const batch = yield* brain.read((db) => {
-          const get = db.query<EventRow, [number]>("SELECT * FROM events WHERE seq = ?")
-          const tags = seqs.flatMap((seq) => {
-            const row = get.get(seq)
-            return row ? [stored(row)] : []
-          })
-          return readTags(db, tags, config.line)
-        })
+        const batch = yield* brain.read(tagsAtRead, registeredAs, seqs)
         const woke = yield* Effect.result(
           batch.length === 0
             ? Effect.as(Effect.orDie(brain.ingest([sorted(d.through, [], 0, 0)])), [])
@@ -1520,7 +1715,7 @@ export const makeTriage = (config: TriageConfig) =>
     // The general question, on the first record about a thing or on someone's message.
     const byGeneral = (t: Tagged, item: string) =>
       Effect.gen(function* generally() {
-        if (!fromSomeone(t) && !(yield* brain.read((db) => firstAbout(db, t, t.line.entity)))) {
+        if (!fromSomeone(t) && !(yield* brain.read(firstAboutRead, t, t.line.entity))) {
           return null
         }
         const d = yield* models.decide({ stable: FAST, item }, { wake: WAKE })
@@ -1543,7 +1738,7 @@ export const makeTriage = (config: TriageConfig) =>
         if (ruled) {
           return null
         }
-        const read = yield* brain.read((db) => quick(db, t, (e) => config.line(e)?.text ?? ""))
+        const read = yield* brain.read(quickRead, registeredAs, t)
         const rules = yield* rulesFor(config, [t.home], t.line.text)
         const item = rules === "" ? read : `${rules}\n\n${read}`
         const general = yield* byGeneral(t, item)
@@ -1587,24 +1782,17 @@ export const makeTriage = (config: TriageConfig) =>
         const wakeRules = config.wakeRules ? yield* config.wakeRules([HOME]) : []
         if (wakeRules.length > 0) {
           const now = Date.now()
-          const records = yield* brain.read((db) =>
-            events.flatMap((e) => recordOf(db, e, config.line) ?? []),
-          )
+          const records = yield* brain.read(recordsOfRead, registeredAs, events)
           for (const t of records) {
-            const hits = yield* brain.read((db) => hitsOf(db, wakeRules, t))
-            for (const rule of hits) {
+            const hit = yield* brain.read(hitsRead, registeredAs, wakeRules, t, true, false)
+            for (const rule of hit.rules.flatMap((i) => wakeRules[i] ?? [])) {
               yield* gather(rule, t, now + batchMs(rule))
             }
           }
         }
         // The bearing kernel reads what comes in whatever the rules (builtin.rs:305-329).
         const at = Date.now() + batchMs(BEARING)
-        const bearing = yield* brain.read((db) =>
-          events.flatMap((e) => {
-            const t = recordOf(db, asRecord(db, e), config.line)
-            return t !== null && bears(db, t) ? [t] : []
-          }),
-        )
+        const bearing = yield* brain.read(bearingRead, registeredAs, events)
         for (const t of bearing) {
           yield* gather(BEARING, t, at)
         }
@@ -1617,21 +1805,7 @@ export const makeTriage = (config: TriageConfig) =>
         // One that came late (a source catching up) waits for its batch, which reads it with the
         // time now: a backlog arriving at once wakes no space per event.
         const now = Date.now()
-        const fresh = yield* brain.read((db) =>
-          readTags(db, tags, config.line).filter(
-            (t) =>
-              t.line.home === undefined &&
-              t.line.fast !== true &&
-              !ownWords(t) &&
-              !cameLate(t, now) &&
-              // A message said again is no news; one in a conversation the user handles
-              // themselves waits for its batch, which weighs what it asks.
-              !recordedBefore(db, t) &&
-              handledBy(db, t) === null &&
-              // Read again after a restart, one it woke already isn't decided twice.
-              db.query("SELECT 1 FROM triage_woke WHERE seq = ?").get(t.event.seq) === null,
-          ),
-        )
+        const fresh = yield* brain.read(fastTagsRead, registeredAs, tags, now)
         const wakeAt = config.wakeAt ? yield* config.wakeAt : 0.5
         const out = yield* Effect.forEach(fresh, (t) => quickly(t, wakeAt), {
           concurrency: "unbounded",
@@ -1646,7 +1820,7 @@ export const makeTriage = (config: TriageConfig) =>
         Effect.orElseSucceed(() => ""),
       )
 
-    return { wakes, urgent, due, delta: note, from: brain.read(readThrough) }
+    return { wakes, urgent, due, delta: note, from: brain.read(readThroughRead) }
   })
 
 /** The Triage slot the core leaves open. */
@@ -1662,7 +1836,7 @@ export const delta = (space: SpaceId, since: number) =>
   Effect.gen(function* delting() {
     const brain = yield* Brain
     const models = yield* Models
-    const notes = yield* brain.read((db) => notesSince(db, space, since))
+    const notes = yield* brain.read(notesSinceRead, space, since)
     if (notes.length === 0) {
       return ""
     }

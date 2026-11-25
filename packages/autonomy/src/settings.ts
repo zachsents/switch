@@ -3,7 +3,7 @@
 // the user wants, and each change shows in its space's chat as a "Remembered" line whose Undo puts
 // the dial back.
 import type { Database } from "bun:sqlite"
-import { Brain, defineEvent, EFFORTS, EventId, HOME, on, SpaceId } from "@switch/brain"
+import { Brain, defineEvent, defineRead, EFFORTS, EventId, HOME, on, SpaceId } from "@switch/brain"
 import type { Projection } from "@switch/brain"
 import { Effect, Schema } from "effect"
 import { Rejected } from "switch-ext-kit"
@@ -261,6 +261,28 @@ const outside = (key: string, value: number | string) => {
     : ""
 }
 
+/** A dial as stored, and the message of the user's a quote of theirs comes from, if given. */
+const adjustingRead = defineRead(
+  "autonomy/settings/adjusting",
+  (db, key: string, quote: string | undefined, space: SpaceId) => ({
+    was: storedDial(db, key),
+    found: quote === undefined || quote.trim() === "" ? null : quoted(db, quote.trim(), space),
+  }),
+)
+
+/** The gate bars still where the tuner left it, each with what it is now. */
+const tunedRead = defineRead("autonomy/settings/tuned", (db) =>
+  GATE_BARS.flatMap((b) => {
+    const row = db
+      .query<{ change: string }, [string]>("SELECT change FROM settings WHERE key = ?")
+      .get(b.key)
+    const was = storedDial(db, b.key)
+    return row?.change.startsWith("tuned:") === true && typeof was === "number"
+      ? [{ ...b, was }]
+      : []
+  }),
+)
+
 /** The agent moves a dial: its space's chat shows it as a "Remembered" line with Undo. */
 export const adjust = (input: {
   readonly space: SpaceId
@@ -276,13 +298,7 @@ export const adjust = (input: {
     if (wrong !== "" || d === undefined) {
       return yield* new Rejected({ reason: wrong })
     }
-    const { was, found } = yield* brain.read((db) => ({
-      was: storedDial(db, input.key),
-      found:
-        input.quote === undefined || input.quote.trim() === ""
-          ? null
-          : quoted(db, input.quote.trim(), input.space),
-    }))
+    const { was, found } = yield* brain.read(adjustingRead, input.key, input.quote, input.space)
     if ((was ?? d.default) === input.value) {
       return yield* new Rejected({ reason: `${input.key} is ${String(input.value)} already` })
     }
@@ -324,17 +340,7 @@ export const adjust = (input: {
 /** Puts back each gate bar still where the tuner left it; once, by its change's id. */
 export const untune = Effect.gen(function* untuning() {
   const brain = yield* Brain
-  const tuned = yield* brain.read((db) =>
-    GATE_BARS.flatMap((b) => {
-      const row = db
-        .query<{ change: string }, [string]>("SELECT change FROM settings WHERE key = ?")
-        .get(b.key)
-      const was = storedDial(db, b.key)
-      return row?.change.startsWith("tuned:") === true && typeof was === "number"
-        ? [{ ...b, was }]
-        : []
-    }),
-  )
+  const tuned = yield* brain.read(tunedRead)
   yield* Effect.orDie(
     brain.ingest(
       tuned.map(({ key, label, at, was }) => {

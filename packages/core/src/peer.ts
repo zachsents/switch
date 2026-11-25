@@ -7,8 +7,16 @@
 import type { Database } from "bun:sqlite"
 import { allThreads, getThread } from "@switch/agent"
 import { items, placeOf } from "@switch/autonomy"
-import { allSpaces, Brain, PEER, PostMessage, saidBy, spaceMessages } from "@switch/brain"
-import type { SpaceId } from "@switch/brain"
+import {
+  allSpaces,
+  Brain,
+  defineRead,
+  PEER,
+  PostMessage,
+  saidBy,
+  spaceMessages,
+} from "@switch/brain"
+import type { Read, SpaceId } from "@switch/brain"
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server"
 import type { CallToolResult, Tool } from "@modelcontextprotocol/server"
 import { Effect, Schema } from "effect"
@@ -166,13 +174,35 @@ const saidIn = (db: Database, space: SpaceId, turn: string, seq: number) =>
     .all(space, turn, seq)
     .map((m) => m.text)
 
+/** A space by its id or name, else null. */
+const spaceRead = defineRead("core/peer/space", spaceNamed)
+/** The open spaces, each with whether it's working and its asks. */
+const spacesRead = defineRead("core/peer/spaces", spacesOf)
+/** The work running now. */
+const workRead = defineRead("core/peer/work", workOf)
+/** A space's last `limit` lines and its open asks. */
+const chatRead = defineRead("core/peer/chat", (db, space: SpaceId, limit: number) => ({
+  space,
+  ...chatOf(db, space, limit),
+}))
+/** What the space's thread said to the words posted at `seq`, and whether its turn is done. */
+const answerRead = defineRead("core/peer/answer", (db, space: SpaceId, seq: number) => {
+  const turn = turnAfter(db, space, seq)
+  const t = getThread(db, threadOf(space))
+  return {
+    said: turn === null ? [] : saidIn(db, space, turn, seq),
+    done: turn !== null && (t?.status !== "running" || t.turn !== turn),
+  }
+})
+
 const peerServer = (brain: typeof Brain.Service) => {
   const run = async <A>(effect: Effect.Effect<A, unknown, Brain>) =>
     await Effect.runPromise(Effect.provideService(effect, Brain, brain))
-  const read = async <A>(f: (db: Database) => A) => await run(brain.read(f))
+  const read = async <Args extends readonly unknown[], A>(r: Read<Args, A>, ...args: Args) =>
+    await run(brain.read(r, ...args))
 
   const post = async (args: typeof Posting.Type) => {
-    const space = await read((db) => spaceNamed(db, args.space))
+    const space = await read(spaceRead, args.space)
     if (space === null) {
       return null
     }
@@ -190,15 +220,7 @@ const peerServer = (brain: typeof Brain.Service) => {
   // The answer to what was posted at `seq`: once the turn that took it in ends, what it said.
   const answer = async (space: SpaceId, seq: number, seconds: number) => {
     const until = Date.now() + seconds * 1000
-    const look = async () =>
-      await read((db) => {
-        const turn = turnAfter(db, space, seq)
-        const t = getThread(db, threadOf(space))
-        return {
-          said: turn === null ? [] : saidIn(db, space, turn, seq),
-          done: turn !== null && (t?.status !== "running" || t.turn !== turn),
-        }
-      })
+    const look = async () => await read(answerRead, space, seq)
     const poll = async (): Promise<Awaited<ReturnType<typeof look>>> => {
       const now = await look()
       if (now.done || Date.now() >= until) {
@@ -212,10 +234,10 @@ const peerServer = (brain: typeof Brain.Service) => {
 
   const call = async (name: string, args: Record<string, unknown>): Promise<CallToolResult> => {
     if (name === "spaces") {
-      return said(await read(spacesOf))
+      return said(await read(spacesRead))
     }
     if (name === "work") {
-      return said(await read(workOf))
+      return said(await read(workRead))
     }
     if (name === "read") {
       const given = Schema.decodeUnknownOption(Reading)(args)
@@ -223,12 +245,12 @@ const peerServer = (brain: typeof Brain.Service) => {
         return said("Give a space", true)
       }
       const { limit } = given.value
-      const space = await read((db) => spaceNamed(db, given.value.space))
+      const space = await read(spaceRead, given.value.space)
       if (space === null) {
         return said(`No space ${given.value.space}`, true)
       }
       const n = Math.min(Math.max(1, Math.round(limit ?? 20)), READ_MAX)
-      return said(await read((db) => ({ space: space.id, ...chatOf(db, space.id, n) })))
+      return said(await read(chatRead, space.id, n))
     }
     if (name !== "post" && name !== "ask") {
       return said(`No tool ${name}`, true)

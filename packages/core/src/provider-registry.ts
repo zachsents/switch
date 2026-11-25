@@ -3,7 +3,7 @@ import { AccountAdded, allLogins, Hosts } from "@switch/agent"
 import type { Login } from "@switch/agent"
 import { RegistrySelection, installRegistryAgent } from "@switch/agent/acp-install"
 import { fetchRegistry, registryTarget } from "@switch/agent/acp-registry"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { SUBSCRIPTIONS } from "@switch/models"
 import { Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/http"
@@ -12,6 +12,9 @@ import { CoreConfig } from "./config.ts"
 import { addedOf } from "./logins.ts"
 import { Profiles } from "./model-catalog.ts"
 import { web } from "./web.ts"
+
+/** The core's logins, as recorded: which agents are installed. */
+const loginsRead = defineRead("core/provider-registry/logins", allLogins)
 
 export const registryRoutes = Layer.unwrap(
   Effect.gen(function* routes() {
@@ -64,7 +67,7 @@ export const registryRoutes = Layer.unwrap(
         const index = await Effect.runPromise(fetchRegistry())
         const target = registryTarget(process.platform, process.arch)
         const query = (new URL(request.url).searchParams.get("search") ?? "").toLowerCase()
-        const installed = await Effect.runPromise(brain.read(allLogins))
+        const installed = await Effect.runPromise(brain.read(loginsRead))
         return Response.json({
           agents: index.agents
             .filter((agent) => `${agent.name} ${agent.id}`.toLowerCase().includes(query))

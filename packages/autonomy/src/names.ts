@@ -6,7 +6,7 @@
 // type nothing records or declares, a source or field there isn't, a payload path its type's records
 // don't carry, a stream or kind never recorded.
 import type { Database } from "bun:sqlite"
-import { Brain, BYPASS } from "@switch/brain"
+import { Brain, BYPASS, defineRead } from "@switch/brain"
 import type { Query, QuerySource } from "@switch/brain"
 import { Effect } from "effect"
 
@@ -257,6 +257,40 @@ const queryUnknowns = (
   ]
 }
 
+/** What's unknown in each of `queries`, against `sources` and the types `declared`. */
+const queryUnknownsRead = defineRead(
+  "autonomy/names/query-unknowns",
+  (
+    db,
+    sources: readonly QuerySource[],
+    declared: ReadonlySet<string>,
+    queries: readonly (Query | undefined)[],
+  ) => queries.flatMap((q) => (q === undefined ? [] : queryUnknowns(db, sources, declared, q))),
+)
+
+/** The streams and kinds of a wake rule's that are never recorded, each with the closest real names. */
+const wakesUnknownsRead = defineRead(
+  "autonomy/names/wakes-unknowns",
+  (db, declared: ReadonlySet<string>, streams: readonly string[], kinds: readonly string[]) => {
+    const scripts = scriptNames(db)
+    const liveTypes = recordedTypes(db).filter((t) => declared.has(t) || live(db, t))
+    const records = recordsOf(db, liveTypes)
+    const realStreams = new Set([
+      ...scripts.streams,
+      ...records.flatMap((r) => (r.stream === null ? [] : [r.stream])),
+    ])
+    const realKinds = new Set(records.flatMap((r) => (r.kind === null ? [] : [r.kind])))
+    return [
+      ...streams
+        .filter((p) => ![...realStreams].some((s) => globbed(p, s)))
+        .map((p) => unknown(`No stream ${p} is recorded`, closest(p, realStreams))),
+      ...kinds
+        .filter((k) => !realKinds.has(k))
+        .map((k) => unknown(`No kind ${k} is recorded`, closest(k, realKinds))),
+    ]
+  },
+)
+
 const advice = (found: readonly string[]) => `Not set. ${found.join(". ")}. ${BYPASS}`
 
 /** A warning for the names in `queries` nothing knows, or null when every one is known. */
@@ -264,11 +298,7 @@ export const queryWarning = (queries: readonly (Query | undefined)[]) =>
   Effect.gen(function* warning() {
     const brain = yield* Brain
     const declared = new Set(yield* brain.types)
-    const found = yield* brain.read((db) =>
-      queries.flatMap((q) =>
-        q === undefined ? [] : queryUnknowns(db, brain.sources, declared, q),
-      ),
-    )
+    const found = yield* brain.read(queryUnknownsRead, brain.sources, declared, queries)
     return found.length === 0 ? null : advice([...new Set(found)])
   })
 
@@ -277,23 +307,6 @@ export const wakesWarning = (streams: readonly string[], kinds: readonly string[
   Effect.gen(function* warning() {
     const brain = yield* Brain
     const declared = new Set(yield* brain.types)
-    const found = yield* brain.read((db) => {
-      const scripts = scriptNames(db)
-      const liveTypes = recordedTypes(db).filter((t) => declared.has(t) || live(db, t))
-      const records = recordsOf(db, liveTypes)
-      const realStreams = new Set([
-        ...scripts.streams,
-        ...records.flatMap((r) => (r.stream === null ? [] : [r.stream])),
-      ])
-      const realKinds = new Set(records.flatMap((r) => (r.kind === null ? [] : [r.kind])))
-      return [
-        ...streams
-          .filter((p) => ![...realStreams].some((s) => globbed(p, s)))
-          .map((p) => unknown(`No stream ${p} is recorded`, closest(p, realStreams))),
-        ...kinds
-          .filter((k) => !realKinds.has(k))
-          .map((k) => unknown(`No kind ${k} is recorded`, closest(k, realKinds))),
-      ]
-    })
+    const found = yield* brain.read(wakesUnknownsRead, declared, streams, kinds)
     return found.length === 0 ? null : advice(found)
   })

@@ -359,7 +359,7 @@ fn fixtures() -> Vec<(&'static str, Vec<Value>)> {
 
 struct Parts;
 
-thread_local! {
+base::kept_local! {
     /// Whether each fixture had nothing to show as last drawn.
     static NOTHING: std::cell::RefCell<std::collections::BTreeMap<String, bool>> = Default::default();
 }

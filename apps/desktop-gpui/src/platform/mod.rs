@@ -18,6 +18,7 @@ pub mod lifecycle;
 pub mod mesh;
 pub mod notify;
 pub mod oauth;
+pub mod pasteboard;
 pub mod quicklook;
 pub mod snapshot;
 pub mod timing;

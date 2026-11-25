@@ -6,7 +6,7 @@
 // found nothing. The user's rules reach both the check and its fix.
 import type { Database } from "bun:sqlite"
 import { Sessions } from "@switch/agent"
-import { Brain, EventId, MessagePosted, MessageRevised, ThreadId } from "@switch/brain"
+import { Brain, defineRead, EventId, MessagePosted, MessageRevised, ThreadId } from "@switch/brain"
 import type { SpaceId, StoredEvent, TurnId } from "@switch/brain"
 import { Effect, Option, Schema, Stream } from "effect"
 
@@ -107,6 +107,31 @@ const linksOf = (said: string) =>
     url: text(field(l, "url")),
   }))
 
+/** The user's rules for a message's space, as its check and fix are given them. */
+const rulesRead = defineRead("autonomy/after/rules", (db, space: SpaceId, about: string) =>
+  rulesAt(db, [space], about),
+)
+
+/** The links the turn that wrote a message read, as lines; empty when no turn wrote it. */
+const seenRead = defineRead(
+  "autonomy/after/seen",
+  (db, seq: number, space: SpaceId, turn: TurnId | undefined) => {
+    const writer = writerOf(db, seq, space, turn)
+    return writer === null ? "" : linksSeen(db, writer)
+  },
+)
+
+/** A message's text as it stands now, null when it's gone. */
+const textRead = defineRead(
+  "autonomy/after/text",
+  (db, seq: number) =>
+    db
+      .query<{ text: string }, [number]>(
+        "SELECT text FROM messages WHERE seq = ? AND source = 'agent'",
+      )
+      .get(seq)?.text ?? null,
+)
+
 /** One posted message through each after check, and a check that fires through its fix. */
 const read = Effect.fnUntraced(function* checking(e: StoredEvent) {
   const brain = yield* Brain
@@ -118,7 +143,7 @@ const read = Effect.fnUntraced(function* checking(e: StoredEvent) {
   }
   const { space } = posted
   for (const check of AFTER_MESSAGE) {
-    const preferences = yield* brain.read((db) => rulesAt(db, [space], posted.text))
+    const preferences = yield* brain.read(rulesRead, space, posted.text)
     const verdict = yield* gate(check.name, {
       key: `${check.name}:${e.seq}`,
       space,
@@ -128,10 +153,7 @@ const read = Effect.fnUntraced(function* checking(e: StoredEvent) {
       ...(posted.turn !== undefined && { turn: posted.turn }),
     })
     if (!verdict.pass) {
-      const reading = yield* brain.read((db) => {
-        const writer = writerOf(db, e.seq, space, posted.turn)
-        return writer === null ? "" : linksSeen(db, writer)
-      })
+      const reading = yield* brain.read(seenRead, e.seq, space, posted.turn)
       const asked = [
         check.fix,
         preferences,
@@ -151,14 +173,7 @@ const read = Effect.fnUntraced(function* checking(e: StoredEvent) {
       const end = yield* sessions.ended(turn)
       if (end.status === "done") {
         // Its words as they are now, should they have changed meanwhile.
-        const now = yield* brain.read(
-          (db) =>
-            db
-              .query<{ text: string }, [number]>(
-                "SELECT text FROM messages WHERE seq = ? AND source = 'agent'",
-              )
-              .get(e.seq)?.text ?? null,
-        )
+        const now = yield* brain.read(textRead, e.seq)
         const fixed = now === null ? null : linked(now, linksOf(end.result))
         yield* brain.ingest([
           ...(now !== null && fixed !== null && fixed !== now
@@ -196,16 +211,21 @@ const unread = (db: Database, head: number, now: number) =>
     .all(head, now - CATCH_UP_MS)
     .map((r) => r.seq)
 
-const headOf = (db: Database) =>
-  db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+const headRead = defineRead(
+  "autonomy/after/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+
+const unreadRead = defineRead("autonomy/after/unread", unread)
 
 /** Reads each message of the agent's as it posts, each on its own, so a slow fix holds none back. */
 export const afterChecks = Effect.gen(function* watching() {
   const brain = yield* Brain
   // The head alone: the brain's snapshot reads every projection whole for it (a count of all 500k
   // tags among them), 12 s of the core's thread on each start when the pages came off the disk.
-  const head = yield* brain.read(headOf)
-  const missed = new Set(yield* brain.read((db) => unread(db, head, Date.now())))
+  const head = yield* brain.read(headRead)
+  const missed = new Set(yield* brain.read(unreadRead, head, Date.now()))
   yield* brain.changes(Math.min(head, ...[...missed].map((s) => s - 1))).pipe(
     Stream.filter(
       (e) =>

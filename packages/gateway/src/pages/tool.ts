@@ -11,6 +11,7 @@ import {
   BYPASS,
   Bypass,
   bypassOf,
+  defineRead,
   emDashRefusal,
   EventId,
   foldersOf,
@@ -272,16 +273,25 @@ const textOf = (before: Option.Option<PageBody>) =>
 const eventsOf = (was: PageRow | null) =>
   was === null ? [] : Option.getOrElse(decodeEvents(was.events), () => [])
 
+// The pages tools' reads of the brain, by name (reads.ts), so they run in a reader thread.
+const spaceNamedRead = defineRead("gateway/pages-tool/space-named", (db, given: string) =>
+  spaceNamed(db, given),
+)
+const foldersRead = defineRead("gateway/pages-tool/folders", (db, space: SpaceId) =>
+  foldersOf(db, space),
+)
+const pageRead = defineRead("gateway/pages-tool/page", (db, id: string) => pageOf(db, id))
+const pagesRead = defineRead("gateway/pages-tool/pages", (db) => allPages(db))
+
 /** The space a page is about (the one given, else the calling work's, else its own), and its folders. */
 const placeOf = (given: SpaceId | undefined, was: PageRow | null) =>
   Effect.gen(function* placing() {
     const brain = yield* Brain
     const caller = yield* Caller
-    const named = given === undefined ? null : yield* brain.read((db) => spaceNamed(db, given))
+    const named = given === undefined ? null : yield* brain.read(spaceNamedRead, given)
     const space =
       named ?? (caller.space === null ? null : SpaceId.make(caller.space)) ?? was?.space ?? null
-    const folders =
-      space === null ? [] : [...(yield* brain.read((db) => foldersOf(db, space))).values()]
+    const folders = space === null ? [] : [...(yield* brain.read(foldersRead, space)).values()]
     return { space, folders }
   })
 
@@ -450,8 +460,7 @@ export const publish = tool("publish", { description: PUBLISH, input: Input }, (
   Effect.gen(function* publishing() {
     const brain = yield* Brain
     const pages = yield* Pages
-    const was =
-      input.id === undefined ? null : yield* brain.read((db) => pageOf(db, input.id ?? ""))
+    const was = input.id === undefined ? null : yield* brain.read(pageRead, input.id)
     if (input.id !== undefined && was === null) {
       return yield* reject(`No page ${input.id}`)
     }
@@ -589,7 +598,7 @@ export const pagesTool = tool(
     Effect.gen(function* listing() {
       const brain = yield* Brain
       const pages = yield* Pages
-      const rows = yield* brain.read(allPages)
+      const rows = yield* brain.read(pagesRead)
       return {
         pages: rows
           .filter((r) => (r.retired === 1) === (input.retired === true))

@@ -45,6 +45,7 @@ import {
   Brain,
   defineCommand,
   defineEvent,
+  defineRead,
   dependsOf,
   EventId,
   on,
@@ -602,24 +603,22 @@ interface OpenItem {
  * while the work's own expectation still waited on its merge).
  */
 const waitsOn = (
-  db: Database,
+  known: {
+    readonly open: readonly OpenItem[]
+    readonly person: string
+    readonly expected: readonly Expectation[]
+  },
   x: Expectation,
   work: ThreadId,
   workOf: (y: Expectation) => ThreadId,
 ) => {
-  const open = db
-    .query<OpenItem, []>(
-      `SELECT id, space, followers, trim(coalesce(json_extract(data, '$.title'), '') || ' ' ||
-         coalesce(json_extract(data, '$.body'), '')) AS said
-       FROM action_items WHERE status = 'open' ORDER BY opened_at ASC`,
-    )
-    .all()
+  const { open } = known
   const line = (a: OpenItem) => `- ${clip(a.said, 300)}`
   const own = open.filter(
     (a) => a.space === x.space || list(parseJson(a.followers)).includes(x.space),
   )
   // Not the user, whom nearly everything names (promises.rs:383-388, `words`).
-  const person = new Set(tokens(userOf(db)?.name ?? ""))
+  const person = new Set(tokens(known.person))
   const words = distinctive(x.what).filter((w) => !person.has(w))
   const named = naming(
     words,
@@ -630,7 +629,7 @@ const waitsOn = (
     .slice(0, NAMING)
     .map((a) => `${line(a)} (asked in ${a.space})`)
   // Not its own promises, read from its words: what it expects itself.
-  const expects = openExpectations(db)
+  const expects = known.expected
     .filter((y) => y.id !== x.id && y.said === null && workOf(y) === work)
     .map(
       (y) =>
@@ -772,10 +771,8 @@ export const expectationWorker = (config: ExpectConfig) =>
                 onSuccess: (found) =>
                   `Its check (${JSON.stringify(x.check)}) returned: ${JSON.stringify(found.rows).slice(0, 3000)}\n`,
               })
-        const evidence = yield* brain.read(
-          (db) =>
-            `${checked}${didSince(db, x, work)}\n${waitsOn(db, x, work, (y) => workOfIn(config, y))}\n`,
-        )
+        const known = yield* brain.read(evidenceRead, x, work)
+        const evidence = `${checked}${known.did}\n${waitsOn(known, x, work, (y) => workOfIn(config, y))}\n`
         // One its work was woken to keep is due once that turn has had its go (watch.rs:422-441).
         const due = moment(x.judgeAt ?? x.by ?? now, "UTC")
         const input = `Expectation (due ${due} UTC; it's now ${moment(now, "UTC")} UTC): ${x.what}\n\nWhat's known now:\n${evidence}`
@@ -915,14 +912,13 @@ export const expectationWorker = (config: ExpectConfig) =>
 
     // What a watch finds that's news: on the log, an entity's first record, not one that only says
     // it changed (read, delivered, edited), unless the watch asks for its changes (`asksForChanges`).
-    const firsts = new Map<string, number>()
     const findNews = (x: Expectation, after = x.setSeq) =>
       Effect.gen(function* finding() {
         const found = yield* holds(x.when ?? {}, x, after)
         if (found === null) {
           return null
         }
-        const rows = yield* brain.read((db) => news(db, x, found.rows, firsts))
+        const rows = yield* brain.read(newsRead, x, found.rows)
         return rows.length > 0 ? { rows } : null
       })
 
@@ -946,7 +942,7 @@ export const expectationWorker = (config: ExpectConfig) =>
         if (
           standing(x) &&
           x.wokeRows.length > 0 &&
-          (yield* brain.read((db) => ignored(db, x, workOfIn(config, x))))
+          (yield* brain.read(ignoredRead, x, workOfIn(config, x)))
         ) {
           yield* closeIdle(x)
           return
@@ -996,7 +992,7 @@ export const expectationWorker = (config: ExpectConfig) =>
           }
         }
         if (standing(x)) {
-          const gone = yield* brain.read((db) => scriptGone(db, x))
+          const gone = yield* brain.read(scriptGoneRead, x)
           const over = gone || (x.check !== null && (yield* evaluate(x)))
           yield* over ? met(x) : watchAgain(x)
           return
@@ -1026,10 +1022,10 @@ export const expectationWorker = (config: ExpectConfig) =>
         return
       }
       swept = Date.now()
-      const stale = yield* brain.read((db) => brokenWatches(db))
+      const stale = yield* brain.read(brokenWatchesRead)
       for (const x of stale) {
         const when = x.when ?? {}
-        const dropped = yield* brain.read((db) => tasksOf(when).some((t) => droppedTask(db, t)))
+        const dropped = yield* brain.read(anyDroppedRead, tasksOf(when))
         if (dropped || (yield* evaluate(x))) {
           yield* resolve(`broken:${x.id}`)
         }
@@ -1039,7 +1035,7 @@ export const expectationWorker = (config: ExpectConfig) =>
     const tick = Effect.gen(function* ticking() {
       yield* Effect.ignore(sweep, { log: "Warn" })
       const now = Date.now()
-      const open = yield* brain.read((db) => openExpectations(db))
+      const open = yield* brain.read(openRead)
       const keys = new Set(open.map(keyOf))
       for (const key of later.keys()) {
         if (!keys.has(key)) {
@@ -1052,7 +1048,7 @@ export const expectationWorker = (config: ExpectConfig) =>
         if (time === null || time > now || (later.get(keyOf(x)) ?? 0) > now) {
           continue
         }
-        const busy = yield* brain.read((db) => running(db, workOfIn(config, x)))
+        const busy = yield* brain.read(runningRead, workOfIn(config, x))
         // A promise waits for the turn running in its work to end (a few hours at most), so it's
         // judged on all it did (watch.rs:307-310); a watch or check after its wake, half an hour.
         const waits = forTheJudge(x) || x.wokeAt !== null
@@ -1101,26 +1097,22 @@ export const expectationWorker = (config: ExpectConfig) =>
         return fired
       })
     const watch = Effect.gen(function* watching() {
-      const through = yield* brain.read(head)
+      const through = yield* brain.read(headRead)
       if (through === seen) {
         return
       }
-      const types = yield* brain.read((db) => typesBetween(db, seen, through))
-      const recorded = yield* brain.read((db) => scriptRecords(db, seen, through))
+      const types = yield* brain.read(typesBetweenRead, seen, through)
+      const recorded = yield* brain.read(scriptRecordsRead, seen, through)
       seen = through
       let fired = false
-      const open = yield* brain.read((db) =>
-        openExpectations(db).filter((x) => x.when !== null && x.wokeAt === null),
-      )
+      const open = yield* brain.read(watchingRead)
       for (const x of open) {
         fired = (yield* lookOver(x, types, through)) || fired
       }
       // What a script records for its work is that work's to hear: one no open watch of the work
       // matches wakes it anyway.
       if (recorded.length > 0) {
-        const watches = yield* brain.read((db) =>
-          openExpectations(db).filter((x) => standing(x) && unconditioned(x.when ?? {}) === null),
-        )
+        const watches = yield* brain.read(standingRead)
         for (const r of recorded) {
           let heard = false
           for (const x of watches.filter((w) => workOfIn(config, w) === r.thread)) {
@@ -1171,24 +1163,7 @@ export const expectationWorker = (config: ExpectConfig) =>
         Effect.gen(function* retiring() {
           const task = text(field(e.payload, "task"))
           const space = text(field(e.payload, "id"))
-          const archived = e.type === "space.archived"
-          const { gone, reworked } = yield* brain.read((db) => ({
-            // What it made, and a watch on it ending: dropped, it won't end any other way.
-            gone:
-              e.type === "task.ended"
-                ? []
-                : openExpectations(db).filter((x) =>
-                    archived
-                      ? x.space === space
-                      : x.thread === task ||
-                        (x.when !== null && !onLog(x.when) && tasksOf(x.when).includes(task)),
-                  ),
-            reworked: items(db, { status: "open" }).filter(
-              (i) =>
-                i.revising !== undefined &&
-                (archived ? i.space === space : i.revising.thread === task),
-            ),
-          }))
+          const { gone, reworked } = yield* brain.read(retiredRead, e.type, task, space)
           for (const x of gone) {
             yield* ingest(ExpectationDropped.type, `retired:${x.id}:${e.seq}`, { id: x.id })
             yield* resolve(`broken:${x.id}`)
@@ -1225,20 +1200,17 @@ export const expectationWorker = (config: ExpectConfig) =>
       )
     yield* Effect.forever(
       Effect.gen(function* timing() {
-        const from = yield* brain.read(head)
+        const from = yield* brain.read(headRead)
         yield* Effect.ignore(tick, { log: "Warn" })
         // One held back is next looked at when its rest or minute is up, not at its passed time.
-        const next = yield* brain.read((db) => {
-          let soonest: number | null = null
-          for (const x of openExpectations(db)) {
-            const own = dueAt(x)
-            const t = own === null ? null : Math.max(own, later.get(keyOf(x)) ?? 0)
-            if (t !== null && (soonest === null || t < soonest)) {
-              soonest = t
-            }
+        let next: number | null = null
+        for (const x of yield* brain.read(openRead)) {
+          const own = dueAt(x)
+          const t = own === null ? null : Math.max(own, later.get(keyOf(x)) ?? 0)
+          if (t !== null && (next === null || t < next)) {
+            next = t
           }
-          return soonest
-        })
+        }
         const wait = next === null ? MAX_SLEEP : Math.min(MAX_SLEEP, Math.max(0, next - Date.now()))
         yield* Effect.raceFirst(Effect.sleep(wait), changed(from))
       }),
@@ -1277,15 +1249,11 @@ const entityOf = (row: Readonly<Record<string, unknown>>) => {
  * changed (triage's `firstAbout`, Switchboard's `wakes.first`). The user, Nov 23: a watch for mail
  * from someone woke a full turn on each read receipt of his texts.
  */
-const news = (
-  db: Database,
-  x: Expectation,
-  rows: readonly Readonly<Record<string, unknown>>[],
-  firsts: Map<string, number>,
-) => {
+const news = (db: Database, x: Expectation, rows: readonly Readonly<Record<string, unknown>>[]) => {
   if (x.when === null || !onLog(x.when) || asksForChanges(x.when)) {
     return rows
   }
+  const firsts = firstsOf(db)
   const first = db.query<{ seq: number | null }, [string, string]>(
     "SELECT min(seq) AS seq FROM events WHERE type = ? AND json_extract(payload, '$.data.entity') = ?",
   )
@@ -1438,3 +1406,112 @@ const typesBetween = (db: Database, after: number, through: number) =>
 
 const head = (db: Database) =>
   db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+
+// The reads above, by name, so they run in the core's reader threads (brain's reads.ts).
+
+/**
+ * Each entity's first record, by type and entity, as this connection found it: a record's seq on
+ * the log never changes, so it's asked once per connection.
+ */
+const firstSeqs = new WeakMap<Database, Map<string, number>>()
+const firstsOf = (db: Database) => {
+  const known = firstSeqs.get(db) ?? new Map<string, number>()
+  firstSeqs.set(db, known)
+  return known
+}
+
+/** The items open in the user's queue, oldest first, with their words. */
+const openItems = (db: Database) =>
+  db
+    .query<OpenItem, []>(
+      `SELECT id, space, followers, trim(coalesce(json_extract(data, '$.title'), '') || ' ' ||
+         coalesce(json_extract(data, '$.body'), '')) AS said
+       FROM action_items WHERE status = 'open' ORDER BY opened_at ASC`,
+    )
+    .all()
+
+/** What the promise judge reads about one: what its work did since, and what it may wait on. */
+const evidenceRead = defineRead(
+  "autonomy/expect/evidence",
+  (db, x: Expectation, work: ThreadId) => ({
+    did: didSince(db, x, work),
+    open: openItems(db),
+    person: userOf(db)?.name ?? "",
+    expected: openExpectations(db),
+  }),
+)
+
+const newsRead = defineRead(
+  "autonomy/expect/news",
+  (db, x: Expectation, rows: readonly Readonly<Record<string, unknown>>[]) => news(db, x, rows),
+)
+
+const ignoredRead = defineRead("autonomy/expect/ignored", (db, x: Expectation, work: ThreadId) =>
+  ignored(db, x, work),
+)
+
+const scriptGoneRead = defineRead("autonomy/expect/script-gone", (db, x: Expectation) =>
+  scriptGone(db, x),
+)
+
+const brokenWatchesRead = defineRead("autonomy/expect/broken-watches", (db) => brokenWatches(db))
+
+/** Whether any of these tasks was dropped. */
+const anyDroppedRead = defineRead("autonomy/expect/any-dropped", (db, tasks: readonly string[]) =>
+  tasks.some((t) => droppedTask(db, t)),
+)
+
+const openRead = defineRead("autonomy/expect/open", (db) => openExpectations(db))
+
+const runningRead = defineRead("autonomy/expect/running", (db, thread: ThreadId) =>
+  running(db, thread),
+)
+
+const headRead = defineRead("autonomy/expect/head", (db) => head(db))
+
+const typesBetweenRead = defineRead(
+  "autonomy/expect/types-between",
+  (db, after: number, through: number) => typesBetween(db, after, through),
+)
+
+const scriptRecordsRead = defineRead(
+  "autonomy/expect/script-records",
+  (db, after: number, through: number) => scriptRecords(db, after, through),
+)
+
+/** Open watches that haven't woken their work yet. */
+const watchingRead = defineRead("autonomy/expect/watching", (db) =>
+  openExpectations(db).filter((x) => x.when !== null && x.wokeAt === null),
+)
+
+/** Open watches on the log that a script's events can wake. */
+const standingRead = defineRead("autonomy/expect/standing", (db) =>
+  openExpectations(db).filter((x) => standing(x) && unconditioned(x.when ?? {}) === null),
+)
+
+/**
+ * What goes when work is dropped (a task dropped or ended, a space archived): the expectations it
+ * made and the watches on it (none for a task that ended), and the items it took out to rework.
+ */
+const retiredRead = defineRead(
+  "autonomy/expect/retired",
+  (db, type: string, task: string, space: string) => {
+    const archived = type === "space.archived"
+    return {
+      // What it made, and a watch on it ending: dropped, it won't end any other way.
+      gone:
+        type === "task.ended"
+          ? []
+          : openExpectations(db).filter((x) =>
+              archived
+                ? x.space === space
+                : x.thread === task ||
+                  (x.when !== null && !onLog(x.when) && tasksOf(x.when).includes(task)),
+            ),
+      reworked: items(db, { status: "open" }).filter(
+        (i) =>
+          i.revising !== undefined && (archived ? i.space === space : i.revising.thread === task),
+      ),
+    }
+  },
+)

@@ -15,7 +15,7 @@ import {
   ItemRevised,
 } from "@switch/autonomy"
 import type { ActionItem } from "@switch/autonomy"
-import { Brain, react } from "@switch/brain"
+import { Brain, defineRead, react } from "@switch/brain"
 import type { StoredEvent } from "@switch/brain"
 import { Effect, Layer } from "effect"
 
@@ -47,6 +47,14 @@ const scriptOf = (db: Database, item: string) =>
 const idOf = (payload: unknown) =>
   typeof payload === "object" && payload !== null && "id" in payload ? String(payload.id) : null
 
+/** An item and the script that runs its check. */
+const checkedRead = defineRead("core/item-checks/checked", (db, id: string) => ({
+  item: getItem(db, id),
+  script: scriptOf(db, id),
+}))
+/** An item. */
+const itemRead = defineRead("core/item-checks/item", getItem)
+
 export const itemChecks = Layer.effectDiscard(
   Effect.gen(function* checking() {
     const brain = yield* Brain
@@ -65,10 +73,7 @@ export const itemChecks = Layer.effectDiscard(
     /** An item's check runs while it's open, as it stands now; otherwise its script goes. */
     const keep = (e: StoredEvent, id: string) =>
       Effect.gen(function* keeping() {
-        const { item, script } = yield* brain.read((db) => ({
-          item: getItem(db, id),
-          script: scriptOf(db, id),
-        }))
+        const { item, script } = yield* brain.read(checkedRead, id)
         const check = item?.status === "open" ? item.check : undefined
         const run = check ? looped(check.run) : null
         const machine = check?.machine ?? core
@@ -125,7 +130,7 @@ export const itemChecks = Layer.effectDiscard(
         if (!script.startsWith(PREFIX) || code !== 0) {
           return
         }
-        const i = yield* brain.read((db) => getItem(db, script.slice(PREFIX.length)))
+        const i = yield* brain.read(itemRead, script.slice(PREFIX.length))
         if (i?.status === "open" && i.check) {
           yield* held(i)
         }

@@ -9,6 +9,8 @@ import { Brain } from "./brain.ts"
 import { defineEvent, on } from "./defs.ts"
 import type { Projection, StoredEvent } from "./defs.ts"
 import { EventId } from "./ids.ts"
+import { defineRead } from "./reads.ts"
+import type { Read } from "./reads.ts"
 
 /** A reactor has read and handled every event through `through`. */
 export const ReactorPassed = defineEvent(
@@ -38,14 +40,19 @@ export const reactorsConfig = {
   commands: [],
 }
 
-const headOf = (db: Database) =>
-  db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+const headRead = defineRead(
+  "brain/reactors/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
 
 /** Where a reactor's cursor stands; null before it first ran. */
 export const cursorOf = (db: Database, name: string) =>
   db
     .query<{ through: number }, [string]>("SELECT through FROM reactor_cursors WHERE name = ?")
     .get(name)?.through ?? null
+
+const cursorRead = defineRead("brain/reactors/cursor", cursorOf)
 
 /** Moves a reactor's cursor to `through`. */
 export const passed = (name: string, through: number) =>
@@ -67,10 +74,10 @@ export const passed = (name: string, through: number) =>
  * A reactor's cursor, or on its first run where it starts (the head, unless `seed` says), saved as
  * its cursor so the next start knows it ran.
  */
-export const startOf = (name: string, seed: (db: Database) => number = headOf) =>
+export const startOf = (name: string, seed: Read<[], number> = headRead) =>
   Effect.gen(function* starting() {
     const brain = yield* Brain
-    const saved = yield* brain.read((db) => cursorOf(db, name))
+    const saved = yield* brain.read(cursorRead, name)
     if (saved !== null) {
       return saved
     }
@@ -84,12 +91,12 @@ const HANDLED_MS = 2000
 const PASSED_MS = 10 * 60_000
 
 export interface ReactOptions {
-  /** Where it starts on its first run: the head unless given. */
-  readonly seed?: (db: Database) => number
+  /** Where it starts on its first run, a read (reads.ts): the head unless given. */
+  readonly seed?: Read<[], number>
   /** Starts at the head every time and keeps no cursor (a canary's copy of the brain). */
   readonly fresh?: boolean
   /** Where it reads from at the latest, when that's before its cursor: work it left unfinished. */
-  readonly rewind?: (db: Database) => number | null
+  readonly rewind?: Read<[], number | null>
 }
 
 /**
@@ -106,7 +113,7 @@ export const react = <R>(
   Effect.gen(function* reacting() {
     const brain = yield* Brain
     const saved =
-      options.fresh === true ? yield* brain.read(headOf) : yield* startOf(name, options.seed)
+      options.fresh === true ? yield* brain.read(headRead) : yield* startOf(name, options.seed)
     const { rewind } = options
     const back = rewind === undefined || options.fresh === true ? null : yield* brain.read(rewind)
     const from = back === null ? saved : Math.min(saved, back)

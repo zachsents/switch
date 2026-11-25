@@ -105,11 +105,24 @@ fn address_of(route: &str, kind: &str, name: &str, cx: &App) -> Option<Retained<
     if route.starts_with("http://") || route.starts_with("https://") {
         return NSURL::URLWithString(&NSString::from_str(route));
     }
+    // A file being sent whose bytes aren't linked yet (`own.rs`) has nowhere to play from yet.
+    if route.starts_with("own:") {
+        return None;
+    }
     if !route.starts_with("/blobs/") {
         return Some(NSURL::fileURLWithPath(&NSString::from_str(route)));
     }
+    // One sent from here plays from its file on this Mac.
+    if let Some(at) = blob_of(route).and_then(crate::own::of_blob) {
+        return Some(NSURL::fileURLWithPath(&NSString::from_str(&at.to_string_lossy())));
+    }
     let address = cx.global::<Net>().address(route, &[("type", kind), ("name", name)])?;
     NSURL::URLWithString(&NSString::from_str(&address))
+}
+
+/// A blob route's hash: "/blobs/<hash>?…".
+fn blob_of(route: &str) -> Option<&str> {
+    route.strip_prefix("/blobs/").map(|r| r.split(['?', '/']).next().unwrap_or(r))
 }
 
 /// A CoreFoundation key as the Foundation string it's bridged to.
@@ -135,6 +148,12 @@ fn player_of(route: &str, kind: &str, name: &str, video: bool, cx: &mut App) -> 
     }
     if let Some(p) = cx.global::<Media>().players.get(&key) {
         return Some(p.clone());
+    }
+    // One sent from here goes on as the player it had while it was being sent.
+    let sent = blob_of(route).and_then(crate::own::of_blob).map(|at| format!("{}{}", if video { "video " } else { "sound " }, at.to_string_lossy()));
+    if let Some(p) = sent.and_then(|k| cx.global::<Media>().players.get(&k).cloned()) {
+        cx.global_mut::<Media>().players.insert(key, p.clone());
+        return Some(p);
     }
     let url = address_of(route, kind, name, cx)?;
     let player = cx.new(|cx| Player::new(&url, video, cx));

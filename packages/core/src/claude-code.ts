@@ -2,7 +2,7 @@
 // with restricted native tools and no Switch tools, closed when it ends.
 import { Sessions } from "@switch/agent"
 import type { SessionsShape } from "@switch/agent"
-import { Brain, ThreadId } from "@switch/brain"
+import { Brain, defineRead, ThreadId } from "@switch/brain"
 import { ClaudeCode, ModelError } from "@switch/models"
 import { Context, Deferred, Effect, Layer } from "effect"
 import { profilesState } from "./profiles.ts"
@@ -23,6 +23,9 @@ export class LateSessions extends Context.Service<LateSessions, Deferred.Deferre
   )
 }
 
+/** The profiles and the catalog: which accounts a completion may run on. */
+const profilesRead = defineRead("core/claude-code/profiles", profilesState)
+
 export const claudeCodeLayer = Layer.effect(
   ClaudeCode,
   Effect.gen(function* making() {
@@ -42,7 +45,7 @@ export const claudeCodeLayer = Layer.effect(
             const split = request.model.indexOf(":")
             const provider = request.model.slice(0, split)
             const model = request.model.slice(split + 1)
-            const catalog = yield* brain.read(profilesState)
+            const catalog = yield* brain.read(profilesRead)
             const eligibleAccounts = new Set(
               catalog.accounts
                 .filter(

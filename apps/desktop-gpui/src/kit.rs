@@ -72,7 +72,12 @@ pub fn button(id: impl Into<ElementId>, look: Btn, on: bool, l: &Look) -> Statef
 /// Keyboard focus (`focused`): a hairline in ink3 just inside the edge, an outline that moves
 /// nothing.
 pub fn ring(l: &Look) -> Vec<gpui::BoxShadow> {
-    vec![gpui::BoxShadow { color: l.ink3, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]
+    vec![gpui::BoxShadow { color: l.ink2, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: true }]
+}
+
+/// The ring around what the keys picked that has a shape of its own (a bubble): outside it.
+pub fn outer_ring(l: &Look) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow { color: l.ink2, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]
 }
 
 /// Takes Tab, Enter and Space (its click), with the focus ring.
@@ -339,11 +344,6 @@ impl Popup {
 }
 
 gpui::actions!(kit, [Dismiss]);
-
-/// Esc closes what floats (a select's list, a pick's, a confirm) before anything under it hears it.
-pub fn bindings() -> Vec<gpui::KeyBinding> {
-    vec![gpui::KeyBinding::new("escape", Dismiss, Some("KitFloat"))]
-}
 
 fn option_row(id: ElementId, o: &Opt, chosen: bool, lit: bool, l: &Look) -> Stateful<Div> {
     div()
@@ -790,12 +790,28 @@ pub fn pick(id: impl Into<SharedString>, label: impl Into<SharedString>, options
 /// centred; Cancel, first and focused, or Esc keeps everything (a press outside does nothing); the act's own key, in the danger
 /// color, goes ahead. Focus stays in it while it's open and goes back after.
 pub fn confirm(id: impl Into<SharedString>, act: &str, question: &str, on: bool, on_confirm: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) -> AnyElement {
+    asking(id, Opener { look: Btn::Danger, on }, act, question, on_confirm, window, cx)
+}
+
+/// `confirm` with a quiet key of bare words (`Flat`), where every row of a list has one.
+pub fn confirm_quiet(id: impl Into<SharedString>, act: &str, question: &str, on_confirm: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) -> AnyElement {
+    asking(id, Opener { look: Btn::Flat, on: true }, act, question, on_confirm, window, cx)
+}
+
+/// The key a question opens from: its look, and whether it takes a press.
+struct Opener {
+    look: Btn,
+    on: bool,
+}
+
+fn asking(id: impl Into<SharedString>, opener: Opener, act: &str, question: &str, on_confirm: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) -> AnyElement {
+    let Opener { look, on } = opener;
     let l = Look::get(cx);
     let id: SharedString = id.into();
     let st = window.use_keyed_state(ElementId::Name(format!("{id}-confirm").into()), cx, |_, cx| Popup::new(cx));
     let open = st.read(cx).open;
     let opener = st.clone();
-    let mut el = div().child(press(button(ElementId::Name(format!("{id}-act").into()), Btn::Danger, on, &l), on, move |_, window, cx| {
+    let mut el = div().child(press(button(ElementId::Name(format!("{id}-act").into()), look, on, &l), on, move |_, window, cx| {
         let cancel = opener.read(cx).cancel.clone();
         let was = window.focused(cx);
         set(&opener, cx, |p| {
@@ -875,9 +891,9 @@ pub fn confirm(id: impl Into<SharedString>, act: &str, question: &str, on: bool,
     el.into_any_element()
 }
 
-thread_local! {
+base::kept_local! {
     /// A spin was drawn this frame: the beat redraws what holds it (else nothing moves).
-    static SPUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SPUN: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 /// Whether a spin was drawn since the last ask, which clears it.
@@ -891,9 +907,9 @@ pub fn spin(step: usize, l: &Look) -> impl IntoElement {
     gpui::svg().path(format!("spin/{}.svg", step % 8)).flex_none().size(l.z(12.)).text_color(l.ink3)
 }
 
-thread_local! {
+base::kept_local! {
     /// A press landed on a control inside a strip that drags the window.
-    static ON_CONTROL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ON_CONTROL: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 /// A control inside a strip that drags the window (`NO_DRAG`): a press on it is its own.

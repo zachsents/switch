@@ -1,7 +1,7 @@
 // What a new brain starts with: a few opinionated rules, as memories the user can edit or forget
 // like any other. Only a brain that has never held a memory gets them; one that has is never touched.
 // And the resource alarms, wake rules every brain gets once each.
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { Effect } from "effect"
 
 import { embedMissing, GLOBAL, MemoryWritten } from "./memory.ts"
@@ -34,12 +34,22 @@ const SEEDS: readonly {
   },
 ]
 
+/** Whether the brain has never held a memory. */
+const freshRead = defineRead(
+  "autonomy/seeds/fresh",
+  (db) => db.query("SELECT 1 FROM events WHERE type = 'memory.written' LIMIT 1").get() === null,
+)
+
+/** Of these memories' ids, those the brain holds. */
+const heldRead = defineRead("autonomy/seeds/held", (db, ids: readonly string[]) => {
+  const held = db.query("SELECT 1 FROM memories WHERE id = ?")
+  return new Set(ids.filter((id) => held.get(id) !== null))
+})
+
 /** Writes the seeds into a brain that has never held a memory. */
 export const seedMemories = Effect.gen(function* seeding() {
   const brain = yield* Brain
-  const fresh = yield* brain.read(
-    (db) => db.query("SELECT 1 FROM events WHERE type = 'memory.written' LIMIT 1").get() === null,
-  )
+  const fresh = yield* brain.read(freshRead)
   if (!fresh) {
     return 0
   }
@@ -117,21 +127,23 @@ const ALARMS: readonly {
 /** Writes each resource alarm a brain has never held: one changed or forgotten since stays so. */
 export const seedAlarms = Effect.gen(function* seeding() {
   const brain = yield* Brain
-  const fresh = yield* brain.read((db) => {
-    const held = db.query("SELECT 1 FROM memories WHERE id = ?")
-    return ALARMS.map((a) => ({
-      a,
-      kept: wakeRuleMemory({
-        name: a.name,
-        question: a.question,
-        goal: EASE,
-        wakes: {},
-        at: null,
-        alarm: a.alarm,
-        from: "A seed: every brain starts with it.",
-      }),
-    })).filter(({ kept }) => held.get(kept.name) === null)
-  })
+  const all = ALARMS.map((a) => ({
+    a,
+    kept: wakeRuleMemory({
+      name: a.name,
+      question: a.question,
+      goal: EASE,
+      wakes: {},
+      at: null,
+      alarm: a.alarm,
+      from: "A seed: every brain starts with it.",
+    }),
+  }))
+  const held = yield* brain.read(
+    heldRead,
+    all.map(({ kept }) => kept.name),
+  )
+  const fresh = all.filter(({ kept }) => !held.has(kept.name))
   if (fresh.length === 0) {
     return 0
   }

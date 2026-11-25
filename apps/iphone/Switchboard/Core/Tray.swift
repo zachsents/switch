@@ -192,6 +192,9 @@ final class Picked: Identifiable {
         let stored = try await Blobs.upload(file, name: name, type: type)
         guard !Task.isCancelled else { return }
         state = .stored(stored)
+        // Its message draws it from here, decoded already, once it's sent.
+        Blobs.keep(file, as: stored)
+        if kind == .photo { await Drawn.warm(Blobs.held(stored), as: stored.blob) }
         discard()
         done()
       } catch {

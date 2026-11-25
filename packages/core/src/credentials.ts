@@ -4,6 +4,9 @@
 // host, with scopes, and revocable. An extension's token is derived from the core's key, so nothing
 // of it is stored but its generation and revocation: issuing one again (`/auth/rotate`) moves it to
 // the next generation, and the last one's token stops working. Only token hashes ever reach the brain.
+// A device names itself by a `device` id of its own: one it pairs again under the same id replaces
+// the last (`replaced`), and a test copy's lapses (`until`) instead. When each was last used is kept
+// (`credential.seen`, at most every few minutes), so one no longer used stands out.
 import { timingSafeEqual } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
@@ -38,6 +41,8 @@ export const CredentialRequested = defineEvent(
     scopes,
     hash: Schema.String,
     code: Schema.String,
+    /** The device it's for, by an id of the device's own. */
+    device: Schema.optionalKey(Schema.String),
   }),
 )
 
@@ -55,6 +60,8 @@ export const CredentialIssued = defineEvent(
     until: Schema.optionalKey(Schema.Number),
     /** The offer it redeemed. */
     offer: Schema.optionalKey(Schema.String),
+    /** The device it's for, by an id of the device's own. */
+    device: Schema.optionalKey(Schema.String),
   }),
 )
 
@@ -76,6 +83,13 @@ export const CredentialRevoked = defineEvent(
   Schema.Struct({ id: Schema.String }),
 )
 
+/** Used again: a request carried it. */
+export const CredentialSeen = defineEvent(
+  "credential.seen",
+  1,
+  Schema.Struct({ id: Schema.String }),
+)
+
 export const CredentialOffered = defineEvent(
   "credential.offered",
   1,
@@ -93,6 +107,9 @@ export interface Credential {
   readonly code: string | null
   readonly at: number
   readonly until: number | null
+  readonly device: string | null
+  /** When it was last used, in ms: when it was made until then. */
+  readonly seen: number | null
 }
 
 interface Row {
@@ -104,6 +121,8 @@ interface Row {
   readonly code: string | null
   readonly at: number
   readonly until: number | null
+  readonly device: string | null
+  readonly seen: number | null
 }
 
 const parseScopes: (json: string) => string[] = JSON.parse
@@ -120,26 +139,28 @@ export const PAIRING_MS = 10 * 60_000
 export const credentials: Projection = {
   name: "credentials",
   // 2: extensions' scopes and ids read from their old `spur:` names. 3: extensions' generations.
-  version: 3,
+  // 4: devices, and when each was last used.
+  version: 4,
   tables: ["credentials", "credential_offers"],
   create: `
     CREATE TABLE credentials (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
       scopes TEXT NOT NULL, hash TEXT, status TEXT NOT NULL, code TEXT, at INTEGER NOT NULL,
-      until INTEGER, generation INTEGER NOT NULL DEFAULT 0);
+      until INTEGER, generation INTEGER NOT NULL DEFAULT 0, device TEXT, seen INTEGER);
     CREATE INDEX credentials_hash ON credentials (hash);
+    CREATE INDEX credentials_device ON credentials (device);
     CREATE TABLE credential_offers (id TEXT PRIMARY KEY, hash TEXT NOT NULL, scopes TEXT NOT NULL,
       until INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
   on: [
     on(CredentialRequested, (db, p, e) => {
       db.query(
-        "INSERT OR IGNORE INTO credentials (id, name, kind, scopes, hash, status, code, at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-      ).run(p.id, p.name, p.kind, scopesOf(p.scopes), p.hash, p.code, e.time)
+        "INSERT OR IGNORE INTO credentials (id, name, kind, scopes, hash, status, code, at, device) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+      ).run(p.id, p.name, p.kind, scopesOf(p.scopes), p.hash, p.code, e.time, p.device ?? null)
     }),
     on(CredentialIssued, (db, p, e) => {
       // An extension's, issued again, is its next generation: a new token.
       db.query(
-        `INSERT INTO credentials (id, name, kind, scopes, hash, status, at, until, generation)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+        `INSERT INTO credentials (id, name, kind, scopes, hash, status, at, until, generation, device)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET name = excluded.name, scopes = excluded.scopes,
            hash = excluded.hash, status = 'active', until = excluded.until,
            generation = credentials.generation + excluded.generation`,
@@ -152,6 +173,7 @@ export const credentials: Projection = {
         e.time,
         p.until ?? null,
         p.kind === "extension" ? 1 : 0,
+        p.device ?? null,
       )
       if (p.offer !== undefined) {
         db.query("UPDATE credential_offers SET used = 1 WHERE id = ?").run(p.offer)
@@ -176,6 +198,9 @@ export const credentials: Projection = {
          ON CONFLICT (id) DO UPDATE SET status = 'revoked', code = NULL`,
       ).run(id, extension ?? id, JSON.stringify(extension === null ? [] : [id]), e.time)
     }),
+    on(CredentialSeen, (db, p, e) => {
+      db.query("UPDATE credentials SET seen = ? WHERE id = ?").run(e.time, p.id)
+    }),
     on(CredentialOffered, (db, p) => {
       db.query(
         "INSERT OR IGNORE INTO credential_offers (id, hash, scopes, until) VALUES (?, ?, ?, ?)",
@@ -189,7 +214,7 @@ export const credentials: Projection = {
 export const listed = (db: Database, now: number): Credential[] =>
   db
     .query<Row, [number]>(
-      `SELECT id, name, kind, scopes, status, code, at, until FROM credentials
+      `SELECT id, name, kind, scopes, status, code, at, until, device, seen FROM credentials
         WHERE status IN ('active', 'revoked') OR (status = 'pending' AND at > ?)
         ORDER BY at DESC`,
     )
@@ -199,7 +224,7 @@ export const listed = (db: Database, now: number): Credential[] =>
 export const byHash = (db: Database, hash: string) => {
   const row = db
     .query<Row, [string]>(
-      "SELECT id, name, kind, scopes, status, code, at, until FROM credentials WHERE hash = ?",
+      "SELECT id, name, kind, scopes, status, code, at, until, device, seen FROM credentials WHERE hash = ?",
     )
     .get(hash)
   return row ? toCredential(row) : null
@@ -208,11 +233,26 @@ export const byHash = (db: Database, hash: string) => {
 export const byId = (db: Database, id: string) => {
   const row = db
     .query<Row, [string]>(
-      "SELECT id, name, kind, scopes, status, code, at, until FROM credentials WHERE id = ?",
+      "SELECT id, name, kind, scopes, status, code, at, until, device, seen FROM credentials WHERE id = ?",
     )
     .get(id)
   return row ? toCredential(row) : null
 }
+
+/**
+ * What a device's credential, issued or approved now, replaces: the device's others of its kind that
+ * don't lapse. A test copy's lapses, and neither replaces nor is replaced.
+ */
+export const replaced = (db: Database, c: Credential) =>
+  c.device === null || c.until !== null
+    ? []
+    : db
+        .query<{ id: string }, [string, string, string]>(
+          `SELECT id FROM credentials WHERE device = ? AND kind = ? AND id != ?
+            AND status = 'active' AND until IS NULL`,
+        )
+        .all(c.device, c.kind, c.id)
+        .map((r) => r.id)
 
 export const offerByHash = (db: Database, hash: string) => {
   const row = db
@@ -312,6 +352,13 @@ export const RevokeCredential = defineCommand({
   },
 })
 
+export const SeeCredential = defineCommand({
+  type: "credential.see",
+  payload: idOnly,
+  load: (db, p) => byId(db, p.id),
+  decide: (c, p) => ({ events: c?.status === "active" ? [CredentialSeen.make(p)] : [] }),
+})
+
 export const OfferCredential = defineCommand({
   type: "credential.offer",
   payload: CredentialOffered.payload,
@@ -326,6 +373,7 @@ export const credentialsConfig = {
     CredentialApproved,
     CredentialDenied,
     CredentialRevoked,
+    CredentialSeen,
     CredentialOffered,
   ],
   projections: [credentials],
@@ -335,6 +383,7 @@ export const credentialsConfig = {
     ApproveCredential,
     DenyCredential,
     RevokeCredential,
+    SeeCredential,
     OfferCredential,
   ],
 }

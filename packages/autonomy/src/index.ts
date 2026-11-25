@@ -109,6 +109,8 @@ export {
 export type { OpenLine } from "./triage.ts"
 export { ownerOf, spaceOfWork } from "./owner.ts"
 export type { TriageConfig } from "./triage.ts"
+export { registerTriage, TRIAGE } from "./triage.ts"
+export type { TriageLines } from "./triage.ts"
 export {
   DismissSurprise,
   openSurprises,

@@ -13,6 +13,7 @@ import {
   bypassOf,
   defineCommand,
   defineEvent,
+  defineRead,
   emDashRefusal,
   EventId,
   HOME,
@@ -203,6 +204,8 @@ export const memories: Projection = {
     CREATE VIRTUAL TABLE memories_fts USING fts5(id UNINDEXED, text, tokenize = 'porter');
     CREATE TABLE memory_cores (scope TEXT PRIMARY KEY, text TEXT NOT NULL, sources TEXT NOT NULL,
       tokens INTEGER NOT NULL, built_from TEXT NOT NULL, time INTEGER NOT NULL);`,
+  // The wake rules found by name (rules.ts), not by reading every memory's row.
+  indexes: "CREATE INDEX IF NOT EXISTS memories_name ON memories (status, name);",
   on: [
     on(MemoryWritten, (db, p, e) => {
       for (const id of p.replaces) {
@@ -427,35 +430,45 @@ const toBlob = (v: Float32Array) => new Uint8Array(v.buffer, v.byteOffset, v.byt
 const fromBlob = (b: Uint8Array) =>
   new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength))
 
+/** Whether the vectors' table is there yet: only embedding makes it, and a read can't. */
+const hasVectors = (db: Database) =>
+  db
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_vectors'",
+    )
+    .get() !== null
+
+/** Live memories whose vector is missing or stale. */
+const unembeddedRead = defineRead("autonomy/memory/unembedded", (db) => {
+  const have = new Map(
+    db
+      .query<{ id: string; text: string }, []>("SELECT id, text FROM memory_vectors")
+      .all()
+      .map((r) => [r.id, r.text]),
+  )
+  return liveMemories(db).filter((m) => have.get(m.id) !== memoryText(m))
+})
+
 /** Embeds live memories whose vector is missing or stale. */
 export const embedMissing = Effect.gen(function* embedding() {
   const brain = yield* Brain
   const models = yield* Models
-  const todo = yield* brain.read((db) => {
-    db.run(VECTORS)
-    const have = new Map(
-      db
-        .query<{ id: string; text: string }, []>("SELECT id, text FROM memory_vectors")
-        .all()
-        .map((r) => [r.id, r.text]),
-    )
-    return liveMemories(db).filter((m) => have.get(m.id) !== memoryText(m))
-  })
+  // The table is made here, the one place that writes it, so the reads stay reads.
+  yield* brain.migrate((db) => db.run(VECTORS))
+  const todo = yield* brain.read(unembeddedRead)
   let cost = 0
   for (let i = 0; i < todo.length; i += 200) {
     const chunk = todo.slice(i, i + 200)
     const e = yield* models.embed(chunk.map(memoryText))
     cost += e.cost
-    yield* brain.read((db) => {
+    yield* brain.migrate((db) => {
       const put = db.query("INSERT OR REPLACE INTO memory_vectors (id, text, vec) VALUES (?, ?, ?)")
-      db.transaction(() => {
-        for (const [j, m] of chunk.entries()) {
-          const v = e.vectors[j]
-          if (v && v.length > 0) {
-            put.run(m.id, memoryText(m), toBlob(v))
-          }
+      for (const [j, m] of chunk.entries()) {
+        const v = e.vectors[j]
+        if (v && v.length > 0) {
+          put.run(m.id, memoryText(m), toBlob(v))
         }
-      })()
+      }
     })
   }
   return { embedded: todo.length, cost }
@@ -467,7 +480,10 @@ let vectorCache: { readonly count: number; readonly rows: readonly [string, Floa
 }
 
 const vectors = (db: Database) => {
-  db.run(VECTORS)
+  // Before anything's embedded there's no table, and no vectors.
+  if (!hasVectors(db)) {
+    return []
+  }
   const count =
     db.query<{ n: number }, []>("SELECT count(*) AS n FROM memory_vectors").get()?.n ?? 0
   if (count !== vectorCache.count) {
@@ -504,29 +520,33 @@ export const nearest = (
     .slice(0, k)
     .map(([id]) => id)
 
+/** Live memories near a query's vector (none without one) and its words, merged, at most `k`. */
+const similarRead = defineRead(
+  "autonomy/memory/similar",
+  (db, query: string, vector: Float32Array | null, k: number) => {
+    const live = new Set(liveMemories(db).map((m) => m.id))
+    const byVector = vector === null ? [] : nearest(db, vector, k, (id) => live.has(id))
+    const byText = fts(db, query, k).filter((id) => live.has(id))
+    const ids: string[] = []
+    for (let i = 0; ids.length < k && i < k; i += 1) {
+      for (const id of [byVector[i], byText[i]]) {
+        if (id !== undefined && !ids.includes(id)) {
+          ids.push(id)
+        }
+      }
+    }
+    return ids.slice(0, k).flatMap((id) => getMemory(db, id) ?? [])
+  },
+)
+
 /** Live memories similar to `text`: vector and full text merged, at most `k`. */
 export const similar = (query: string, k: number) =>
   Effect.gen(function* searching() {
     const brain = yield* Brain
     const models = yield* Models
     const q = yield* Effect.option(models.embed([query]))
-    return yield* brain.read((db) => {
-      const live = new Set(liveMemories(db).map((m) => m.id))
-      const byVector =
-        q._tag === "Some" && q.value.vectors[0]
-          ? nearest(db, q.value.vectors[0], k, (id) => live.has(id))
-          : []
-      const byText = fts(db, query, k).filter((id) => live.has(id))
-      const ids: string[] = []
-      for (let i = 0; ids.length < k && i < k; i += 1) {
-        for (const id of [byVector[i], byText[i]]) {
-          if (id !== undefined && !ids.includes(id)) {
-            ids.push(id)
-          }
-        }
-      }
-      return ids.slice(0, k).flatMap((id) => getMemory(db, id) ?? [])
-    })
+    const vector = q._tag === "Some" && q.value.vectors[0] ? q.value.vectors[0] : null
+    return yield* brain.read(similarRead, query, vector, k)
   })
 
 // The write path.
@@ -745,6 +765,12 @@ const keptLately = (db: Database, space: SpaceId) =>
     .all(Date.now() - LATELY_MS, space)
     .map(toMemory)
 
+const keptLatelyRead = defineRead("autonomy/memory/kept-lately", keptLately)
+const scopesRead = defineRead("autonomy/memory/scopes", (db, space: Scope) => scopesOf(db, space))
+const wordsRead = defineRead("autonomy/memory/words", wordsOf)
+const saidRead = defineRead("autonomy/memory/said", saidOf)
+const freeIdRead = defineRead("autonomy/memory/free-id", freeId)
+
 /**
  * The gate's read of a proposal; a carried one isn't read. It reads it against the memories held and,
  * apart from them, the rules and preferences kept lately, newest first, so a lesson that's one more
@@ -824,12 +850,12 @@ export const remember = (p: Proposal) =>
       return { kept: false, why: `${dashed} ${BYPASS}` } satisfies Remembered
     }
     const held = yield* similar(proposed, 6)
-    const lately = yield* brain.read((db) => keptLately(db, p.space))
+    const lately = yield* brain.read(keptLatelyRead, p.space)
     const verdict = yield* gated(p, proposed, held, lately)
     if (verdict.withheld) {
       return { kept: false, why: "It holds a secret" } satisfies Remembered
     }
-    const scopes = yield* brain.read((db) => scopesOf(db, p.space))
+    const scopes = yield* brain.read(scopesRead, p.space)
     const prompt = [
       `Proposed, from space ${p.space}:\n${proposed}`,
       held.length > 0 ? `Held memories most like it:\n${held.map(card).join("\n")}` : "",
@@ -838,7 +864,7 @@ export const remember = (p: Proposal) =>
     ]
       .filter((s) => s !== "")
       .join("\n\n")
-    const { found, words } = yield* brain.read((db) => wordsOf(db, p))
+    const { found, words } = yield* brain.read(wordsRead, p)
     const writer = p.carried === true ? `${WRITER}\n${CARRIED}` : WRITER
     const done = yield* models.complete("gate", writer, withWords(prompt, words, p))
     const answered = jsonOf(done.text)
@@ -860,10 +886,10 @@ export const remember = (p: Proposal) =>
       ...new Set([...strings(field(a, "replaces")), ...(heldIds.has(wanted) ? [wanted] : [])]),
     ].filter((x) => heldIds.has(x))
     const theirs = p.quote !== undefined || field(a, "from_user") === true
-    const keptSaid = yield* brain.read((db) => saidOf(db, found, words, theirs, replaces))
+    const keptSaid = yield* brain.read(saidRead, found, words, theirs, replaces)
     const type = TYPES.find((t) => t === field(a, "type")) ?? "feedback"
     const shaped = shapeOf(type, theirs, keptSaid, wanted, text(field(a, "body")))
-    const id = yield* brain.read((db) => freeId(db, shaped.wanted, replaces))
+    const id = yield* brain.read(freeIdRead, shaped.wanted, replaces)
     const scope = scopes.find((s) => s === field(a, "scope")) ?? GLOBAL
     const t = field(a, "trigger")
     const tools = strings(field(t, "tools"))

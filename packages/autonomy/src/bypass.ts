@@ -6,7 +6,8 @@
 // every channel they're on, and the user's rules it bears on; a reason what's shown contradicts, or
 // one that gives no real ground the objection doesn't apply, is refused, and the objection stands.
 import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
+import type { Read } from "@switch/brain"
 import { messagesIn, mine, peopleFor, saidWith } from "@switch/gateway"
 import { Models } from "@switch/models"
 import { Context, Effect, Option } from "effect"
@@ -142,13 +143,22 @@ export const peopleNamed = (db: Database, text: string, now: number) => {
 }
 
 /**
- * The user's rules that bear on some words in a space, the memories' rules alone (rules.ts fills
- * it: the rules import the memories, which import the gate).
+ * The user's rules that bear on some words in a space, the memories' rules alone, as a read of a
+ * space and the words (rules.ts fills it: the rules import the memories, which import the gate).
  */
 export class RulesAbout extends Context.Service<
   RulesAbout,
-  { readonly about: (db: Database, space: string, text: string) => string }
+  { readonly about: Read<[space: string, text: string], string> }
 >()("switch/RulesAbout") {}
+
+/** What a bypass's judge sees of the record: the user's latest words, and the people it names. */
+const recordRead = defineRead(
+  "autonomy/bypass/record",
+  (db, space: string, named: string, now: number, turn: string | undefined) => ({
+    theirs: theirWords(db, space, now, turn),
+    people: peopleNamed(db, named, now),
+  }),
+)
 
 export const JUDGE = `You judge a bypass for the gate of Switch, the user's personal agent. One of the gate's checks objected to something the agent was about to do (a reply to the user, an item for their queue, an expectation that parks work, a task's report), and the agent sent it again with a reason the check is wrong this time. You see the reason, the user's own latest words with their times, the people the reason or the item names as their contacts have them, the user's rules when they bear on it, and the item with what the check objected to. The reason may state things you can't see (what a task has done, what the agent just tried or looked at, what a draft holds, what a task's brief says): take those as true. Only what's shown can make it false.
 
@@ -225,14 +235,20 @@ export const judge = (input: {
     const rules = yield* Effect.serviceOption(RulesAbout)
     const brain = yield* Brain
     const now = Date.now()
-    const record = yield* brain.read((db) => ({
-      theirs: theirWords(db, input.space, now, input.turn),
-      people: peopleNamed(db, `${input.reason}\n${input.text}`, now),
-      rules: Option.match(rules, {
-        onNone: () => "",
-        onSome: (r) => r.about(db, input.space, input.reason),
+    const seen = yield* brain.read(
+      recordRead,
+      input.space,
+      `${input.reason}\n${input.text}`,
+      now,
+      input.turn,
+    )
+    const record = {
+      ...seen,
+      rules: yield* Option.match(rules, {
+        onNone: () => Effect.succeed(""),
+        onSome: (r) => brain.read(r.about, input.space, input.reason),
       }),
-    }))
+    }
     const reply = yield* models.complete("gate", JUDGE, judged({ ...input, ...record }))
     const answer = jsonOf(reply.text)
     const contradicted = probability(field(answer, "contradicted"))

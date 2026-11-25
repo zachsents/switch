@@ -21,6 +21,7 @@ import {
   ANSWERS_MS,
   Brain,
   bypassEvent,
+  defineRead,
   bypassOf,
   defineEvent,
   EARLY,
@@ -812,10 +813,17 @@ const digestOf = (text: string) =>
   createHash("sha256").update(text.trim()).digest("hex").slice(0, 16)
 
 /** A criterion's threshold: as last set (settings), else its default. */
-const atOf = (db: Database, exit: string, c: Criterion) => {
+const atOf = (db: Database, exit: string, c: Pick<Criterion, "name" | "at">) => {
   const at = storedDial(db, `gate.${exit}.${c.name}`)
   return typeof at === "number" ? at : c.at
 }
+
+/** Each criterion's threshold, by name. */
+const atsRead = defineRead(
+  "autonomy/gate/ats",
+  (db, exit: string, criteria: readonly Pick<Criterion, "name" | "at">[]) =>
+    new Map(criteria.map((c) => [c.name, atOf(db, exit, c)])),
+)
 
 interface Reading {
   readonly text: string
@@ -849,7 +857,11 @@ export const reading = (exit: Exit, input: Reading) =>
       ...(input.also ?? []),
       ...(input.rules ?? []).map(ruleCriterion),
     ]
-    const ats = yield* brain.read((db) => new Map(criteria.map((c) => [c.name, atOf(db, exit, c)])))
+    const ats = yield* brain.read(
+      atsRead,
+      exit,
+      criteria.map((c) => ({ name: c.name, at: c.at })),
+    )
     const questions: Record<string, Question> = Object.fromEntries(
       criteria.map((c) => [
         c.name,
@@ -975,6 +987,8 @@ const refusedLately = (db: Database, exit: Exit, key: string, now: number) =>
     )
     .get(exit, key, now - ANSWERS_MS)?.pass === 0
 
+const refusedLatelyRead = defineRead("autonomy/gate/refused-lately", refusedLately)
+
 /** The bypass given, as recorded: early when nothing refused this work in the last hour. */
 const bypassGiven = (exit: Exit, input: Gated) =>
   Effect.gen(function* giving() {
@@ -983,7 +997,7 @@ const bypassGiven = (exit: Exit, input: Gated) =>
     if (reason === null) {
       return null
     }
-    const answers = yield* brain.read((db) => refusedLately(db, exit, input.key, Date.now()))
+    const answers = yield* brain.read(refusedLatelyRead, exit, input.key, Date.now())
     return { reason, early: !answers }
   })
 
@@ -1174,10 +1188,12 @@ export const outcomes = (db: Database, now: number) => {
   return out
 }
 
+const outcomesRead = defineRead("autonomy/gate/outcomes", outcomes)
+
 /** Scores what settled; reflection runs it daily. */
 export const scoreGates = Effect.gen(function* scoring() {
   const brain = yield* Brain
-  const scored = yield* brain.read((db) => outcomes(db, Date.now()))
+  const scored = yield* brain.read(outcomesRead, Date.now())
   yield* Effect.orDie(
     brain.ingest(
       scored.map((s) => ({

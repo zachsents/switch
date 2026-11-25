@@ -10,7 +10,9 @@ use gpui::{AnyWindowHandle, App, AppContext, Application, Bounds, Entity, Global
 
 use super::appkit;
 
-static QUITTING: AtomicBool = AtomicBool::new(false);
+base::kept! {
+    static QUITTING: AtomicBool = AtomicBool::new(false);
+}
 
 /// The main window, and what watches it come forward.
 struct Main(AnyWindowHandle, #[allow(dead_code)] Entity<()>);
@@ -52,9 +54,10 @@ pub fn start(cx: &mut App) {
     commands_everywhere(cx);
     appkit::keep_frames_through_full_screen();
     cx.on_window_closed(|_, id| super::oauth::close_window(id)).detach();
-    cx.on_app_quit(|_| {
+    cx.on_app_quit(|cx| {
         QUITTING.store(true, Ordering::Relaxed);
         super::oauth::close();
+        crate::auth::release(cx.global::<crate::net::Net>());
         async {}
     })
     .detach();
@@ -88,7 +91,7 @@ pub fn opened(window: &mut Window, cx: &mut App) {
 
 /// Every window shows and hides at once, whichever page opened it: each new one is made still.
 pub fn still_all(cx: &mut App) {
-    thread_local! {
+    base::kept_local! {
         static STILL: std::cell::RefCell<std::collections::HashSet<gpui::WindowId>> = Default::default();
     }
     for w in cx.windows() {
@@ -173,8 +176,10 @@ fn commands_everywhere(cx: &mut App) {
     cx.on_action(move |_: &FullScreen, cx| in_front(cx, |w, _| w.toggle_fullscreen()));
 }
 
-/// Whether the window in front is full screen, as the View menu last heard.
-static FULL: AtomicBool = AtomicBool::new(false);
+base::kept! {
+    /// Whether the window in front is full screen, as the View menu last heard.
+    static FULL: AtomicBool = AtomicBool::new(false);
+}
 
 pub fn full_screen(_: &App) -> bool {
     FULL.load(Ordering::Relaxed)

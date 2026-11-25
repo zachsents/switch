@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use gpui::{
-    AnyView, AnyWindowHandle, App, AppContext, Bounds, Context, FocusHandle, Focusable, Global, InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, Styled,
+    AnyView, AnyWindowHandle, App, AppContext, Bounds, Context, FocusHandle, Focusable, Global, InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled,
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, point, px, size,
 };
 
@@ -60,8 +60,6 @@ pub fn init(cx: &mut App) {
     cx.observe_new(|_: &mut crate::asks::window::AskWindow, _, cx| step(1, cx)).detach();
     cx.observe_new(|_: &mut crate::widgets::window::WidgetWindow, _, cx| step(1, cx)).detach();
     cx.observe_new(|_: &mut crate::settings::SettingsWindow, _, cx| step(7, cx)).detach();
-
-    cx.bind_keys([KeyBinding::new("escape", CloseOne, Some("OneThing"))]);
 }
 
 /// A window of one thing: its view, or its title until its kind has one.

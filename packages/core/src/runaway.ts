@@ -18,7 +18,7 @@ import type { Library } from "bun:ffi"
 import { totalmem } from "node:os"
 import path from "node:path"
 import { spaceOfWork } from "@switch/autonomy"
-import { Brain, HOME, ThreadId } from "@switch/brain"
+import { Brain, defineRead, HOME, ThreadId } from "@switch/brain"
 import { Effect } from "effect"
 
 import type { ToCore } from "./link.ts"
@@ -191,19 +191,22 @@ const took = (seconds: number) => {
 }
 
 /** What a host stopped: a surprise for the work it ran for, so its next turn knows what and why. */
+/** A work's space and title, when there's a work. */
+const workRead = defineRead("core/runaway/work", (db, work: ThreadId | null) => ({
+  space: work === null ? null : spaceOfWork(db, work),
+  title:
+    work === null
+      ? null
+      : (db
+          .query<{ title: string }, [string]>("SELECT title FROM threads WHERE thread = ?")
+          .get(work)?.title ?? null),
+}))
+
 export const stoppedRunaway = (machine: string, m: Runaway) =>
   Effect.gen(function* raising() {
     const brain = yield* Brain
     const work = m.work === undefined ? null : ThreadId.make(m.work)
-    const { space, title } = yield* brain.read((db) => ({
-      space: work === null ? null : spaceOfWork(db, work),
-      title:
-        work === null
-          ? null
-          : (db
-              .query<{ title: string }, [string]>("SELECT title FROM threads WHERE thread = ?")
-              .get(work)?.title ?? null),
-    }))
+    const { space, title } = yield* brain.read(workRead, work)
     let ranFor = `the extension ${m.extension ?? "it was started by"}`
     if (work !== null) {
       ranFor = title === null ? work : `“${title}” (${work})`

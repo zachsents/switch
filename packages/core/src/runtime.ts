@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import {
   Brain,
+  defineRead,
   EventId,
   installedExtensions,
   InstallExtension,
@@ -192,6 +193,38 @@ const lastRuns = (db: Database) =>
        GROUP BY 2, 3`,
     )
     .all()
+
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/** What the log last said of each extension's run on each machine. */
+const lastRunsRead = defineRead("core/runtime/last-runs", (db) => lastRuns(db))
+
+/** Every installed extension that reads. */
+const installedRead = defineRead("core/runtime/installed", (db) => installedExtensions(db))
+
+/** Every placed extension. */
+const placementsRead = defineRead("core/runtime/placements", (db) => extensionPlacements(db))
+
+/** The extensions ever placed, by name. */
+const knownExtensionsRead = defineRead("core/runtime/known-extensions", (db) => knownExtensions(db))
+
+/** Every machine that reported. */
+const machinesRead = defineRead("core/runtime/machines", (db) => knownMachines(db))
+
+/** Every extension's token generation past the first, by name. */
+const generationsRead = defineRead("core/runtime/generations", (db) => generations(db))
+
+/** The scripts a machine runs, each with its token (signed by the key in `dir`). */
+const scriptsForRead = defineRead("core/runtime/scripts-for", (db, machine: string, dir: string) =>
+  scriptsFor(db, machine, dir),
+)
+
+/** The log's head. */
+const headRead = defineRead(
+  "core/runtime/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
 
 const decodeDeps = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -371,7 +404,7 @@ export const runtimeLayer = (options: {
       const leaving = yield* FiberMap.make<string>()
       /** What the log last said of each extension's run on each machine, by `machine/extension`. */
       const said = new Map(
-        (yield* brain.read(lastRuns)).map((r) => [`${r.machine}/${r.extension}`, r.type]),
+        (yield* brain.read(lastRunsRead)).map((r) => [`${r.machine}/${r.extension}`, r.type]),
       )
       const plugs = yield* FiberMap.make<string>()
       const plugged = new Map<string, string>()
@@ -381,7 +414,7 @@ export const runtimeLayer = (options: {
       /** Everything it can run: configured, then installed. */
       const catalog = options.extensions
         ? brain
-            .read(installedExtensions)
+            .read(installedRead)
             .pipe(
               Effect.map((installed) => [
                 ...configured,
@@ -495,10 +528,10 @@ export const runtimeLayer = (options: {
       const reconcile = lock.withPermit(
         Effect.gen(function* reconciling() {
           const where = new Map(
-            (yield* brain.read(extensionPlacements)).map((p) => [p.extension, p.machine]),
+            (yield* brain.read(placementsRead)).map((p) => [p.extension, p.machine]),
           )
           const all = yield* catalog
-          const generation = yield* brain.read(generations)
+          const generation = yield* brain.read(generationsRead)
           const sendWants = (held: ReadonlySet<string>) => {
             for (const host of hosts.values()) {
               const extensions = all.filter((a) =>
@@ -596,7 +629,7 @@ export const runtimeLayer = (options: {
             return
           }
           for (const host of only === undefined ? hosts.values() : [only]) {
-            const list = yield* brain.read((db) => scriptsFor(db, host.machine, options.dir))
+            const list = yield* brain.read(scriptsForRead, host.machine, options.dir)
             host.link.send({ t: "scripts", scripts: list })
           }
         })
@@ -607,7 +640,7 @@ export const runtimeLayer = (options: {
       /** Extensions never placed go to the first machine with what they need. */
       const suggest = (machine: string, provides: readonly string[]) =>
         Effect.gen(function* suggesting() {
-          const known = yield* brain.read(knownExtensions)
+          const known = yield* brain.read(knownExtensionsRead)
           for (const a of yield* catalog) {
             const { needs } = a
             if (!a.every && !known.has(a.spec.name) && lacking(needs, provides).length === 0) {
@@ -622,7 +655,7 @@ export const runtimeLayer = (options: {
 
       /** Each online machine in turn, for extensions never placed. */
       const suggestAll = Effect.gen(function* suggestingAll() {
-        const found = yield* brain.read(knownMachines)
+        const found = yield* brain.read(machinesRead)
         for (const m of found) {
           if (hosts.has(m.machine)) {
             yield* suggest(m.machine, m.provides)
@@ -867,11 +900,7 @@ export const runtimeLayer = (options: {
           )
         })
 
-      const head = yield* brain.read(
-        (db) =>
-          db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ??
-          0,
-      )
+      const head = yield* brain.read(headRead)
       yield* Effect.forkScoped(
         brain.changes(head).pipe(
           Stream.filter((e) =>
@@ -964,9 +993,9 @@ export const runtimeLayer = (options: {
             Effect.map((found) => Option.getOrNull(found)),
           ),
         machines: Effect.gen(function* viewing() {
-          const placed = yield* brain.read(extensionPlacements)
-          const found = yield* brain.read(knownMachines)
-          const installed = yield* brain.read(installedExtensions)
+          const placed = yield* brain.read(placementsRead)
+          const found = yield* brain.read(machinesRead)
+          const installed = yield* brain.read(installedRead)
           const all = yield* catalog
           return {
             machines: found.map((m) => ({
@@ -1002,7 +1031,7 @@ export const runtimeLayer = (options: {
               )
             }
             if (machine !== undefined) {
-              const there = (yield* brain.read(knownMachines)).find((m) => m.machine === machine)
+              const there = (yield* brain.read(machinesRead)).find((m) => m.machine === machine)
               const missing = lacking(found.manifest.needs ?? [], there?.provides ?? [])
               if (!there || missing.length > 0) {
                 return yield* Effect.fail(
@@ -1020,7 +1049,7 @@ export const runtimeLayer = (options: {
               })
             }
             // An installed extension from a new source (another commit): it moves there.
-            const was = (yield* brain.read(installedExtensions)).some(
+            const was = (yield* brain.read(installedRead)).some(
               (i) => i.extension === found.extension,
             )
             yield* dispatch(was ? UpdateExtension.type : InstallExtension.type, found)
@@ -1028,9 +1057,7 @@ export const runtimeLayer = (options: {
           }),
         update: (extension) =>
           Effect.gen(function* updating() {
-            const was = (yield* brain.read(installedExtensions)).find(
-              (i) => i.extension === extension,
-            )
+            const was = (yield* brain.read(installedRead)).find((i) => i.extension === extension)
             if (!was) {
               return yield* Effect.fail(new Rejected({ reason: `No extension ${extension}` }))
             }

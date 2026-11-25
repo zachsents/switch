@@ -9,6 +9,8 @@ use crate::brain::HOME;
 pub struct Shell {
     /// ⌘K is open.
     pub finding: bool,
+    /// ⌘K is open to name a new space.
+    pub making: bool,
     /// The space whose chat ⌘F's bar is open on.
     pub searching_in: Option<String>,
     /// Asked to put the cursor back in ⌘F's open bar, its words selected: counts each ask.

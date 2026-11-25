@@ -6,7 +6,7 @@
 //! something; with nothing in it to show, the column is out of the page. Two live pictures one under
 //! the other have the page between them.
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Render, Styled, Window, div, px};
+use gpui::{AnyElement, Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled, Window, div, px};
 
 use crate::look::Look;
 use crate::model::model;
@@ -16,6 +16,8 @@ use crate::widgets::render::{self, Ctx};
 
 pub struct WidgetColumn {
     space: String,
+    /// The column's own focus: ⇧⌘J goes from it to its first control.
+    focus: FocusHandle,
 }
 
 impl WidgetColumn {
@@ -24,7 +26,22 @@ impl WidgetColumn {
         cx.observe(&model(cx), |_, _, cx| cx.notify()).detach();
         let pictures = WebPictures::entity(cx);
         cx.observe(&pictures, |_, _, cx| cx.notify()).detach();
-        WidgetColumn { space }
+        WidgetColumn { space, focus: cx.focus_handle() }
+    }
+
+    /// ⇧⌘J: the keyboard to its first control; false with none to take it.
+    pub fn enter(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let was = window.focused(cx);
+        window.focus(&self.focus, cx);
+        window.focus_next(cx);
+        let inside = self.focus.contains_focused(window, cx) && !self.focus.is_focused(window);
+        if !inside {
+            match was {
+                Some(h) => window.focus(&h, cx),
+                None => window.blur(cx),
+            }
+        }
+        inside
     }
 
     /// The widgets placed in it that their extension offers, in their order.
@@ -82,6 +99,10 @@ impl Render for WidgetColumn {
             return out_of_view.into_any_element();
         }
         div()
+            .key_context("Widgets")
+            .track_focus(&self.focus)
+            // Esc from a control in it: back to the box.
+            .on_action(cx.listener(|_, _: &crate::commands::Escape, window, cx| window.dispatch_action(Box::new(crate::app::ToBox), cx)))
             .relative()
             .flex()
             .flex_col()
@@ -97,3 +118,9 @@ impl Render for WidgetColumn {
 }
 
 use gpui::prelude::FluentBuilder;
+
+impl gpui::Focusable for WidgetColumn {
+    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+        self.focus.clone()
+    }
+}

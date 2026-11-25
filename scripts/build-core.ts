@@ -19,6 +19,8 @@ const compiler = Bun.spawn(
     "build",
     "--compile",
     path.join(root, "packages/core/src/main.ts"),
+    // Its brain reader threads' entry, started as a Worker from inside the binary.
+    path.join(root, "packages/core/src/reader.ts"),
     "--outfile",
     path.join(destination, "switch"),
     ...(target === undefined ? [] : ["--target", target]),

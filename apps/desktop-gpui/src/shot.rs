@@ -91,6 +91,22 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 cx.background_executor().timer(Duration::from_millis(1200)).await;
                 continue;
             }
+            // `file:<x>:<y>:<path>`: that file dragged in from Finder and dropped there, as the
+            // window's drop takes it (the pasteboard left alone).
+            if let Some(rest) = page.strip_prefix("file:") {
+                let mut parts = rest.splitn(3, ':');
+                let (x, y) = (parts.next().unwrap_or("0").parse::<f32>().unwrap_or(0.), parts.next().unwrap_or("0").parse::<f32>().unwrap_or(0.));
+                let path = std::path::PathBuf::from(parts.next().unwrap_or_default());
+                let at = gpui::point(gpui::px(x), gpui::px(y));
+                let _ = cx.update_window(last, move |_, window, cx| {
+                    let paths = gpui::ExternalPaths(vec![path].into());
+                    window.dispatch_event(gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Entered { position: at, paths }), cx);
+                    window.dispatch_event(gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Pending { position: at }), cx);
+                    window.dispatch_event(gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Submit { position: at }), cx);
+                });
+                cx.background_executor().timer(Duration::from_millis(300)).await;
+                continue;
+            }
             // `preset:<key>`: both sides of the theme that preset's, as Settings picks it (kept here
             // only).
             if let Some(k) = page.strip_prefix("preset:") {
@@ -446,6 +462,38 @@ pub fn tour(window: AnyWindowHandle, cx: &mut App) {
         let rss = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
         eprintln!("tour: rss {} MB", rss.trim().parse::<f64>().unwrap_or(0.) / 1024.);
         let _ = cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
+/// `$SWITCH_GPUI_FILM=<ms>`: once the brain is in, the window drawn every `ms` and saved into
+/// `$SWITCH_GPUI_SHOT` whenever it changed, named by the wall clock (ms since 1970): a film of the
+/// app where the screen can't be recorded, and when a change reached it.
+pub fn film(window: AnyWindowHandle, cx: &mut App) {
+    let (Ok(dir), Some(every)) = (std::env::var("SWITCH_GPUI_SHOT"), std::env::var("SWITCH_GPUI_FILM").ok().and_then(|v| v.parse::<u64>().ok())) else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(Duration::from_millis(200)).await;
+            if cx.update(|cx| model(cx).read(cx).brain.ready) {
+                break;
+            }
+        }
+        let mut last: Option<Vec<u8>> = None;
+        loop {
+            cx.background_executor().timer(Duration::from_millis(every)).await;
+            let Ok(Ok(img)) = cx.update_window(window, |_, window, _| window.render_to_image()) else { break };
+            if last.as_deref() == Some(img.as_raw().as_slice()) {
+                continue;
+            }
+            last = Some(img.as_raw().clone());
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            let path = format!("{dir}/{at}.png");
+            cx.background_spawn(async move {
+                let _ = img.save(&path);
+            })
+            .detach();
+        }
     })
     .detach();
 }

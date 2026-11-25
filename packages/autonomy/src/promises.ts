@@ -24,16 +24,16 @@ import type { Database } from "bun:sqlite"
 import {
   Brain,
   defineEvent,
+  defineRead,
   EventId,
   MessagePosted,
   Query,
-  runQuery,
   SpaceId,
   ThreadId,
 } from "@switch/brain"
 import type { Found, Incoming, Rejected } from "@switch/brain"
 import { Models } from "@switch/models"
-import { Effect, Exit, Option, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Option, Schema, Stream } from "effect"
 
 import { inputFor } from "./caller.ts"
 import { ago, ExpectationDropped, ExpectationSet, moment, scoped } from "./expect.ts"
@@ -139,15 +139,11 @@ const poster = (db: Database, seq: number, space: string) =>
     .map((r) => ThreadId.make(r.thread))
     .at(0) ?? null
 
-/** The thread that said a message: its say's turn's, a reply's space's, or a post's caller's. */
-const threadOfSaid = (
-  db: Database,
-  id: string,
-  seq: number,
-  space: string,
-  turn: string,
-  threadOf: (space: SpaceId) => ThreadId,
-) => {
+/**
+ * The thread that said a message: its say's turn's, or a post's caller's; "reply" for a reply,
+ * whose thread is its space's (`threadOf`, the caller's to say).
+ */
+const threadOfSaid = (db: Database, id: string, seq: number, space: string, turn: string) => {
   const by =
     turn === ""
       ? null
@@ -157,7 +153,7 @@ const threadOfSaid = (
   if (by !== null) {
     return ThreadId.make(by)
   }
-  return id.startsWith("reply:") ? threadOf(SpaceId.make(space)) : poster(db, seq, space)
+  return id.startsWith("reply:") ? "reply" : poster(db, seq, space)
 }
 
 const titleOf = (db: Database, thread: ThreadId, space: string) =>
@@ -166,25 +162,26 @@ const titleOf = (db: Database, thread: ThreadId, space: string) =>
   db.query<{ name: string }, [string]>("SELECT name FROM spaces WHERE id = ?").get(space)?.name ??
   thread
 
-/**
- * The agent's messages after `after`, each with the work that said it: a turn's reply (chat.ts
- * posts it as `reply:<turn>`, from its space's thread), or a post a turn's call made. What no turn
- * said (the reflection's report, a failed push's line) isn't read, as Switchboard's kernel read
- * no monologue's or app's words (builtin.rs:341, `not_from`). `through` is the last one looked at.
- */
-export const saidAfter = (db: Database, after: number, threadOf: (space: SpaceId) => ThreadId) => {
+/** A message `saidRead` read: a reply's thread and title are left for `saidAfter` to fill. */
+interface SaidRead extends Omit<Said, "thread" | "title"> {
+  readonly thread: ThreadId | "reply"
+  readonly title: string | null
+}
+
+/** The agent's messages after `after`, as `saidAfter` takes them; `through` is the last one looked at. */
+const saidRead = defineRead("autonomy/promises/said", (db, after: number) => {
   const rows = db
     .query<{ seq: number; id: string; time: number; payload: string }, [number]>(
       `SELECT seq, id, time, payload FROM events
        WHERE type = 'message.posted' AND source = 'agent' AND seq > ? ORDER BY seq`,
     )
     .all(after)
-  const said = rows.flatMap((r): Said[] => {
+  const said = rows.flatMap((r): SaidRead[] => {
     const p = parse(r.payload)
     const space = text(field(p, "space"))
     const words = text(field(p, "text"))
     // A say carries its turn; a reply posted before say did, its id; a post, its call nearby.
-    const thread = threadOfSaid(db, r.id, r.seq, space, text(field(p, "turn")), threadOf)
+    const thread = threadOfSaid(db, r.id, r.seq, space, text(field(p, "turn")))
     if (space === "" || words === "" || thread === null) {
       return []
     }
@@ -194,13 +191,66 @@ export const saidAfter = (db: Database, after: number, threadOf: (space: SpaceId
         time: r.time,
         space: SpaceId.make(space),
         thread,
-        title: titleOf(db, thread, space),
+        title: thread === "reply" ? null : titleOf(db, thread, space),
         text: words,
       },
     ]
   })
   return { said, through: rows.at(-1)?.seq ?? after }
+})
+
+/** Each thread's title, else its space's name, else the thread. */
+const titlesRead = defineRead(
+  "autonomy/promises/titles",
+  (db, of: readonly { readonly thread: ThreadId; readonly space: string }[]) =>
+    of.map((o) => titleOf(db, o.thread, o.space)),
+)
+
+/**
+ * The agent's messages after `after`, each with the work that said it: a turn's reply (chat.ts
+ * posts it as `reply:<turn>`, from its space's thread), or a post a turn's call made. What no turn
+ * said (the reflection's report, a failed push's line) isn't read, as Switchboard's kernel read
+ * no monologue's or app's words (builtin.rs:341, `not_from`). `through` is the last one looked at.
+ */
+export const saidAfter = (after: number, threadOf: (space: SpaceId) => ThreadId) =>
+  Effect.gen(function* reading() {
+    const brain = yield* Brain
+    const read = yield* brain.read(saidRead, after)
+    const replies = [
+      ...new Set(read.said.flatMap((m) => (m.thread === "reply" ? [m.space] : []))),
+    ].map((space) => ({ thread: threadOf(space), space }))
+    const titles = replies.length === 0 ? [] : yield* brain.read(titlesRead, replies)
+    const of = new Map(
+      replies.map((r, i) => [r.space, { thread: r.thread, title: titles[i] ?? "" }]),
+    )
+    const said = read.said.map((m): Said =>
+      m.thread === "reply"
+        ? { ...m, thread: threadOf(m.space), title: of.get(m.space)?.title ?? "" }
+        : { ...m, thread: m.thread, title: m.title ?? "" },
+    )
+    return { said, through: read.through }
+  })
+
+interface HeldRow {
+  readonly id: string
+  readonly space: SpaceId
+  readonly thread: ThreadId | null
+  readonly what: string
+  readonly by: number | null
+  readonly status: string
+  readonly set_at: number
+  readonly closed_at: number | null
+  readonly said: number | null
 }
+
+/** The expectations `heldIn` reads, as of `now`, for what was said from `from`. */
+const heldRows = (db: Database, from: number, now: number) =>
+  db
+    .query<HeldRow, [number, number, number]>(
+      `SELECT id, space, thread, what, by, status, set_at, closed_at, said FROM expectations
+       WHERE set_at <= ? AND set_at > ? AND (closed_at IS NULL OR closed_at > ?) ORDER BY set_at`,
+    )
+    .all(now, now - HELD_FOR_MS, from)
 
 /**
  * What `works` held, written down, when the first of what's read was said (`from`): my promises
@@ -210,50 +260,30 @@ export const saidAfter = (db: Database, after: number, threadOf: (space: SpaceId
  * (promises.rs:261-297, `held`). As of `now`, so a replay reads what was held then.
  */
 export const heldIn = (
-  db: Database,
+  rows: readonly HeldRow[],
   works: readonly ThreadId[],
-  from: number,
   now: number,
   threadOf: (space: SpaceId) => ThreadId,
 ): Held[] =>
-  db
-    .query<
+  rows.flatMap((r) => {
+    const closed = r.closed_at !== null && r.closed_at <= now
+    const thread = r.thread ?? threadOf(r.space)
+    if ((closed && r.status === "dropped") || !works.includes(thread)) {
+      return []
+    }
+    return [
       {
-        id: string
-        space: SpaceId
-        thread: ThreadId | null
-        what: string
-        by: number | null
-        status: string
-        set_at: number
-        closed_at: number | null
-        said: number | null
+        id: r.id,
+        space: r.space,
+        thread,
+        what: r.what,
+        by: r.by,
+        setAt: r.set_at,
+        judged: closed ? r.closed_at : null,
+        mine: r.said !== null,
       },
-      [number, number, number]
-    >(
-      `SELECT id, space, thread, what, by, status, set_at, closed_at, said FROM expectations
-       WHERE set_at <= ? AND set_at > ? AND (closed_at IS NULL OR closed_at > ?) ORDER BY set_at`,
-    )
-    .all(now, now - HELD_FOR_MS, from)
-    .flatMap((r) => {
-      const closed = r.closed_at !== null && r.closed_at <= now
-      const thread = r.thread ?? threadOf(r.space)
-      if ((closed && r.status === "dropped") || !works.includes(thread)) {
-        return []
-      }
-      return [
-        {
-          id: r.id,
-          space: r.space,
-          thread,
-          what: r.what,
-          by: r.by,
-          setAt: r.set_at,
-          judged: closed ? r.closed_at : null,
-          mine: r.said !== null,
-        },
-      ]
-    })
+    ]
+  })
 
 /** What `spaces` have open in the user's queue, by id, so a check can name the card a promise waits on (promises.rs:196-206). */
 export const asksIn = (db: Database, spaces: readonly string[], now: number): Ask[] =>
@@ -493,6 +523,23 @@ const pending = (db: Database, after: number) =>
     )
     .get(after) !== null
 
+const readToRead = defineRead("autonomy/promises/read-to", readToOf)
+
+/** The expectations held from `from` as of `now`, and what `spaces` have open in the queue. */
+const knownRead = defineRead(
+  "autonomy/promises/known",
+  (db, from: number, now: number, spaces: readonly string[]) => ({
+    rows: heldRows(db, from, now),
+    asks: asksIn(db, spaces, now),
+  }),
+)
+
+/** Whether the agent said anything after `after`, and the head. */
+const readyRead = defineRead("autonomy/promises/ready", (db, after: number) => ({
+  any: pending(db, after),
+  head: head(db),
+}))
+
 /**
  * The kernel at work: a burst of what turns said gathers two minutes from its first message, then
  * one decision reads it, what passes is written down, and where it read to is kept. A burst that
@@ -502,13 +549,13 @@ const pending = (db: Database, after: number) =>
 export const promisesKernel = (config: { readonly threadOf: (space: SpaceId) => ThreadId }) =>
   Effect.gen(function* kernel() {
     const brain = yield* Brain
-    let readTo = yield* brain.read(readToOf)
+    let readTo = yield* brain.read(readToRead)
     let retrying = false
 
     const burst = Effect.gen(function* reading() {
       const now = Date.now()
       const zone = Temporal.Now.timeZoneId()
-      const { said, through } = yield* brain.read((db) => saidAfter(db, readTo, config.threadOf))
+      const { said, through } = yield* saidAfter(readTo, config.threadOf)
       const fresh = said.filter((m) => m.time > now - GIVE_UP_MS)
       if (fresh.length === 0) {
         return through
@@ -517,19 +564,21 @@ export const promisesKernel = (config: { readonly threadOf: (space: SpaceId) => 
       const passed = fresh.filter((_, i) => (decided.ps[i] ?? 0) >= AT)
       const works = [...new Set(passed.map((m) => m.thread))]
       const from = Math.min(...passed.map((m) => m.time))
-      const known = yield* brain.read((db) => ({
-        held: heldIn(db, works, from, now, config.threadOf),
-        asks: asksIn(
-          db,
-          passed.map((m) => m.space),
-          now,
-        ),
-      }))
+      const read = yield* brain.read(
+        knownRead,
+        from,
+        now,
+        passed.map((m) => m.space),
+      )
+      const known = { held: heldIn(read.rows, works, now, config.threadOf), asks: read.asks }
       const wrote =
         passed.length === 0
           ? null
           : yield* promised(passed, known.held, known.asks, now, zone, (q, after) =>
-              brain.read((db) => runQuery(db, brain.sources, scoped(q, after))),
+              Effect.match(brain.query(scoped(q, after)), {
+                onFailure: (rejected): Found | Rejected => rejected,
+                onSuccess: (found) => found,
+              }),
             )
       yield* brain.ingest([
         ...(wrote?.events ?? []),
@@ -555,7 +604,7 @@ export const promisesKernel = (config: { readonly threadOf: (space: SpaceId) => 
 
     yield* Effect.forever(
       Effect.gen(function* pass() {
-        const ready = yield* brain.read((db) => ({ any: pending(db, readTo), head: head(db) }))
+        const ready = yield* brain.read(readyRead, readTo)
         if (!ready.any) {
           yield* brain.changes(ready.head).pipe(
             Stream.filter((e) => e.type === MessagePosted.type && e.source === "agent"),
@@ -573,6 +622,7 @@ export const promisesKernel = (config: { readonly threadOf: (space: SpaceId) => 
         } else {
           yield* Effect.logWarning(
             "The promises kernel couldn't read what was said; trying again soon",
+            Cause.pretty(read.cause),
           )
           yield* Effect.sleep(RETRY_MS)
         }

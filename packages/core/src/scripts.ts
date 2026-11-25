@@ -16,6 +16,7 @@ import { TaskDropped } from "@switch/agent"
 import {
   Brain,
   defineCommand,
+  defineRead,
   defineEvent,
   EventId,
   on,
@@ -272,10 +273,24 @@ const recordOf = (s: Script, kind: string, data: unknown) => ({
 })
 
 /** What a host says of a script: its start, or its end on its own. Each is recorded once. */
+/** A script. */
+const scriptRead = defineRead("core/scripts/script", getScript)
+/** Whether something other than a script records events of type `name`. */
+const otherWriterRead = defineRead(
+  "core/scripts/other-writer",
+  (db, name: string) =>
+    db.query("SELECT 1 FROM events WHERE type = ? AND source != 'script' LIMIT 1").get(name) !==
+    null,
+)
+/** The scripts a dropped task or an archived space leaves: the task's, else the space's. */
+const goneRead = defineRead("core/scripts/gone", (db, task: string | null, space: string | null) =>
+  listScripts(db).filter((s) => (task === null ? s.space === space : s.thread === task)),
+)
+
 export const reported = (machine: string, m: Extract<ToCore, { t: "script" }>) =>
   Effect.gen(function* reporting() {
     const brain = yield* Brain
-    const s = yield* brain.read((db) => getScript(db, m.id))
+    const s = yield* brain.read(scriptRead, m.id)
     if (s === null || s.gen !== m.gen || s.machine !== machine || s.status !== "running") {
       return
     }
@@ -305,11 +320,7 @@ const decodeFired = Schema.decodeUnknownOption(Schema.fromJsonString(Fired))
 const fire = (s: Script, name: string, data: unknown) =>
   Effect.gen(function* firing() {
     const brain = yield* Brain
-    const other = yield* brain.read(
-      (db) =>
-        db.query("SELECT 1 FROM events WHERE type = ? AND source != 'script' LIMIT 1").get(name) !==
-        null,
-    )
+    const other = yield* brain.read(otherWriterRead, name)
     if (name.startsWith("script.") || other) {
       return `${name} is another writer's event`
     }
@@ -341,8 +352,7 @@ export const eventsRoute = Layer.unwrap(
           ? header.slice(7).trim()
           : (new URL(request.url).searchParams.get("token") ?? "")
         const id = scriptOf(c.dir, token)
-        const s =
-          id === null ? null : await Effect.runPromise(brain.read((db) => getScript(db, id)))
+        const s = id === null ? null : await Effect.runPromise(brain.read(scriptRead, id))
         if (s?.status !== "running") {
           return Response.json({ error: "No running script" }, { status: 401 })
         }
@@ -375,9 +385,7 @@ export const scriptsRetire = Layer.effectDiscard(
           const brain = yield* Brain
           const task = e.type === TaskDropped.type ? TaskDropped.decode(e.payload).task : null
           const space = e.type === SpaceArchived.type ? SpaceArchived.decode(e.payload).id : null
-          const gone = yield* brain.read((db) =>
-            listScripts(db).filter((s) => (task === null ? s.space === space : s.thread === task)),
-          )
+          const gone = yield* brain.read(goneRead, task, space)
           for (const s of gone) {
             yield* brain
               .dispatch({

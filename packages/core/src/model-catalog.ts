@@ -3,7 +3,7 @@ import { spawnProbe, cursorProbe, acpProbe, readProbe } from "@switch/agent/prov
 import path from "node:path"
 import { homeEnv, Hosts, museEnv, providerOf } from "@switch/agent"
 import type { Host } from "@switch/agent"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { defaultProfiles } from "@switch/models"
 import { Cause, Context, Effect, Layer, Schema } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
@@ -273,6 +273,11 @@ export const probeAccount = (host: Host) =>
     }),
   )
 
+/** The profiles, their active one and the catalog. */
+const profilesRead = defineRead("core/model-catalog/profiles", profilesState)
+/** The profile in use. */
+const currentRead = defineRead("core/model-catalog/current", currentProfile)
+
 /**
  * Logins of one account, by host id: each the account's id. One account per email a provider's
  * login reports, wherever it's signed in. Its id is the login the core keeps (added at the core,
@@ -346,7 +351,7 @@ export class Profiles extends Context.Service<
         const known = new Set(
           probed.filter((a) => a.available && "email" in a && a.email !== "").map((a) => a.host),
         )
-        for (const a of (yield* brain.read(profilesState)).accounts) {
+        for (const a of (yield* brain.read(profilesRead)).accounts) {
           for (const from of a.same ?? []) {
             if (!known.has(from) && !same.has(a.host)) {
               same.set(from, a.host)
@@ -361,7 +366,7 @@ export class Profiles extends Context.Service<
             return others.length > 0 ? { ...a, same: others } : a
           })
         // The catalog as it was read last is no news: a poll of /models records nothing.
-        const was = (yield* brain.read(profilesState)).accounts
+        const was = (yield* brain.read(profilesRead)).accounts
         if (canonical(was) === canonical(accounts)) {
           return
         }
@@ -376,7 +381,7 @@ export class Profiles extends Context.Service<
           ])
           .pipe(Effect.orDie)
       })
-      const state = yield* brain.read(profilesState)
+      const state = yield* brain.read(profilesRead)
       // Logins found the same account before, until the catalog is read again.
       yield* hosts.merge(
         new Map(
@@ -427,7 +432,7 @@ export class Profiles extends Context.Service<
           }),
         ),
       )
-      return { current: brain.read(currentProfile), refresh }
+      return { current: brain.read(currentRead), refresh }
     }),
   )
 }
@@ -441,7 +446,7 @@ export const modelsRoute = Layer.unwrap(
         "/models",
         Effect.andThen(
           profiles.refresh,
-          Effect.flatMap(brain.read(profilesState), (state) =>
+          Effect.flatMap(brain.read(profilesRead), (state) =>
             Effect.orDie(
               HttpServerResponse.json(state, {
                 headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },

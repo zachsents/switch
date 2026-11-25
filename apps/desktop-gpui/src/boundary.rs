@@ -26,8 +26,8 @@ use crate::kit::{Btn, button};
 use crate::look::{Look, u};
 use crate::marks;
 
-thread_local! {
-    static INSIDE: Cell<u32> = const { Cell::new(0) };
+base::kept_local! {
+    static INSIDE: Cell<u32> = Cell::new(0);
 }
 
 /// Whether a section is being built: a panic now is the section's, an error, not the app's crash.

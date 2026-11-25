@@ -24,6 +24,12 @@ export default defineConfig({
       rules: { "react/incompatible-library": "off" },
     },
     {
+      // A Worker's postMessage takes a transfer list, not a targetOrigin; the rule can't tell it
+      // from window.postMessage, as its docs say.
+      files: ["packages/brain/src/readers.ts"],
+      rules: { "unicorn/require-post-message-target-origin": "off" },
+    },
+    {
       // A2UI's Video and AudioPlayer carry no captions to give a <track>.
       files: [
         "apps/desktop/src/mainview/widgets/basic/video.tsx",

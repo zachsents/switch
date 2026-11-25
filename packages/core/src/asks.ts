@@ -51,6 +51,7 @@ import type { ActionItem, Answer, Verdict } from "@switch/autonomy"
 import {
   Brain,
   defineEvent,
+  defineRead,
   EventId,
   HOME,
   ItemId,
@@ -234,6 +235,53 @@ const approvedIn = (db: Database, space: SpaceId, now: number) => {
     : `What the user approved on their cards here in the last day, each for that one send (sending it is what they approved; it isn't a plan for what goes to anyone else):\n${cards.join("\n")}\n\n`
 }
 
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/** What the gate weighs a call by: its space, the item that holds it, the space's words and rules. */
+const gateRead = defineRead("core/asks/gate", (db, call: Outbound, now: number) => {
+  const s = call.thread === null ? HOME : SpaceId.make(placeOf(db, call.thread).space)
+  const text = JSON.stringify(call.args)
+  return {
+    space: s,
+    held: holding(db, call) ?? null,
+    context: spaceMessages(db, s, 10)
+      .map((m) => `${saidBy(m, "Switch", "User")}: ${m.text.slice(0, 600)}`)
+      .join("\n"),
+    rules: rulesFor(db, s, text, 6),
+    approved: approvedIn(db, s, now),
+  }
+})
+
+/** An item by id, else null. */
+const itemRead = defineRead("core/asks/item", (db, id: string) => getItem(db, id))
+
+/** Whether an item already ran, and whether a send of it was under way as the core stopped. */
+const sendStateRead = defineRead("core/asks/send-state", (db, id: ItemId) => ({
+  ran: getItem(db, id)?.ran ?? null,
+  sending: db.query("SELECT 1 FROM events WHERE id = ?").get(`sending:${id}`) !== null,
+}))
+
+/** What came back when the same send went out in the day before, else null. */
+const wentOutRead = defineRead(
+  "core/asks/went-out",
+  (db, call: Call, except: ItemId, now: number) => wentOut(db, call, except, now),
+)
+
+/** The open items, but `except`, that would send the same as `call`. */
+const sameOpenRead = defineRead(
+  "core/asks/same-open",
+  (db, call: Call, except: ItemId | undefined) =>
+    items(db, { status: "open" }).filter((i) => {
+      const other = sendOf(i)
+      return i.id !== except && other !== null && sameSend(other, call)
+    }),
+)
+
+/** The open items with a draft's copy to keep in step. */
+const copiedOpenRead = defineRead("core/asks/copied-open", (db) =>
+  items(db, { status: "open" }).filter((i) => (i.drafts ?? []).some((d) => d.copy)),
+)
+
 // The card a held send is in the user's queue: its title and line written from what it sends, as
 // Switchboard titled an ask (monologue notify.rs `TITLE`), never the tool, its fields or the check's
 // note to the agent.
@@ -330,19 +378,11 @@ export const outboundGuard = Effect.gen(function* guarding() {
       if (readOnly) {
         return said("Not sent: Switch is read-only and sends nothing", true)
       }
-      const { space, held, context, rules, approved } = yield* brain.read((db) => {
-        const s = call.thread === null ? HOME : SpaceId.make(placeOf(db, call.thread).space)
-        const text = JSON.stringify(call.args)
-        return {
-          space: s,
-          held: holding(db, call) ?? null,
-          context: spaceMessages(db, s, 10)
-            .map((m) => `${saidBy(m, "Switch", "User")}: ${m.text.slice(0, 600)}`)
-            .join("\n"),
-          rules: rulesFor(db, s, text, 6),
-          approved: approvedIn(db, s, Date.now()),
-        }
-      })
+      const { space, held, context, rules, approved } = yield* brain.read(
+        gateRead,
+        call,
+        Date.now(),
+      )
       if (held?.status === "open") {
         return said(
           `Not sent: it's waiting on the user's approval as item ${held.id}. This space wakes when they answer.`,
@@ -551,10 +591,7 @@ export const asksWorker = Layer.effectDiscard(
         if (readOnly) {
           return "\nNot sent: Switch is read-only."
         }
-        const was = yield* brain.read((db) => ({
-          ran: getItem(db, i.id)?.ran ?? null,
-          sending: db.query("SELECT 1 FROM events WHERE id = ?").get(`sending:${i.id}`) !== null,
-        }))
+        const was = yield* brain.read(sendStateRead, i.id)
         if (was.ran !== null) {
           return ranLine(was.ran.ok, was.ran.output)
         }
@@ -565,7 +602,7 @@ export const asksWorker = Layer.effectDiscard(
           return ranLine(false, output)
         }
         const call = { app: i.send.app, tool: i.send.tool, args: finalArgs(i, a) }
-        const went = yield* brain.read((db) => wentOut(db, call, i.id, Date.now()))
+        const went = yield* brain.read(wentOutRead, call, i.id, Date.now())
         if (went !== null) {
           const output = `Not sent again: it went out already. ${went}`
           yield* ran(i, true, output)
@@ -613,12 +650,7 @@ export const asksWorker = Layer.effectDiscard(
       except?: ItemId,
     ) =>
       Effect.gen(function* closing() {
-        const same = yield* brain.read((db) =>
-          items(db, { status: "open" }).filter((i) => {
-            const other = sendOf(i)
-            return i.id !== except && other !== null && sameSend(other, call)
-          }),
-        )
+        const same = yield* brain.read(sameOpenRead, call, except)
         yield* Effect.forEach(
           same,
           (i) =>
@@ -650,7 +682,7 @@ export const asksWorker = Layer.effectDiscard(
           return
         }
         const r = Option.getOrNull(decodeRan(e.payload))
-        const i = r?.ok === true ? yield* brain.read((db) => getItem(db, r.id)) : null
+        const i = r?.ok === true ? yield* brain.read(itemRead, r.id) : null
         const call = i === null ? null : sendOf(i)
         if (r !== null && i !== null && call !== null) {
           yield* wentElsewise(e, call, r.output, undefined, i.id)
@@ -661,7 +693,7 @@ export const asksWorker = Layer.effectDiscard(
       Effect.gen(function* one() {
         if (e.type === ItemAnswered.type) {
           const given = Option.getOrNull(decodeAnswered(e.payload))
-          const i = given === null ? null : yield* brain.read((db) => getItem(db, given.id))
+          const i = given === null ? null : yield* brain.read(itemRead, given.id)
           if (given === null || i === null) {
             return
           }
@@ -676,7 +708,7 @@ export const asksWorker = Layer.effectDiscard(
         }
         if (e.type === ItemClosed.type) {
           const c = Option.getOrNull(decodeClosed(e.payload))
-          const i = c === null ? null : yield* brain.read((db) => getItem(db, c.id))
+          const i = c === null ? null : yield* brain.read(itemRead, c.id)
           if (c === null || i === null) {
             return
           }
@@ -694,7 +726,7 @@ export const asksWorker = Layer.effectDiscard(
         }
         if (e.type === ItemReopened.type) {
           const r = Option.getOrNull(decodeReopened(e.payload))
-          const i = r === null ? null : yield* brain.read((db) => getItem(db, r.id))
+          const i = r === null ? null : yield* brain.read(itemRead, r.id)
           if (i !== null) {
             yield* wake(e, i, `The user reopened ${quote(i)}.`)
           }
@@ -713,9 +745,7 @@ export const asksWorker = Layer.effectDiscard(
     // His edits in a draft's copy come to its open card.
     yield* Effect.forkScoped(
       Effect.gen(function* syncing() {
-        const open = yield* brain.read((db) =>
-          items(db, { status: "open" }).filter((i) => (i.drafts ?? []).some((d) => d.copy)),
-        )
+        const open = yield* brain.read(copiedOpenRead)
         yield* Effect.forEach(open, (i) => copies.sync(i.id), { discard: true })
       }).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
     )
@@ -759,6 +789,11 @@ export const spaceAbout = (db: Database, about: readonly string[]) => {
   return found === undefined ? HOME : SpaceId.make(found)
 }
 
+/** The space an appendage's `ws:<slug>` names, if it's one of the user's; else Home. */
+export const spaceAboutRead = defineRead("core/asks/space-about", (db, about: readonly string[]) =>
+  spaceAbout(db, about),
+)
+
 // Switchboard titled an ask that came without one (monologue notify.rs `TITLE`, `tidy_title`).
 const TITLE =
   'Write the title of this item in the user\'s queue: what shows on its one line, read at a glance. At most 40 characters, a few plain words saying who and what they\'re asked to do or decide, like "Approve the bulk pricing", "Print the chair glides" or "Scan your ID". Names and codes over generic words; no markdown, no quotes, no full stop. Reply with the title alone.'
@@ -794,7 +829,7 @@ export const appAsks = Layer.effectDiscard(
         }
         // A resend is the same card.
         const id = ItemId.make(`${e.source}-${e.id}`)
-        if ((yield* brain.read((db) => getItem(db, id))) !== null) {
+        if ((yield* brain.read(itemRead, id)) !== null) {
           return
         }
         const { data } = asked
@@ -811,7 +846,7 @@ export const appAsks = Layer.effectDiscard(
             ? [{ label: a.label, url: a.url }]
             : [],
         )
-        const space = yield* brain.read((db) => spaceAbout(db, asked.about ?? []))
+        const space = yield* brain.read(spaceAboutRead, asked.about ?? [])
         yield* brain.dispatch({
           id: `ask:${e.id}`,
           type: OpenItem.type,
@@ -860,7 +895,7 @@ export const sealedRoute = HttpRouter.add(
     const gateway = yield* Gateway
     const id = new URL(request.url, "http://core").pathname.split("/")[2] ?? ""
     const body = sealedBody(yield* Effect.orElseSucceed(request.text, () => ""))
-    const i = yield* brain.read((db) => getItem(db, decodeURIComponent(id)))
+    const i = yield* brain.read(itemRead, decodeURIComponent(id))
     const refuse = (text: string, status: number) =>
       HttpServerResponse.text(text, { status, headers: CORS })
     if (Option.isNone(body)) {

@@ -7,7 +7,7 @@
 import type { Database } from "bun:sqlite"
 import { getThread, waitingEvent } from "@switch/agent"
 import type { Wake } from "@switch/agent"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import type { Incoming, StoredEvent, ThreadId } from "@switch/brain"
 import { Models } from "@switch/models"
 import type { Question } from "@switch/models"
@@ -138,6 +138,29 @@ export const describe = (db: Database, w: Work) => {
   ].join("")
 }
 
+const runningRead = defineRead("autonomy/bearing/running", running)
+
+/** Each piece of work described, and the machine each record's source is placed on. */
+const describedRead = defineRead(
+  "autonomy/bearing/described",
+  (db, works: readonly Work[], sources: readonly string[]) => {
+    const get = db.query<{ machine: string }, [string]>(
+      "SELECT machine FROM extension_placements WHERE extension = ?",
+    )
+    return {
+      described: works.map((w) => describe(db, w)),
+      machines: new Map(sources.map((source) => [source, get.get(source)?.machine ?? null])),
+    }
+  },
+)
+
+/** Of these threads, the ones still running. */
+const stillRead = defineRead(
+  "autonomy/bearing/still",
+  (db, threads: readonly ThreadId[]) =>
+    new Set(threads.filter((t) => getThread(db, t)?.status === "running")),
+)
+
 /** What the work hears at its next step (claude/src/turn.rs:351-357). */
 const noticed = (e: StoredEvent) => {
   const body = bodyOf(e.payload)
@@ -189,7 +212,7 @@ export const bore = (records: readonly StoredEvent[]) =>
   Effect.gen(function* bearing() {
     const brain = yield* Brain
     const read = records.slice(0, RECORDS_AT_ONCE)
-    const works = yield* brain.read(running)
+    const works = yield* brain.read(runningRead)
     const last = String(read.at(-1)?.seq ?? 0)
     const kept = (
       answers: readonly { seq: number; thread: string; p: number }[],
@@ -217,15 +240,11 @@ export const bore = (records: readonly StoredEvent[]) =>
       return []
     }
     const now = Date.now()
-    const { described, machines } = yield* brain.read((db) => {
-      const get = db.query<{ machine: string }, [string]>(
-        "SELECT machine FROM extension_placements WHERE extension = ?",
-      )
-      return {
-        described: works.map((w) => describe(db, w)),
-        machines: new Map(read.map((e) => [e.source, get.get(e.source)?.machine ?? null])),
-      }
-    })
+    const { described, machines } = yield* brain.read(
+      describedRead,
+      works,
+      read.map((e) => e.source),
+    )
     const d = yield* decide(
       works.map((w) => w.title),
       described,
@@ -240,10 +259,8 @@ export const bore = (records: readonly StoredEvent[]) =>
     )
     // Only into work still running: what's for work between turns isn't a turn of its own.
     const still = yield* brain.read(
-      (db) =>
-        new Set(
-          works.filter((w) => getThread(db, w.thread)?.status === "running").map((w) => w.thread),
-        ),
+      stillRead,
+      works.map((w) => w.thread),
     )
     const through = answers.filter((a) => a.p >= AT && still.has(a.thread))
     yield* Effect.orDie(

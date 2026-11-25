@@ -1,11 +1,20 @@
 // Workspaces' covers become their spaces' covers: the print and its day and night printings, copied
 // into the blob store byte for byte (so their hashes stay), each cover once. A space whose cover
 // Switch drew keeps it.
-import { Blobs, Brain, EventId, hashOf, HOME, SpaceCovered } from "@switch/brain"
+import { Blobs, Brain, defineRead, EventId, hashOf, HOME, SpaceCovered } from "@switch/brain"
 import type { Incoming, SpaceId } from "@switch/brain"
 import { Effect } from "effect"
 
 import { num, obj, str, Switchboard } from "./source.ts"
+
+/** The covers the log holds: each event's id, who drew it, and its space. */
+const coveredRead = defineRead("migrate/covers/covered", (db) =>
+  db
+    .query<{ id: string; source: string; space: string }, []>(
+      "SELECT id, source, json_extract(payload, '$.id') AS space FROM events WHERE type = 'space.covered'",
+    )
+    .all(),
+)
 
 /** Each workspace's cover, carried to its space. */
 export const carryCovers = (ids: ReadonlyMap<string, SpaceId>) =>
@@ -16,13 +25,7 @@ export const carryCovers = (ids: ReadonlyMap<string, SpaceId>) =>
     const rows = yield* sb.query(
       'entities | where id startswith "ws:" | project id, cover = facts.cover',
     )
-    const covered = yield* brain.read((db) =>
-      db
-        .query<{ id: string; source: string; space: string }, []>(
-          "SELECT id, source, json_extract(payload, '$.id') AS space FROM events WHERE type = 'space.covered'",
-        )
-        .all(),
-    )
+    const covered = yield* brain.read(coveredRead)
     const known = new Set(covered.map((r) => r.id))
     const ours = new Set(covered.filter((r) => r.source !== "switchboard").map((r) => r.space))
     const events: Incoming[] = []

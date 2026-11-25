@@ -7,7 +7,7 @@
 //    lasts (a week from the first start), a request without one keeps its old access, and every
 //    pairing is approved at once, so the apps and hosts move over on their own.
 import { existsSync } from "node:fs"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Deferred, Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
@@ -22,6 +22,7 @@ import {
   newToken,
   offerByHash,
   PAIRING_MS,
+  replaced,
   extensionOf,
   generationOf,
   scriptOf,
@@ -42,6 +43,10 @@ const DENY_MS = 60_000
 /** How long a tailnet peer keeps its old access once credentials arrive. */
 const MOVE_MS = 7 * 24 * 3_600_000
 const OFFER_MS = 10 * 60_000
+/** A test copy's credential lapses within this. */
+const TRIAL_MS = 7 * 24 * 3_600_000
+/** How often a credential's use is noted, at most. */
+const SEEN_MS = 10 * 60_000
 /** What the deploy asks of the core on its own machine (scripts/ship.sh), and redaction's sweep. */
 const DEPLOY = new Set(["/pause", "/backup", "/hosts/next", "/redactions/sweep"])
 /** A host's link, and its release's build (release.ts). */
@@ -164,16 +169,52 @@ const live = (c: Credential | null, now: number) =>
 
 const asCaller = (c: Credential): Caller => ({ id: c.id, kind: c.kind, scopes: c.scopes })
 
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/**
+ * The extension a token is signed for, by its generation, else null. Its key is read (made, the
+ * first time) in the reader too, as it was where the generation is read.
+ */
+const extensionRead = defineRead("core/auth/extension", (db, dir: string, token: string) =>
+  extensionOf(dir, token, (name) => generationOf(db, name)),
+)
+
+/** A credential by id, else null. */
+const byIdRead = defineRead("core/auth/by-id", (db, id: string) => byId(db, id))
+
+/** A credential by its token's hash, else null. */
+const byHashRead = defineRead("core/auth/by-hash", (db, hash: string) => byHash(db, hash))
+
+/** A pairing offer by its code's hash, else null. */
+const offerRead = defineRead("core/auth/offer", (db, hash: string) => offerByHash(db, hash))
+
+/** What clients list as of `now`. */
+const listedRead = defineRead("core/auth/listed", (db, now: number) => listed(db, now))
+
+/** An extension's token generation. */
+export const generationRead = defineRead("core/auth/generation", (db, name: string) =>
+  generationOf(db, name),
+)
+
+/** A script by id, else null. */
+const scriptRead = defineRead("core/auth/script", (db, id: string) => getScript(db, id))
+
+/** Whether the tailnet's credential was made. */
+const tailnetMadeRead = defineRead("core/auth/tailnet-made", (db) => tailnetMade(db))
+/** The credentials a device's new one replaces: its earlier ones, still good. */
+const replacedRead = defineRead("core/auth/replaced", (db, id: string) => {
+  const c = byId(db, id)
+  return c === null ? [] : replaced(db, c)
+})
+
 /** The caller a request's credential names: null without one, "bad" for one that's no good. */
 const fromToken = (dir: string, token: string) =>
   Effect.gen(function* resolving() {
     const brain = yield* Brain
     const now = Date.now()
-    const extension = yield* brain.read((db) =>
-      extensionOf(dir, token, (name) => generationOf(db, name)),
-    )
+    const extension = yield* brain.read(extensionRead, dir, token)
     if (extension !== null) {
-      const revoked = yield* brain.read((db) => byId(db, `extension:${extension}`))
+      const revoked = yield* brain.read(byIdRead, `extension:${extension}`)
       return revoked?.status === "revoked"
         ? "bad"
         : ({
@@ -185,7 +226,7 @@ const fromToken = (dir: string, token: string) =>
     // A script's holds while it runs.
     const script = scriptOf(dir, token)
     if (script !== null) {
-      const s = yield* brain.read((db) => getScript(db, script))
+      const s = yield* brain.read(scriptRead, script)
       return s?.status === "running"
         ? ({
             id: `script:${script}`,
@@ -194,13 +235,13 @@ const fromToken = (dir: string, token: string) =>
           } satisfies Caller)
         : "bad"
     }
-    const c = yield* brain.read((db) => byHash(db, hashOf(token)))
+    const c = yield* brain.read(byHashRead, hashOf(token))
     return c !== null && live(c, now) ? asCaller(c) : "bad"
   })
 
 const tailnetGrant = Effect.gen(function* granting() {
   const brain = yield* Brain
-  const t = yield* brain.read((db) => byId(db, "tailnet"))
+  const t = yield* brain.read(byIdRead, "tailnet")
   return t !== null && live(t, Date.now()) ? asCaller(t) : null
 })
 
@@ -229,6 +270,30 @@ const held = <A, E, R>(id: string, effect: Effect.Effect<A, E, R>) =>
         }),
       ),
     )
+  })
+
+// When each credential was last noted as used, in ms: noted again only after SEEN_MS.
+const noted = new Map<string, number>()
+
+const noteSeen = (caller: Caller) =>
+  Effect.gen(function* noting() {
+    const now = Date.now()
+    if (caller.kind === "extension" || caller.kind === "script" || caller.kind === "local") {
+      return
+    }
+    if ((noted.get(caller.id) ?? 0) > now - SEEN_MS) {
+      return
+    }
+    noted.set(caller.id, now)
+    const brain = yield* Brain
+    yield* brain
+      .dispatch({
+        id: crypto.randomUUID(),
+        type: "credential.see",
+        source: "auth",
+        payload: { id: caller.id },
+      })
+      .pipe(Effect.ignore, Effect.forkDetach)
   })
 
 const deny = (status: number, why: string) =>
@@ -277,6 +342,9 @@ export const authLayer = HttpRouter.middleware(
         if (!ok) {
           return deny(403, `Needs ${need}`)
         }
+        if (token !== "") {
+          yield* noteSeen(caller).pipe(Effect.provideService(Brain, brain))
+        }
         return yield* held(caller.id, httpEffect)
       })
   }),
@@ -312,10 +380,16 @@ const bodyOf = <A, I>(request: HttpServerRequest.HttpServerRequest, schema: Sche
     Effect.map(Option.getOrNull),
   )
 
+/** An id a device keeps for itself: the one it pairs again under replaces its last credential. */
+const Device = Schema.optionalKey(
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+)
+
 const PairAsked = Schema.Struct({
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
   kind: Schema.Literals(["device", "host"]),
   scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+  device: Device,
 })
 
 /** What each kind may ask for. Another agent's is minted, never paired. */
@@ -329,6 +403,18 @@ const dispatch = (type: string, payload: unknown) =>
   Effect.gen(function* dispatching() {
     const brain = yield* Brain
     return yield* brain.dispatch({ id: crypto.randomUUID(), type, source: "auth", payload })
+  })
+
+/** A device's credential, good now, replaces the device's last: those are revoked. */
+const replacing = (id: string) =>
+  Effect.gen(function* replacingOld() {
+    const brain = yield* Brain
+    const old = yield* brain.read(replacedRead, id)
+    yield* Effect.forEach(
+      old,
+      (o) => dispatch("credential.revoke", { id: o }).pipe(Effect.andThen(cut(o)), Effect.ignore),
+      { discard: true },
+    )
   })
 
 /** POST /pair: a code for the user to approve, and the token it will make good. */
@@ -352,6 +438,7 @@ const pair = HttpRouter.add("POST", "/pair", (request) =>
       scopes: want,
       hash: hashOf(token),
       code,
+      ...(asked.device === undefined ? {} : { device: asked.device }),
     }).pipe(Effect.option)
     if (Option.isNone(asking)) {
       return deny(429, "Too many pairings waiting")
@@ -359,6 +446,7 @@ const pair = HttpRouter.add("POST", "/pair", (request) =>
     // While the move to credentials lasts, a tailnet peer is the user's own: approved at once.
     if ((yield* tailnetGrant) !== null) {
       yield* dispatch("credential.approve", { id }).pipe(Effect.ignore)
+      yield* replacing(id)
     }
     return json({ pairing: id, token, code })
   }),
@@ -371,13 +459,9 @@ const pairStatus = HttpRouter.add("GET", "/pair/:id", (request) =>
     const url = new URL(request.url, "http://core")
     const id = url.pathname.split("/").at(-1) ?? ""
     const token = tokenOf(request, url.searchParams)
-    const c = yield* brain.read((db) => byId(db, id))
+    const c = yield* brain.read(byIdRead, id)
     const gone = json({ status: "gone" }, 404)
-    if (
-      c === null ||
-      token === "" ||
-      (yield* brain.read((db) => byHash(db, hashOf(token))))?.id !== id
-    ) {
+    if (c === null || token === "" || (yield* brain.read(byHashRead, hashOf(token)))?.id !== id) {
       return gone
     }
     if (c.status === "active") {
@@ -396,6 +480,7 @@ const pairStatus = HttpRouter.add("GET", "/pair/:id", (request) =>
 const Redeem = Schema.Struct({
   offer: Schema.String,
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+  device: Device,
 })
 
 /** POST /pair/redeem: a desktop's one-time offer (its QR) for a credential, at once. */
@@ -406,7 +491,7 @@ const redeem = HttpRouter.add("POST", "/pair/redeem", (request) =>
     if (asked === null) {
       return deny(400, "Bad offer")
     }
-    const offer = yield* brain.read((db) => offerByHash(db, hashOf(asked.offer)))
+    const offer = yield* brain.read(offerRead, hashOf(asked.offer))
     if (offer === null || offer.used !== 0 || offer.until < Date.now()) {
       return json({ status: "gone" }, 404)
     }
@@ -419,8 +504,13 @@ const redeem = HttpRouter.add("POST", "/pair/redeem", (request) =>
       scopes: offer.scopes,
       hash: hashOf(token),
       offer: offer.id,
+      ...(asked.device === undefined ? {} : { device: asked.device }),
     }).pipe(Effect.option)
-    return Option.isNone(issued) ? json({ status: "gone" }, 404) : json({ token, credential: id })
+    if (Option.isNone(issued)) {
+      return json({ status: "gone" }, 404)
+    }
+    yield* replacing(id)
+    return json({ token, credential: id })
   }),
 )
 
@@ -454,7 +544,7 @@ const pendingOf = (asked: typeof Which.Type) =>
   Effect.gen(function* finding() {
     const brain = yield* Brain
     const now = Date.now()
-    const all = yield* brain.read((db) => listed(db, now))
+    const all = yield* brain.read(listedRead, now)
     const code = asked.code?.toUpperCase().replaceAll(/[^A-Z0-9]/gu, "")
     return (
       all.find(
@@ -474,6 +564,9 @@ const decide = (verb: "approve" | "deny") =>
         return deny(404, "No such pairing")
       }
       yield* dispatch(`credential.${verb}`, { id: c.id })
+      if (verb === "approve") {
+        yield* replacing(c.id)
+      }
       return json({ id: c.id, name: c.name, status: verb === "approve" ? "approved" : "denied" })
     }),
   )
@@ -517,7 +610,7 @@ const rotate = HttpRouter.add("POST", "/auth/rotate", (request) =>
     })
     yield* cut(asked.id)
     const brain = yield* Brain
-    return json({ id: asked.id, generation: yield* brain.read((db) => generationOf(db, name)) })
+    return json({ id: asked.id, generation: yield* brain.read(generationRead, name) })
   }),
 )
 
@@ -543,9 +636,13 @@ const Mint = Schema.Struct({
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
   kind: Schema.Literals(["device", "host", "peer"]),
   scopes: Schema.Array(Schema.String),
+  device: Device,
+  /** A test copy's: it lapses this long from now, in ms (at most TRIAL_MS). */
+  lapses: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThan(0))),
 })
 
-/** POST /auth/mint: a credential straight away, for this machine's apps, the CLI and other agents. */
+/** POST /auth/mint: a credential straight away, for this machine's apps, the CLI and other agents. A
+ * test copy's lapses, and the copy revokes it when it's done (`DELETE /auth/self`). */
 const mint = HttpRouter.add("POST", "/auth/mint", (request) =>
   Effect.gen(function* minting() {
     const asked = yield* bodyOf(request, Mint)
@@ -560,7 +657,12 @@ const mint = HttpRouter.add("POST", "/auth/mint", (request) =>
       kind: asked.kind,
       scopes: asked.scopes,
       hash: hashOf(token),
+      ...(asked.device === undefined ? {} : { device: asked.device }),
+      ...(asked.lapses === undefined
+        ? {}
+        : { until: Date.now() + Math.min(asked.lapses, TRIAL_MS) }),
     })
+    yield* replacing(id)
     return json({ token, credential: id })
   }),
 )
@@ -572,7 +674,7 @@ const list = HttpRouter.add(
   Effect.gen(function* listing() {
     const brain = yield* Brain
     const now = Date.now()
-    return json(yield* brain.read((db) => listed(db, now)))
+    return json(yield* brain.read(listedRead, now))
   }),
 )
 
@@ -595,7 +697,7 @@ export const authRoutes = Layer.mergeAll(
 export const layerMove = Layer.effectDiscard(
   Effect.gen(function* moving() {
     const brain = yield* Brain
-    if (yield* brain.read(tailnetMade)) {
+    if (yield* brain.read(tailnetMadeRead)) {
       return
     }
     yield* dispatch("credential.issue", {

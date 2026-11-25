@@ -83,6 +83,8 @@ pub enum BoxEvent {
     Send(Sent),
     Recall,
     Cancel,
+    /// ⌥↑ in the empty box: the last message, picked to answer from the keys.
+    Pick,
 }
 
 impl gpui::EventEmitter<BoxEvent> for ChatBox {}
@@ -519,6 +521,12 @@ impl ChatBox {
             cx.stop_propagation();
             window.prevent_default();
             cx.defer_in(window, |b, window, cx| b.submit(window, cx));
+            return;
+        }
+        if k.key == "up" && m.alt && !m.platform && !m.control && !m.shift && self.text(cx).is_empty() && !listening {
+            cx.stop_propagation();
+            window.prevent_default();
+            cx.emit(BoxEvent::Pick);
             return;
         }
         if k.key == "up" && !m.platform && !m.control && !m.alt && !m.shift && self.text(cx).is_empty() && !listening {

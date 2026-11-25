@@ -42,6 +42,7 @@ import {
   SpaceTagged,
   ThreadId,
   whoOf,
+  defineRead,
 } from "@switch/brain"
 import type { EventId, Projection, StoredEvent, View, TurnId } from "@switch/brain"
 import { Option, Schema } from "effect"
@@ -795,26 +796,29 @@ const before = Schema.optionalKey(Schema.Number)
 const chatArgs = Schema.decodeUnknownOption(Schema.Struct({ space: SpaceId, before }))
 const threadArgs = Schema.decodeUnknownOption(Schema.Struct({ thread: ThreadId, before }))
 
+/** What a client's snapshot holds, its events and its pages, each read in a reader thread. */
 export const clientView: View = {
-  snapshot,
-  live,
+  snapshot: defineRead("core/view/snapshot", snapshot),
+  live: defineRead("core/view/live", live),
   // Pairing and revoking go through the core's /auth routes, which check the caller's scopes.
   accepts: (command) => !command.startsWith("credential."),
   acceptsEvent: (event) => !event.startsWith("item.") && !event.startsWith("connection."),
   pages: {
-    memories: memoriesPage,
-    system: systemPage,
-    find: findPage,
-    chat: (db, args) =>
+    memories: defineRead("core/view/memories", (db, _args: unknown) => memoriesPage(db)),
+    system: defineRead("core/view/system", (db, _args: unknown) => systemPage(db)),
+    find: defineRead("core/view/find", findPage),
+    chat: defineRead("core/view/chat", (db, args: unknown) =>
       Option.match(chatArgs(args), {
         onNone: () => [],
         onSome: (a) => chat(db, a.space, a.before ?? Number.MAX_SAFE_INTEGER, CHAT_PAGE),
       }),
-    thread: (db, args) =>
+    ),
+    thread: defineRead("core/view/thread", (db, args: unknown) =>
       Option.match(threadArgs(args), {
         onNone: () => [],
         onSome: (a) => items(db, a.thread, a.before ?? Number.MAX_SAFE_INTEGER, THREAD_PAGE),
       }),
+    ),
   },
 }
 

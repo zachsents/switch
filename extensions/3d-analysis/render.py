@@ -681,6 +681,9 @@ def heartbeat():
                + (f"; last error: {f['last_error']}" if f.get("last_error") else ""))
     facts = dict(f)
     facts.pop("last_error", None) if not f.get("last_error") else None
+    # What's wrong now: render can't run. A render that failed was its caller's answer (its error went back with
+    # it), not the sense failing; it stays in last_error and the summary.
+    facts["failing"] = "; ".join(p for p in f["problems"] if "Blender" in p) or None
     app.emit("heartbeat", {"entity": f"sense:{NAME}", "summary": summary, "facts": facts}, about=[f"sense:{NAME}"])
 
 

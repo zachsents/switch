@@ -1,19 +1,23 @@
 //! Extensions (the desktop's `ui/extensions-page.tsx`, `extension-add.tsx`, `extensions.ts`): what's
 //! installed, each with its version, Update and Remove under the pointer; adding one by a git URL or
 //! package name on top, installed on Enter or Add. Each is a call to the core's extensions tools;
-//! what's installed comes by sync.
+//! what's installed comes by sync. Under it, folded away, Access: what else holds a credential for the
+//! core (each machine's host, each extension, other agents, the tailnet), each with a quiet Revoke.
 
 use gpui::{AnyElement, App, ElementId, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px};
 use ui_sdk::components::input::Input;
 use ui_sdk::kernel::ChangeOptions;
 
 use crate::band::tip;
+use crate::brain::{Credential, CredentialStatus};
 use crate::kit::{self, Btn};
 use crate::look::{Look, MONO, u};
 use crate::model::model;
 use crate::nav::Beat;
 use crate::settings::calls::{act, mounted};
-use crate::settings::parts::{data, line, notice, section};
+use crate::settings::devices::{live, seen, seen_label};
+use crate::settings::parts::{data, head, line, notice, section};
+use crate::time::{now_ms, when_of};
 
 #[derive(Default)]
 struct Page {
@@ -28,6 +32,80 @@ struct Page {
     reset: bool,
     /// The words an Add was refused for (empty): Add is off until they change.
     refused: Option<String>,
+    /// Access is unfolded.
+    access: bool,
+    revoke_error: Option<String>,
+}
+
+const ACCESS: [(&str, &str); 4] = [("host", "Host"), ("extension", "Extension"), ("peer", "Agents"), ("tailnet", "Tailnet")];
+
+/// What holds a credential that isn't a device: hosts, agents and the tailnet by their rows, and every
+/// extension installed, whose credential has no row until it's revoked.
+fn holders(all: &[Credential], installed: &[String], now: f64) -> Vec<Credential> {
+    let revoked: Vec<&str> = all.iter().filter(|c| c.kind == "extension" && c.status == CredentialStatus::Revoked).map(|c| c.name.as_str()).collect();
+    let mut out: Vec<Credential> = all.iter().filter(|c| c.kind != "device" && c.kind != "extension" && live(c, now)).cloned().collect();
+    out.extend(installed.iter().filter(|name| !revoked.contains(&name.as_str())).map(|name| {
+        let made = all.iter().find(|c| c.id == format!("extension:{name}"));
+        Credential {
+            id: format!("extension:{name}"),
+            name: name.clone(),
+            kind: "extension".into(),
+            scopes: vec![format!("extension:{name}")],
+            status: CredentialStatus::Active,
+            code: None,
+            at: made.map_or(0., |c| c.at),
+            until: None,
+            device: None,
+            seen: made.and_then(|c| c.seen),
+        }
+    }));
+    let rank = |k: &str| ACCESS.iter().position(|(kind, _)| *kind == k).unwrap_or(ACCESS.len());
+    out.sort_by(|a, b| rank(&a.kind).cmp(&rank(&b.kind)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+fn access(page: &gpui::Entity<Page>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let l = Look::get(cx);
+    let now = now_ms();
+    let b = &model(cx).read(cx).brain;
+    let all: Vec<Credential> = b.credentials.values().cloned().collect();
+    let held = holders(&all, &b.extensions, now);
+    let open = page.read(cx).access;
+    let pt = page.clone();
+    let toggle = kit::press(kit::button("access-toggle", Btn::Flat, true, &l), true, move |_, _, cx| {
+        pt.update(cx, |p, cx| {
+            p.access = !p.access;
+            cx.notify();
+        });
+    })
+    .aria_label(if open { "Hide" } else { "Show" })
+    .child(if open { "Hide" } else { "Show" });
+    let mut out = div().flex().flex_col().child(head("Access", None, &l).child(div().ml_auto().flex().items_center().gap(u(8.)).child(kit::caption(div()).font_weight(gpui::FontWeight::NORMAL).text_color(l.ink3).child(held.len().to_string())).child(toggle)));
+    if open {
+        out = out.children(held.iter().map(|c| {
+            let label = ACCESS.iter().find(|(k, _)| *k == c.kind).map_or("", |(_, label)| label);
+            let at = seen(c);
+            let (pr, id) = (page.clone(), c.id.clone());
+            let revoke = kit::confirm_quiet(format!("revoke-{}", c.id), "Revoke", &format!("Revoke {}?", c.name), move |_, cx| {
+                pr.update(cx, |p, cx| {
+                    p.revoke_error = None;
+                    cx.notify();
+                });
+                let id = id.clone();
+                act(&pr, move |m, cx| m.revoke(&id, cx), |p, got, _| p.revoke_error = got.err(), cx);
+            }, window, cx);
+            line(&l)
+                .id(ElementId::Name(format!("access-{}", c.id).into()))
+                .group("line")
+                .hover(|s| s.bg(l.hover))
+                .child(div().min_w_0().flex_1().truncate().child(c.name.clone()))
+                .child(data(label, Some(72.), &l))
+                .child(div().id(ElementId::Name(format!("access-seen-{}", c.id).into())).when(at > 0., |d| d.tooltip(tip(when_of(at)))).child(data(if at > 0. { seen_label(at, now) } else { String::new() }, Some(72.), &l)))
+                .child(div().flex_none().opacity(0.).group_hover("line", |s| s.opacity(1.)).child(revoke))
+                .into_any_element()
+        }));
+    }
+    out.into_any_element()
 }
 
 fn install(page: &gpui::Entity<Page>, source: String, cx: &mut App) {
@@ -62,7 +140,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     let mut extensions: Vec<crate::brain::Extension> = model(cx).read(cx).brain.extension_info.values().cloned().collect();
     extensions.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name)));
     let p = page.read(cx);
-    let error = p.install_error.clone().or_else(|| p.update_error.clone()).or_else(|| p.remove_error.clone());
+    let error = p.install_error.clone().or_else(|| p.update_error.clone()).or_else(|| p.remove_error.clone()).or_else(|| p.revoke_error.clone());
     let (installing, updating, removing) = (p.installing, p.updating.clone(), p.removing.clone());
     let can = p.refused.as_deref() != Some(source.read(cx).get_value().as_ref());
 
@@ -164,6 +242,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
         .flex_col()
         .child(add)
         .when_some(error, |d, e| d.child(notice(e, &l)))
-        .child(section("Installed", Some(extensions.len()), rows, &l));
+        .child(section("Installed", Some(extensions.len()), rows, &l))
+        .child(access(&page, window, cx));
     kit::pane_scroll("extensions", None, body, window, cx)
 }

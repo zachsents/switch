@@ -3,7 +3,7 @@
 // orchestrator (MIT, Copyright (c) 2026 T3 Tools Inc.): steer, interrupt, orphan cleanup,
 // usage-limit auto-resume, 50 ms delta coalescing, idle compaction before the cache expires.
 import { createHash } from "node:crypto"
-import { Brain, bypassEvent, spaceNamed, SpaceTagged, ThreadId } from "@switch/brain"
+import { Brain, bypassEvent, defineRead, spaceNamed, SpaceTagged, ThreadId } from "@switch/brain"
 import type { Database } from "bun:sqlite"
 import type { Incoming, ModelTag, Rejected, TurnId } from "@switch/brain"
 import {
@@ -69,11 +69,13 @@ export interface SessionsConfig {
   /** Where the core serves `delegation`, as a session on `machine` reaches it. */
   readonly delegateUrl: (machine: Machine) => string
   /** The apps' tools, for every session. */
-  readonly appsUrl?: (machine: Machine) => string
+  readonly appsUrl?: (machine: Machine) => Effect.Effect<string>
+  /** Apps a one-off run (`once`) doesn't see: about a work's own history, which it hasn't. */
+  readonly worksOnly?: readonly string[]
   /** After identity at launch: the stable part of a thread's context, such as its memory. */
   readonly stable?: (thread: Thread) => Effect.Effect<string>
   /** Claude Code settings JSON for every session on `machine`: autonomy's hooks, its guard. */
-  readonly settings?: (machine: Machine) => string
+  readonly settings?: (machine: Machine) => Effect.Effect<string>
   /** Folder for new top-level threads. */
   readonly cwd: string
   /** The thread's project folder on each machine that has it, by machine: its turns go there. */
@@ -465,6 +467,96 @@ const info = (t: Thread): TaskInfo => ({
   link: `switchboard://thread/${t.thread}`,
 })
 
+// The session's reads of the brain, by name (reads.ts), so they run in a reader thread.
+const threadRead = defineRead("agent/sessions/thread", (db, thread: ThreadId) =>
+  getThread(db, thread),
+)
+const allThreadsRead = defineRead("agent/sessions/all-threads", (db) => allThreads(db))
+const childrenRead = defineRead("agent/sessions/children", (db, task: ThreadId) =>
+  allThreads(db).filter((c) => c.parent === task),
+)
+const historyRead = defineRead(
+  "agent/sessions/history",
+  (db, thread: ThreadId, full: number, budget: number) =>
+    build(items(db, thread), { full, budget }),
+)
+const taskEndRead = defineRead(
+  "agent/sessions/task-end",
+  (db, task: ThreadId, status: string, turn: string) => taskEnd(db, task, status, turn),
+)
+const stillGoingRead = defineRead("agent/sessions/still-going", (db, thread: ThreadId) =>
+  stillGoing(db, thread),
+)
+const cutsInARowRead = defineRead("agent/sessions/cuts-in-a-row", (db, thread: ThreadId) =>
+  cutsInARow(db, thread),
+)
+const cutAsRead = defineRead("agent/sessions/cut-as", (db, turn: TurnId) => cutAs(db, turn))
+const waitingRowsRead = defineRead("agent/sessions/waiting-rows", (db, thread: ThreadId) =>
+  waitingRows(db, thread),
+)
+const waitingForRead = defineRead("agent/sessions/waiting-for", (db, thread: ThreadId) =>
+  waitingFor(db, thread),
+)
+const threadsWaitingRead = defineRead("agent/sessions/threads-waiting", (db) => threadsWaiting(db))
+const accountsRead = defineRead("agent/sessions/accounts", (db) => allAccounts(db))
+const spaceNamedRead = defineRead("agent/sessions/space-named", (db, given: string) =>
+  spaceNamed(db, given),
+)
+
+/**
+ * What a turn's end reads for its one write: a task's end, as its parent hears of it (`task`, null
+ * when it wakes no parent), and the cut a turn that carries on carries on as (`thread`, null for a
+ * one-off session that never carries on).
+ */
+const endRead = defineRead(
+  "agent/sessions/end",
+  (db, task: ThreadId | null, thread: ThreadId | null, turn: TurnId, end: Ended) => {
+    const why = thread === null ? null : carryWhy(db, thread, end)
+    return {
+      ended: task === null ? null : taskEnd(db, task, end.status, turn),
+      carry: why === null ? null : { why, cut: cutAs(db, turn) },
+    }
+  },
+)
+
+/** A turn's end, by the record. */
+const turnEndedRead = defineRead("agent/sessions/turn-ended", (db, turn: TurnId) => {
+  const row = db
+    .query<{ payload: string }, [string]>(
+      "SELECT payload FROM events WHERE type = 'turn.ended' AND json_extract(payload, '$.turn') = ?",
+    )
+    .get(turn)
+  return row ? TurnEnded.decode(JSON.parse(row.payload)) : null
+})
+
+/**
+ * A new task that's the same work as one already running (`sameWork`), unless it's a retry of
+ * itself (`id` is there), its parent is gone, or it says how it differs (`separate`).
+ */
+const sameRead = defineRead(
+  "agent/sessions/same-work",
+  (
+    db,
+    parent: ThreadId,
+    id: ThreadId,
+    separate: boolean,
+    cwd: string | null,
+    title: string,
+    task: string,
+  ) => {
+    const from = getThread(db, parent)
+    if (getThread(db, id) !== null || from === null || separate) {
+      return null
+    }
+    return sameWork(db, cwd ?? from.cwd, title, task, id, parent)
+  },
+)
+
+/** A turn the run before cut off, carried on unless the thread's been cut too often in a row. */
+const carriedRead = defineRead("agent/sessions/carried", (db, thread: ThreadId, turn: TurnId) =>
+  cutsInARow(db, thread) < MAX_CUTS ? [carryEvent(thread, turn, cutAs(db, turn), CUT)] : [],
+)
+
 const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsConfig) {
   const brain = yield* Brain
   const hosts = yield* Hosts
@@ -511,7 +603,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     }
     return s
   }
-  const read = (thread: ThreadId) => brain.read((db) => getThread(db, thread))
+  const read = (thread: ThreadId) => brain.read(threadRead, thread)
   const ingest = (events: readonly Incoming[]) => Effect.orDie(brain.ingest(events))
   const cancelTimer = (thread: ThreadId) =>
     Effect.suspend(() => {
@@ -589,10 +681,15 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     const look = t.permissions.apps === "look"
     if (config.appsUrl !== undefined && (t.permissions.tools.length > 0 || look)) {
       // The thread rides along, so a call that speaks for the user is held in its space.
-      const apps = new URL(config.appsUrl(host.machine))
+      const apps = new URL(yield* config.appsUrl(host.machine))
       apps.searchParams.set("thread", t.thread)
       if (look) {
         apps.searchParams.set("look", "1")
+      }
+      if (once.has(t.thread)) {
+        for (const app of config.worksOnly ?? []) {
+          apps.searchParams.append("without", app)
+        }
       }
       mcp.apps = { url: apps.toString() }
     }
@@ -602,8 +699,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
           host: workOn(host, t.thread),
           cwd,
           session: same ? t.session : null,
-          history: () =>
-            brain.read((db) => build(items(db, t.thread), { full, budget: keepTokens })),
+          history: () => brain.read(historyRead, t.thread, full, keepTokens),
           model,
           effort,
           system: [(yield* config.system).trim(), SYSTEM, stable]
@@ -613,7 +709,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
           mcp,
           ...(config.settings === undefined || t.permissions.tools.length === 0
             ? {}
-            : { settings: config.settings(host.machine) }),
+            : { settings: yield* config.settings(host.machine) }),
         })
         .pipe(Effect.interruptible),
       (runner) =>
@@ -701,50 +797,53 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
    * What a turn's end is written with, in its one write: a task's end and the wake it owes its
    * parent, and the carry-on of a turn cut off partway. A restart between them can't lose either.
    */
-  const endWrites = (live: Live, t: Running, end: Ended) =>
-    brain.read((db): Incoming[] => {
-      const out: Incoming[] = []
-      const { parent } = t.thread
-      // A cancelled task's parent already knows.
-      if (parent !== null && end.status !== "interrupted") {
-        const task = t.thread.thread
-        out.push(
-          event(`${t.id}:task`, TaskEnded.type, {
-            task,
-            parent,
-            title: t.thread.title,
-            status: end.status,
-            result: end.result,
-            costUsd: end.costUsd,
-            ...(t.tagged !== null && { model: tagOf(live, t.tagged) }),
-          }),
-        )
-        // Its progress, while its work carries on by itself, stays on its row: the parent wakes
-        // for its end.
-        const ended = taskEnd(db, task, end.status, t.id)
-        if (ended !== null) {
+  const endWrites = (live: Live, t: Running, end: Ended) => {
+    const { parent } = t.thread
+    // A cancelled task's parent already knows.
+    const toParent = parent !== null && end.status !== "interrupted"
+    const task = toParent ? t.thread.thread : null
+    const reading = brain.read(endRead, task, live.once ? null : live.thread, t.id, end)
+    return reading.pipe(
+      Effect.map(({ ended, carry }): Incoming[] => {
+        const out: Incoming[] = []
+        if (parent !== null && task !== null) {
           out.push(
-            waitingEvent(`${t.id}:task:wake`, {
-              thread: parent,
-              text: "",
-              note: `Task ${task} "${t.thread.title}" ${ended}: ${end.result}`,
-              from: "steer",
+            event(`${t.id}:task`, TaskEnded.type, {
+              task,
+              parent,
+              title: t.thread.title,
+              status: end.status,
+              result: end.result,
+              costUsd: end.costUsd,
+              ...(t.tagged !== null && { model: tagOf(live, t.tagged) }),
             }),
           )
+          // Its progress, while its work carries on by itself, stays on its row: the parent wakes
+          // for its end.
+          if (ended !== null) {
+            out.push(
+              waitingEvent(`${t.id}:task:wake`, {
+                thread: parent,
+                text: "",
+                note: `Task ${task} "${t.thread.title}" ${ended}: ${end.result}`,
+                from: "steer",
+              }),
+            )
+          }
         }
-      }
-      const why = live.once ? null : carryWhy(db, live.thread, end)
-      if (why !== null) {
-        const cut = cutAs(db, t.id)
-        // One that hit its limit after it replied owes the user nothing more.
-        const as =
-          end.status === "limited" && t.replies.length > 0
-            ? { ...cut, from: "steer" as const }
-            : cut
-        out.push(carryEvent(live.thread, t.id, as, why))
-      }
-      return out
-    })
+        if (carry !== null) {
+          const { cut, why } = carry
+          // One that hit its limit after it replied owes the user nothing more.
+          const as =
+            end.status === "limited" && t.replies.length > 0
+              ? { ...cut, from: "steer" as const }
+              : cut
+          out.push(carryEvent(live.thread, t.id, as, why))
+        }
+        return out
+      }),
+    )
+  }
 
   // Claude Code's output, coalesced over 50 ms into one ingest per batch.
   const begin = Effect.fnUntraced(function* beginning(
@@ -825,18 +924,16 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     }
     const readOf = config.report
     // Progress no one is woken for isn't read.
-    return Effect.flatMap(
-      brain.read((db) => taskEnd(db, t.thread.thread, end.status, t.id)),
-      (ended) =>
-        ended === null
-          ? Effect.succeed(null)
-          : readOf({
-              thread: t.thread.thread,
-              turn: t.id,
-              title: t.thread.title,
-              text: end.result,
-              ...(t.bypass !== null && { bypass: t.bypass }),
-            }),
+    return Effect.flatMap(brain.read(taskEndRead, t.thread.thread, end.status, t.id), (ended) =>
+      ended === null
+        ? Effect.succeed(null)
+        : readOf({
+            thread: t.thread.thread,
+            turn: t.id,
+            title: t.thread.title,
+            text: end.result,
+            ...(t.bypass !== null && { bypass: t.bypass }),
+          }),
     )
   }
 
@@ -864,7 +961,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       live.turn = null
     }
     // Done while its work goes on (a watch of its own, a script it set), its end says so: it waits.
-    const going = end?.status === "done" && (yield* brain.read((db) => stillGoing(db, live.thread)))
+    const going = end?.status === "done" && (yield* brain.read(stillGoingRead, live.thread))
     const written = going
       ? drafts.map((d) => (d.type === TurnEnded.type ? { ...d, payload: { ...end, going } } : d))
       : drafts
@@ -894,7 +991,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
           return
         }
         const signalled = !live.once && !t.interrupted && SIGNALLED.has(code)
-        const cut = signalled && (yield* brain.read((db) => cutsInARow(db, live.thread))) < MAX_CUTS
+        const cut = signalled && (yield* brain.read(cutsInARowRead, live.thread)) < MAX_CUTS
         let end = endOf(
           t,
           "failed",
@@ -1072,7 +1169,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       if (tell === undefined) {
         return
       }
-      for (const { seq, w: x } of yield* brain.read((db) => waitingRows(db, thread))) {
+      for (const { seq, w: x } of yield* brain.read(waitingRowsRead, thread)) {
         if (!told.has(seq) && (x.text.trim() !== "" || partwayOf(x))) {
           told.add(seq)
           yield* tell(thread, resetAt, partwayOf(x), `waiting:${String(seq)}`)
@@ -1108,7 +1205,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       ...(givenImages.length === 0 ? {} : { images: givenImages }),
     }
     // What waited for a host goes first, in the order it came.
-    const queued = once.has(thread) ? [] : yield* brain.read((db) => waitingFor(db, thread))
+    const queued = once.has(thread) ? [] : yield* brain.read(waitingForRead, thread)
     const { text, wakeText, images, effort, from, owes } = merged(queued, own)
     yield* cancelTimer(thread)
     const live = yield* Effect.catchTag(ready(t, effort), "NoHost", (e) =>
@@ -1176,7 +1273,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     lock(thread).withPermit(
       Effect.gen(function* kicking() {
         const t = yield* read(thread)
-        const queued = yield* brain.read((db) => waitingRows(db, thread))
+        const queued = yield* brain.read(waitingRowsRead, thread)
         if (once.has(thread) || t === null || queued.length === 0) {
           return null
         }
@@ -1328,7 +1425,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
 
   // Limits outlast a restart; a host whose limit lifted meanwhile is back.
   const restoreAccounts = Effect.fnUntraced(function* restoring() {
-    for (const a of yield* brain.read(allAccounts)) {
+    for (const a of yield* brain.read(accountsRead)) {
       if (hosts.get(a.host)) {
         yield* hosts.learn(a.host, a.windows)
         if (a.limitedUntil > Date.now()) {
@@ -1389,7 +1486,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
   // What waits for a host starts as soon as one can take it: a limit lifting, a machine linking
   // back, or another profile selected.
   const drain = Effect.gen(function* draining() {
-    for (const thread of yield* brain.read(threadsWaiting)) {
+    for (const thread of yield* brain.read(threadsWaitingRead)) {
       yield* Effect.ignore(kick(thread))
     }
   })
@@ -1433,14 +1530,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
         return Deferred.await(waiter)
       }
       return brain
-        .read((db) => {
-          const row = db
-            .query<{ payload: string }, [string]>(
-              "SELECT payload FROM events WHERE type = 'turn.ended' AND json_extract(payload, '$.turn') = ?",
-            )
-            .get(turn)
-          return row ? TurnEnded.decode(JSON.parse(row.payload)) : null
-        })
+        .read(turnEndedRead, turn)
         .pipe(
           Effect.flatMap((e) => (e ? Effect.succeed(e) : Effect.die(new Error(`No turn ${turn}`)))),
         )
@@ -1460,16 +1550,17 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       )
       const title = a.title ?? a.task.slice(0, 60)
       // In the space it names, else its parent's (`spaceFor`): one it doesn't file, placeOf walks up.
-      const space =
-        a.space === null ? null : yield* brain.read((db) => spaceNamed(db, a.space ?? ""))
+      const space = a.space === null ? null : yield* brain.read(spaceNamedRead, a.space)
       // A retry is the same task; a new one that's the same work as a running one is refused.
-      const same = yield* brain.read((db) => {
-        const from = getThread(db, parent)
-        if (getThread(db, id) !== null || from === null || a.separate !== null) {
-          return null
-        }
-        return sameWork(db, a.cwd ?? from.cwd, title, a.task, id, parent)
-      })
+      const same = yield* brain.read(
+        sameRead,
+        parent,
+        id,
+        a.separate !== null,
+        a.cwd,
+        title,
+        a.task,
+      )
       if (same !== null) {
         return yield* Effect.fail(
           `Task ${same.thread} "${same.title}" is on this already. Steer it with task_steer, or give separate (how this one differs) to start it anyway.`,
@@ -1519,7 +1610,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       yield* lock(id).withPermit(
         Effect.gen(function* startingTask() {
           const t = yield* read(id)
-          const waits = yield* brain.read((db) => waitingFor(db, id))
+          const waits = yield* brain.read(waitingForRead, id)
           // No host now: it waits, queued, and starts once one can.
           if (t?.status === "idle" && !lives.get(id)?.turn && waits.length === 0) {
             yield* Effect.catchTag(start(id, a.task, ""), "NoHost", () => Effect.void)
@@ -1543,7 +1634,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
   ): Effect.Effect<TaskInfo, string> =>
     Effect.gen(function* cancelling() {
       yield* owned(parent, task)
-      const children = yield* brain.read((db) => allThreads(db).filter((c) => c.parent === task))
+      const children = yield* brain.read(childrenRead, task)
       for (const c of children) {
         yield* Effect.ignore(cancelTask(task, c.thread, why))
       }
@@ -1574,7 +1665,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     status: (parent, task) =>
       Effect.gen(function* standing() {
         const t = info(yield* owned(parent, task))
-        return (yield* brain.read((db) => stillGoing(db, task))) ? { ...t, status: "waiting" } : t
+        return (yield* brain.read(stillGoingRead, task)) ? { ...t, status: "waiting" } : t
       }),
     cancel: cancelTask,
     steer: steerTask,
@@ -1615,22 +1706,18 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     if (t.status === "running" && turn !== null && why !== PAUSE) {
       // Cut as the run before stopped (or crashed): its end and its carry-on are one write.
       const end = { ...endOf({ ...newTurn(t), id: turn }, "interrupted", CUT_OFF), ms: 0 }
-      const carried = yield* brain.read((db) =>
-        cutsInARow(db, t.thread) < MAX_CUTS
-          ? [carryEvent(t.thread, turn, cutAs(db, turn), CUT)]
-          : [],
-      )
+      const carried = yield* brain.read(carriedRead, t.thread, turn)
       yield* ingest([event(`${turn}:end`, TurnEnded.type, end), ...carried])
     } else if (why !== null) {
-      const cut = turn === null ? OWED : yield* brain.read((db) => cutAs(db, turn))
+      const cut = turn === null ? OWED : yield* brain.read(cutAsRead, turn)
       yield* ingest([carryEvent(t.thread, turn ?? `${t.thread}:${String(t.endedAt)}`, cut, why)])
-    } else if (limitCut(t) && (yield* brain.read((db) => waitingFor(db, t.thread))).length === 0) {
+    } else if (limitCut(t) && (yield* brain.read(waitingForRead, t.thread)).length === 0) {
       // Cut by a limit before what it carries on with waited in the record (a build before this
       // one kept that in memory, and lost it to a restart).
       if (t.status === "limited" && t.host !== null && t.resetAt !== null) {
         yield* limit(t.host, t.resetAt)
       }
-      const cut = turn === null ? OWED : yield* brain.read((db) => cutAs(db, turn))
+      const cut = turn === null ? OWED : yield* brain.read(cutAsRead, turn)
       yield* ingest([
         carryEvent(t.thread, turn ?? `${t.thread}:${String(t.endedAt)}`, cut, LIMIT_CUT),
       ])
@@ -1648,7 +1735,7 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
         yield* Effect.logInfo(`Killed ${killed} orphaned agent processes on ${m.id}`)
       }
     }
-    for (const t of yield* brain.read(allThreads)) {
+    for (const t of yield* brain.read(allThreadsRead)) {
       yield* recoverThread(t)
     }
   })

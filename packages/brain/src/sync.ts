@@ -11,15 +11,20 @@ import { Brain } from "./brain.ts"
 import { storedEvent } from "./defs.ts"
 import { EventId } from "./ids.ts"
 import { PEER } from "./messages.ts"
+import { defineRead, runAsked } from "./reads.ts"
+import type { Read } from "./reads.ts"
 import type { StoredEvent } from "./defs.ts"
 
-/** What clients get: a snapshot without history, the live events they show, and pages on demand. */
+/**
+ * What clients get: a snapshot without history, the live events they show, and pages on demand.
+ * Each is a read (reads.ts), so it runs in a reader thread.
+ */
 export interface View {
-  readonly snapshot: (db: Database) => Readonly<Record<string, unknown>>
+  readonly snapshot: Read<[], Readonly<Record<string, unknown>>>
   /** Whether a live event goes to clients. High-rate streams don't, unless a widget watches the type. */
-  readonly live: (db: Database, event: StoredEvent) => boolean
+  readonly live: Read<[event: StoredEvent], boolean>
   /** Older history, by name: a space's chat, a thread's transcript. */
-  readonly pages: Readonly<Record<string, (db: Database, args: unknown) => unknown>>
+  readonly pages: Readonly<Record<string, Read<[args: unknown], unknown>>>
   /** Whether a client may send this command; some only the core's own routes dispatch. */
   readonly accepts?: (command: string) => boolean
   /** Whether a client may emit an observation; state transitions stay with their owning service. */
@@ -87,6 +92,23 @@ const text = new TextDecoder()
 const head = (db: Database) =>
   db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
 
+const headRead = defineRead("brain/sync/head", head)
+
+const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> =>
+  typeof v === "object" && v !== null && !Array.isArray(v)
+
+/**
+ * The head and the view's snapshot (its read, by name, as this thread's registry has it), in one
+ * read so the seq matches what it holds.
+ */
+const snapshotRead = defineRead("brain/sync/snapshot", (db, snapshot: string) => {
+  const ran = runAsked(db, { name: snapshot, args: [] })
+  if (ran === undefined) {
+    throw new Error(`No read ${snapshot} known here`)
+  }
+  return { seq: head(db), state: isRecord(ran.value) ? ran.value : {} }
+})
+
 /** GET /?since=&source=, the daemon's root: `source` is who its commands and events come from ("desktop"). */
 export const syncLayer = (view: View) =>
   HttpRouter.add("GET", "/", (request) =>
@@ -125,7 +147,7 @@ export const syncLayer = (view: View) =>
               return page === undefined
                 ? send({ type: "rejected", id: message.id, reason: `No page ${message.name}` })
                 : brain
-                    .read((db) => page(db, message.args))
+                    .read(page, message.args)
                     .pipe(Effect.flatMap((value) => send({ type: "page", id: message.id, value })))
             }
             if (message.type === "command" && view.accepts?.(message.command) === false) {
@@ -159,21 +181,16 @@ export const syncLayer = (view: View) =>
 
           // A short gap replays; a long one (or none given) starts from a snapshot, read in one go so
           // its seq matches what it holds. So does a cursor past the head, as after a restore.
-          const behind = since === null ? null : (yield* brain.read(head)) - since
+          const behind = since === null ? null : (yield* brain.read(headRead)) - since
           let after = since ?? 0
           if (behind === null || behind < 0 || behind > RESUME_MAX) {
-            const snapshot = yield* brain.read((db) => ({
-              seq: head(db),
-              state: view.snapshot(db),
-            }))
+            const snapshot = yield* brain.read(snapshotRead, view.snapshot.name)
             yield* send({ type: "snapshot", ...snapshot })
             after = snapshot.seq
           }
           const out = brain.changes(after).pipe(
             Stream.filterEffect((e) =>
-              watches(watched, e.type)
-                ? Effect.succeed(true)
-                : brain.read((db) => view.live(db, e)),
+              watches(watched, e.type) ? Effect.succeed(true) : brain.read(view.live, e),
             ),
             Stream.groupedWithin(512, "50 millis"),
             Stream.runForEach((events) => send({ type: "events", events })),

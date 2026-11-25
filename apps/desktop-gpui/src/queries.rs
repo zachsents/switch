@@ -114,7 +114,9 @@ pub fn entity(cx: &App) -> Entity<Queries> {
 /// extensions need of each provider, read all along, and the memories, once.
 fn prefetch(cx: &mut App) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    static MEMORIES: AtomicBool = AtomicBool::new(false);
+    base::kept! {
+        static MEMORIES: AtomicBool = AtomicBool::new(false);
+    }
     if !cx.has_global::<crate::model::ModelHandle>() || !crate::model::model(cx).read(cx).authed {
         return;
     }

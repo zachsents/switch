@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{App, Task};
@@ -30,11 +30,13 @@ pub struct ConnectionStart {
 /// The core's answer, or what went wrong, safe to show.
 pub type ConnectionResult = Result<Value, String>;
 
-/// Each provider's flow under way, by how to cancel it.
-/// Each window's flows under way, by provider, with how to cancel each: a window's close cancels its own
-/// (the desktop kept a relay per window).
-static PENDING: LazyLock<Mutex<HashMap<(Option<gpui::WindowId>, String), (u64, oneshot::Sender<()>)>>> = LazyLock::new(Default::default);
-static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+base::kept! {
+    /// Each provider's flow under way, by how to cancel it.
+    /// Each window's flows under way, by provider, with how to cancel each: a window's close cancels
+    /// its own (the desktop kept a relay per window).
+    static PENDING: Mutex<HashMap<(Option<gpui::WindowId>, String), (u64, oneshot::Sender<()>)>> = Mutex::default();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+}
 
 fn failure(message: &str) -> ConnectionResult {
     Err(safe_error(if message.is_empty() { "Connection failed. Try again." } else { message }))

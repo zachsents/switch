@@ -1,8 +1,8 @@
 // Finding in what was said and kept: chat messages, action items and memories in one full-text
 // index (SQLite FTS5, trigram, so any part of a word matches), read through the sync's `find` page.
 // A row's rowid is the seq of the event that wrote it, so a later version replaces it in place.
-// The exchanges' words are in it too, by their work (kind turn, ref the thread): what the history
-// tools search, as the agent's history beyond its session (measured: .experiments/context).
+// The exchanges' words have one of their own, by their work: what the history tools search, as the
+// agent's history beyond its session (measured: .experiments/context).
 import type { Database } from "bun:sqlite"
 import {
   exchangeText,
@@ -12,11 +12,23 @@ import {
   TurnStarted,
   TurnText,
 } from "@switch/agent"
-import { ItemOpened, MemoryWritten } from "@switch/autonomy"
-import { Brain, HOME, MessagePosted, MessageRead, on, SpaceId, whoOf } from "@switch/brain"
+import { ItemOpened, MemoryWritten, spaceOfWork } from "@switch/autonomy"
+import {
+  Brain,
+  defineRead,
+  HOME,
+  MessagePosted,
+  MessageRead,
+  on,
+  SpaceId,
+  ThreadId,
+  whoOf,
+} from "@switch/brain"
 import type { Projection } from "@switch/brain"
 import { Caller, defineApp, Rejected, tool } from "switch-ext-kit"
 import { Effect, Option, Schema } from "effect"
+
+import { spaceOf, threadOf } from "./context.ts"
 
 const KINDS = ["message", "item", "memory"] as const
 type Kind = (typeof KINDS)[number]
@@ -43,12 +55,21 @@ const put = (db: Database, kind: Kind, ref: string, row: number, text: string) =
   )
 }
 
+// A work is a column of the index, so a search reads only its own rows: filtered after matching,
+// it read every work's (2.5 to 35 s stalls of the core's thread, Nov 24). The trigrams match any
+// part of it, so it ends in a character no work's name has: "space:a." isn't in "space:a-b.".
+const workOf = (thread: string) => `${thread}.`
+
+// A space's or a task's: a work with a history. A model's one-off run (a triage, a check) has
+// none, and its prompts were 274 MB of the log's words on Nov 25: indexed, a third of the brain.
+const isWork = (thread: ThreadId) => spaceOf(thread) !== null || thread.startsWith("task-")
+
 // An exchange's words are never revised: no ref to replace them by.
-const said = (db: Database, row: number, thread: string, text: string) => {
-  if (text.trim() !== "") {
-    db.query("INSERT INTO found (rowid, kind, ref, text) VALUES (?, 'turn', ?, ?)").run(
+const said = (db: Database, row: number, thread: ThreadId, text: string) => {
+  if (isWork(thread) && text.trim() !== "") {
+    db.query("INSERT INTO found_turns (rowid, work, text) VALUES (?, ?, ?)").run(
       row,
-      thread,
+      workOf(thread),
       text,
     )
   }
@@ -56,10 +77,11 @@ const said = (db: Database, row: number, thread: string, text: string) => {
 
 export const found: Projection = {
   name: "found",
-  version: 2,
-  tables: ["found", "found_refs"],
+  version: 3,
+  tables: ["found", "found_refs", "found_turns"],
   create: `
     CREATE VIRTUAL TABLE found USING fts5(kind UNINDEXED, ref UNINDEXED, text, tokenize = 'trigram');
+    CREATE VIRTUAL TABLE found_turns USING fts5(work, text, tokenize = 'trigram');
     CREATE TABLE found_refs (kind TEXT NOT NULL, ref TEXT NOT NULL, row INTEGER NOT NULL, PRIMARY KEY (kind, ref));`,
   on: [
     on(MessagePosted, (db, p, e) => {
@@ -138,7 +160,7 @@ const everywhere = (db: Database, query: string) => {
   }
   const hits = db
     .query<Hit, [string, number]>(
-      "SELECT kind, ref, text FROM found WHERE found MATCH ? AND kind != 'turn' ORDER BY bm25(found) LIMIT ?",
+      "SELECT kind, ref, text FROM found WHERE found MATCH ? ORDER BY bm25(found) LIMIT ?",
     )
     .all(match, RESULTS * 2)
   const message = db.query<MessageRow, [number]>(
@@ -256,22 +278,28 @@ const exchangeOf = (db: Database, turn: string, tools: boolean) => {
   return `[${when} · ${turn}]\n${exchangeText(rows, tools)}`
 }
 
-/** A work's exchanges that match any of `words`, best first, each cut short. */
-const searchHistory = (db: Database, thread: string, words: string) => {
+/**
+ * A work's exchanges that match any of `words`, best first, each cut short; a task's, with its
+ * space's: what it's for was said there (on Nov 24 tasks searched their own few turns for it).
+ */
+const searchHistory = (db: Database, thread: ThreadId, words: string) => {
   const match = anyOf(wordsOf(words))
   if (match === "") {
     return []
   }
-  // The work's own items first, each looked up in the index by rowid: `ref` is UNINDEXED, so
-  // matching first read every match in every work (70k pages, 4 to 35 s on the core's thread on
-  // Nov 24) to keep the few that are this one's. CROSS JOIN keeps that order.
+  const space = spaceOfWork(db, thread)
+  const works = [...new Set([thread, ...(space === null ? [] : [threadOf(space)])])]
+    .map((w) => `"${workOf(w).replaceAll('"', '""')}"`)
+    .join(" OR ")
+  // Its works' rows and the words, both from the index.
   const turns = db
-    .query<{ turn: string }, [string, string]>(
-      `SELECT i.turn FROM thread_items i CROSS JOIN found f ON f.rowid = i.seq
-       WHERE i.thread = ?2 AND found MATCH ?1 AND f.kind = 'turn'
-       ORDER BY bm25(found) LIMIT 200`,
+    .query<{ turn: string }, [string]>(
+      `SELECT i.turn FROM (
+         SELECT rowid, bm25(found_turns) AS rank FROM found_turns
+         WHERE found_turns MATCH ? ORDER BY rank LIMIT 200) f
+       JOIN thread_items i ON i.seq = f.rowid ORDER BY f.rank`,
     )
-    .all(match, thread)
+    .all(`work : (${works}) AND text : (${match})`)
     .map((r) => r.turn)
   return [...new Set(turns)]
     .slice(0, SHOWN)
@@ -281,6 +309,13 @@ const searchHistory = (db: Database, thread: string, words: string) => {
 
 // What history a rebuilt session leaves out stays here (agent/src/transcript.ts): these are how
 // the agent reaches it, as the experiment's B had them.
+/** Earlier exchanges matching `words`, outside `thread`. */
+const searchRead = defineRead("core/find/search", searchHistory)
+/** One exchange in full, with its tool calls. */
+const exchangeRead = defineRead("core/find/exchange", (db, turn: string) =>
+  exchangeOf(db, turn, true),
+)
+
 export const historyApp = defineApp<Brain>({
   name: "history",
   version: "1",
@@ -290,16 +325,22 @@ export const historyApp = defineApp<Brain>({
       "search",
       {
         description:
-          "Search this work's earlier exchanges (yours and the user's) by words. Returns matching exchanges, best first, each with its id.",
+          "Search this work's earlier exchanges (yours and the user's), and a task's space's, by words. Returns matching exchanges, best first, each with its id.",
         readOnly: true,
-        input: Schema.Struct({ words: Schema.String }),
+        // `query`, as other search tools name it: agents gave it 11 times on Nov 24.
+        input: Schema.Struct({
+          words: Schema.optionalKey(Schema.String),
+          query: Schema.optionalKey(Schema.String),
+        }),
       },
       (input) =>
         Effect.gen(function* searching() {
           const brain = yield* Brain
           const caller = yield* Caller
-          const hits = yield* brain.read((db) =>
-            searchHistory(db, caller.thread ?? "", input.words),
+          const hits = yield* brain.read(
+            searchRead,
+            ThreadId.make(caller.thread ?? ""),
+            input.words ?? input.query ?? "",
           )
           return hits.length === 0 ? "Nothing found" : hits.join("\n\n")
         }),
@@ -315,7 +356,7 @@ export const historyApp = defineApp<Brain>({
       (input) =>
         Effect.gen(function* reading() {
           const brain = yield* Brain
-          const text = yield* brain.read((db) => exchangeOf(db, input.id.trim(), true))
+          const text = yield* brain.read(exchangeRead, input.id.trim())
           return text === null
             ? yield* new Rejected({ reason: `No exchange ${input.id}` })
             : text.slice(0, READ_MAX)

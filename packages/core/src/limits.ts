@@ -8,7 +8,7 @@
 import type { Database } from "bun:sqlite"
 import { getThread, Hosts, route, Sessions } from "@switch/agent"
 import { CloseItem, ItemAnswered, OpenItem } from "@switch/autonomy"
-import { Brain, HOME, ItemId, PostMessage, react } from "@switch/brain"
+import { Brain, defineRead, HOME, ItemId, PostMessage, react } from "@switch/brain"
 import type { SpaceId, ThreadId } from "@switch/brain"
 import type { Profile } from "@switch/models"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -70,6 +70,18 @@ const openSuggestion = (db: Database) =>
     )
     .get(SUGGESTION)?.id ?? null
 
+/** The open suggestion to switch profiles, if there is one. */
+const suggestionRead = defineRead("core/limits/open-suggestion", openSuggestion)
+/** The profiles, their active one and the catalog. */
+const profilesRead = defineRead("core/limits/profiles", profilesState)
+/** The profile in use. */
+const currentRead = defineRead("core/limits/current", currentProfile)
+/** A thread's model, if the thread is known. */
+const modelRead = defineRead(
+  "core/limits/model",
+  (db, thread: ThreadId) => getThread(db, thread)?.model ?? null,
+)
+
 /** Whether, under a profile's own mix, an account could take a turn of `model` ("heavy", a tier, an id) now. */
 const roomFor = (profile: Profile, model: string) =>
   Effect.gen(function* checking() {
@@ -82,8 +94,8 @@ const roomFor = (profile: Profile, model: string) =>
 const roomyOthers = (model: string) =>
   Effect.gen(function* finding() {
     const brain = yield* Brain
-    const state = yield* brain.read(profilesState)
-    const active = yield* brain.read(currentProfile)
+    const state = yield* brain.read(profilesRead)
+    const active = yield* brain.read(currentRead)
     const roomy: Profile[] = []
     for (const p of state.profiles.filter((x) => x.name !== active.name)) {
       if (yield* roomFor(p, model)) {
@@ -105,7 +117,7 @@ export const limitTold = (
 ) =>
   Effect.gen(function* telling() {
     const brain = yield* Brain
-    const model = (yield* brain.read((db) => getThread(db, thread)))?.model ?? "heavy"
+    const model = (yield* brain.read(modelRead, thread)) ?? "heavy"
     const { active, roomy } = yield* roomyOthers(model)
     const [other] = roomy
     if (other === undefined) {
@@ -115,7 +127,7 @@ export const limitTold = (
       }
       return
     }
-    if ((yield* brain.read(openSuggestion)) !== null) {
+    if ((yield* brain.read(suggestionRead)) !== null) {
       return
     }
     const until = resetAt === null ? "" : ` until ${localTime(resetAt, Date.now())}`
@@ -180,7 +192,7 @@ export const limitsWorker = Layer.effectDiscard(
       Effect.forever(
         Effect.gen(function* lifting() {
           yield* Effect.sleep("30 seconds")
-          const open = yield* brain.read(openSuggestion)
+          const open = yield* brain.read(suggestionRead)
           if (open === null) {
             return
           }

@@ -26,7 +26,7 @@ use crate::shell::Shell;
 use crate::theme::Held;
 use crate::thread::ThreadView;
 
-actions!(switch, [ToBox]);
+actions!(switch, [ToBox, ToRail, ToWidgets, AttachFiles]);
 
 /// Under this window width, px, the widgets fold away.
 pub const WIDE: f32 = 1000.;
@@ -56,9 +56,9 @@ pub struct Root {
     sheet_restore: Option<Option<gpui::FocusHandle>>,
 }
 
-thread_local! {
+base::kept_local! {
     /// A scroll event passed over something that scrolls sideways: set as it bubbles past it.
-    static SIDEWAYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SIDEWAYS: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 /// For what scrolls sideways (a picture row, a wide table, code): a scroll over it, while it has
@@ -354,6 +354,51 @@ impl Render for Root {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToBox, window, cx| this.focus_page_box(window, cx)))
+            // ⌘J: the keyboard to the rail's first row; from the rail, back to the box. A thread's
+            // page has no rail: its space opens, and the keys go to that one's.
+            .on_action(cx.listener(|this, _: &ToRail, window, cx| {
+                if let Some(Page::Thread(..)) = this.boxed {
+                    Nav::open(Page::Space(crate::commands::here(cx)), cx);
+                    window.on_next_frame(|window, cx| window.dispatch_action(Box::new(ToRail), cx));
+                    return;
+                }
+                let here = crate::commands::here(cx);
+                let rail = this.rail.clone();
+                let took = rail.update(cx, |r, cx| r.focus_first(&here, window, cx));
+                if !took {
+                    this.focus_page_box(window, cx);
+                }
+            }))
+            // ⇧⌘J: the keyboard to the widgets' first control; with none (or from them), the box.
+            .on_action(cx.listener(|this, _: &ToWidgets, window, cx| {
+                let column = match &this.boxed {
+                    Some(Page::Space(space)) => this.columns.get(space).cloned(),
+                    _ => None,
+                };
+                let inside = column.as_ref().is_some_and(|c| gpui::Focusable::focus_handle(c.read(cx), cx).contains_focused(window, cx));
+                let took = !inside && column.is_some_and(|c| c.update(cx, |c, cx| c.enter(window, cx)));
+                if !took {
+                    this.focus_page_box(window, cx);
+                }
+            }))
+            // ⇧⌘A: the system's file panel, its files to the box of the space open.
+            .on_action(cx.listener(|this, _: &AttachFiles, window, cx| {
+                let Some(Page::Space(space)) = this.boxed.clone() else { return };
+                let Some(chat) = this.chats.get(&space).cloned() else { return };
+                let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+                cx.spawn_in(window, async move |_, cx| {
+                    if let Ok(Ok(Some(paths))) = paths.await {
+                        chat.update_in(cx, |c, window, cx| {
+                            let chosen = crate::files::choose_paths(&paths);
+                            let b = c.chatbox.clone();
+                            b.update(cx, |b, cx| b.attach(chosen, window, cx));
+                            c.focus_box(window, cx);
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }))
             // A paste with nothing focused goes to the page's box, as one from its column does.
             .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| match this.boxed.clone() {
                 Some(Page::Space(space)) => {
@@ -439,10 +484,3 @@ impl Render for Root {
             .child(ui_sdk::foundation::platform::live_regions(window))
     }
 }
-
-pub fn bindings() -> Vec<gpui::KeyBinding> {
-    vec![
-        gpui::KeyBinding::new("/", ToBox, Some("Switch && !TextField")),
-    ]
-}
-

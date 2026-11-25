@@ -5,8 +5,7 @@
 // only looks (readOnlyHint) or what it changes stays in Switch (openWorldHint false: the brain, the
 // user's own chat), and Claude Code's own that write. A turn's own words reach no one now, so
 // its stop has nothing to check: the reply check reads what's said (autonomy app.ts `say`).
-import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Gateway } from "@switch/gateway"
 import { Models } from "@switch/models"
 import type { SpaceId, ThreadId, TurnId } from "@switch/brain"
@@ -36,8 +35,16 @@ interface ThreadRow {
   readonly turn: TurnId | null
 }
 
-/** The thread a Claude Code session is, and the space whose master thread it is or works under. */
-const whereIs = (db: Database, session: string, spaceOf: (thread: ThreadId) => SpaceId | null) => {
+interface Found {
+  readonly thread: ThreadId
+  readonly turn: TurnId | null
+  readonly task: boolean
+  /** It and the threads it works under, each with the space it's filed in (delegate_task). */
+  readonly chain: readonly { readonly thread: ThreadId; readonly home: SpaceId | null }[]
+}
+
+/** The thread a Claude Code session is, and the threads it works under: `whereIs` reads its space. */
+const sessionRead = defineRead("autonomy/hooks/session", (db, session: string): Found | null => {
   const row = db
     .query<ThreadRow, [string]>("SELECT thread, parent, turn FROM threads WHERE session = ?")
     .get(session)
@@ -47,24 +54,36 @@ const whereIs = (db: Database, session: string, spaceOf: (thread: ThreadId) => S
   const parent = db.query<ThreadRow, [string]>(
     "SELECT thread, parent, turn FROM threads WHERE thread = ?",
   )
-  // A task filed in a space (delegate_task) is that space's, as placeOf reads it.
   const filed = db.query<{ home: SpaceId | null }, [string]>(
     "SELECT home FROM thread_spaces WHERE thread = ?",
   )
-  let space: SpaceId | null = null
-  const seen: string[] = []
+  const chain: { thread: ThreadId; home: SpaceId | null }[] = []
+  const seen = new Set<string>()
   for (
     let t: ThreadRow | null = row;
-    t !== null && !seen.includes(t.thread);
+    t !== null && !seen.has(t.thread);
     t = t.parent === null ? null : parent.get(t.parent)
   ) {
-    seen.push(t.thread)
-    space = spaceOf(t.thread) ?? filed.get(t.thread)?.home ?? null
+    seen.add(t.thread)
+    chain.push({ thread: t.thread, home: filed.get(t.thread)?.home ?? null })
+  }
+  return { thread: row.thread, turn: row.turn, task: row.parent !== null, chain }
+})
+
+/** The thread a Claude Code session is, and the space whose master thread it is or works under. */
+const whereIs = (found: Found | null, spaceOf: (thread: ThreadId) => SpaceId | null) => {
+  if (found === null) {
+    return null
+  }
+  // A task filed in a space (delegate_task) is that space's, as placeOf reads it.
+  let space: SpaceId | null = null
+  for (const t of found.chain) {
+    space = spaceOf(t.thread) ?? t.home
     if (space !== null) {
       break
     }
   }
-  return { thread: row.thread, turn: row.turn, task: row.parent !== null, space }
+  return { thread: found.thread, turn: found.turn, task: found.task, space }
 }
 
 /** How a held call's reason ends: what reflection reads a hold by. */
@@ -86,7 +105,7 @@ interface Shown {
   readonly held: Set<string>
 }
 
-const toolsSoFar = (db: Database, thread: ThreadId) =>
+const toolsSoFarRead = defineRead("autonomy/hooks/tools-so-far", (db, thread: ThreadId) =>
   db
     .query<{ body: string }, [string]>(
       "SELECT body FROM thread_items WHERE thread = ? AND json_extract(body, '$.kind') = 'tool' ORDER BY seq DESC LIMIT 6",
@@ -97,7 +116,8 @@ const toolsSoFar = (db: Database, thread: ThreadId) =>
       const b: unknown = JSON.parse(r.body)
       return `${text(field(b, "name"))}: ${JSON.stringify(field(b, "input")).slice(0, 150)}`
     })
-    .join(" | ")
+    .join(" | "),
+)
 
 // The reply check reads what's said (autonomy app.ts `say`): a turn's own words reach no one, so
 // there's nothing to check as it stops; ending on a choice is the session's (agent turn.ts).
@@ -143,13 +163,13 @@ export const hooks = Effect.fnUntraced(function* serving(
   const preTool = (body: unknown) =>
     Effect.gen(function* pre() {
       const session = text(field(body, "session_id"))
-      const where = yield* brain.read((db) => whereIs(db, session, spaceOf))
+      const where = whereIs(yield* brain.read(sessionRead, session), spaceOf)
       if (where?.space === null || where === null) {
         return {}
       }
       const tool = text(field(body, "tool_name"))
       const input = JSON.stringify(field(body, "tool_input") ?? {})
-      const before = yield* brain.read((db) => toolsSoFar(db, where.thread))
+      const before = yield* brain.read(toolsSoFarRead, where.thread)
       const kept = yield* triggered(where.space, tool, input, before)
       const kind = kindOf(tool, field(body, "tool_input"))
       const turn = shownIn(where.thread, where.turn ?? "")

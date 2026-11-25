@@ -7,6 +7,7 @@ import { formatWithOptions } from "node:util"
 import { Database } from "bun:sqlite"
 import {
   Brain,
+  defineRead,
   ownSecret,
   ownShape,
   redact,
@@ -213,6 +214,7 @@ const tablesOf = (db: Database) => {
       columns: db.query<Column, []>(`SELECT name, pk FROM pragma_table_info('${t.name}')`).all(),
     }))
 }
+const tablesRead = defineRead("core/redaction/tables", tablesOf)
 
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`
 
@@ -270,7 +272,7 @@ const sweep = (logs: readonly string[]) =>
       after = page.last
       more = page.n === PAGE
     }
-    const tables = yield* brain.read(tablesOf)
+    const tables = yield* brain.read(tablesRead)
     for (const t of tables) {
       const text = t.columns.filter((c) => c.pk === 0).map((c) => c.name)
       const keys = t.columns.filter((c) => c.pk > 0).map((c) => c.name)
@@ -346,7 +348,7 @@ const sweep = (logs: readonly string[]) =>
         }
       }
     }
-    yield* brain.read((db) => db.run("PRAGMA wal_checkpoint(TRUNCATE)"))
+    yield* brain.truncateLog
     return report
   })
 
@@ -439,7 +441,7 @@ const resweep = (from: string, swept: typeof Swept.Type) =>
         db.run(`INSERT INTO ${quoted(name)} (${quoted(name)}) VALUES ('optimize')`)
       }
     })
-    yield* brain.read((db) => db.run("PRAGMA wal_checkpoint(TRUNCATE)"))
+    yield* brain.truncateLog
     return { events, rows, found }
   })
 

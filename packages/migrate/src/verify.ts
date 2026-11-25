@@ -1,7 +1,7 @@
 // After a run: what the brain holds of Switchboard, and real conversations read back through the
 // master-thread query, each in its space and in order.
 import { statSync } from "node:fs"
-import { Brain, EventId, HOME, thread } from "@switch/brain"
+import { Brain, defineRead, EventId, HOME, thread } from "@switch/brain"
 import type { SpaceId } from "@switch/brain"
 import { Effect } from "effect"
 
@@ -10,17 +10,33 @@ import { num, str, Switchboard } from "./source.ts"
 export const size = (path: string) =>
   statSync(path).size + (statSync(`${path}-wal`, { throwIfNoEntry: false })?.size ?? 0)
 
+/** The events carried from Switchboard, counted by type. */
+const typesRead = defineRead("migrate/verify/types", (db) =>
+  db
+    .query<{ type: string; n: number }, []>(
+      `SELECT type, count(*) AS n FROM events
+       WHERE id LIKE 'sb:%' OR id LIKE 'open:space:%' OR id LIKE 'tag:sb:%' OR id LIKE 'tag:open:%'
+       GROUP BY type ORDER BY n DESC`,
+    )
+    .all(),
+)
+
+/** The space an event was filed in, else Home. */
+const homeRead = defineRead(
+  "migrate/verify/home",
+  (db, id: string) =>
+    db
+      .query<{ home: SpaceId }, [string]>(
+        "SELECT t.home FROM events e JOIN tags t ON t.seq = e.seq WHERE e.id = ?",
+      )
+      .get(id)?.home ?? HOME,
+)
+
+const threadRead = defineRead("migrate/verify/thread", (db, space: SpaceId) => thread(db, space))
+
 export const typesOut = Effect.gen(function* typing() {
   const brain = yield* Brain
-  return yield* brain.read((db) =>
-    db
-      .query<{ type: string; n: number }, []>(
-        `SELECT type, count(*) AS n FROM events
-         WHERE id LIKE 'sb:%' OR id LIKE 'open:space:%' OR id LIKE 'tag:sb:%' OR id LIKE 'tag:open:%'
-         GROUP BY type ORDER BY n DESC`,
-      )
-      .all(),
-  )
+  return yield* brain.read(typesRead)
 })
 
 export interface Check {
@@ -60,15 +76,8 @@ export const spotChecks = (n: number) =>
         .filter((r) => str(r.text) !== "")
         .toSorted((a, b) => num(a.seq) - num(b.seq))
         .map((r) => EventId.make(`sb:${str(r.id)}`))
-      const space = yield* brain.read(
-        (db) =>
-          db
-            .query<{ home: SpaceId }, [string]>(
-              "SELECT t.home FROM events e JOIN tags t ON t.seq = e.seq WHERE e.id = ?",
-            )
-            .get(want[0] ?? "")?.home ?? HOME,
-      )
-      const lines = yield* brain.read((db) => thread(db, space))
+      const space = yield* brain.read(homeRead, want[0] ?? "")
+      const lines = yield* brain.read(threadRead, space)
       const wanted = new Set(want)
       const got = lines.filter((l) => wanted.has(l.event.id))
       const ids = got.map((l) => l.event.id)

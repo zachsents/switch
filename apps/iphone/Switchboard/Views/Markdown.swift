@@ -169,11 +169,12 @@ struct ReplyImage: View {
 
   private var url: URL? { Blobs.resolve(link) }
 
-  /// Its own name: the core's `name`, else the link's last part, else what it's said to be.
+  /// Its own name: the core's `name`, else the link's last part when that's a file's name, else
+  /// what it's said to be (never a blob's hash). Its extension is its bytes' to give (Blobs.file).
   private static func name(_ url: URL?, alt: String) -> String {
     let given = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true)?.queryItems?.first { $0.name == "name" }?.value }
     let last = url?.lastPathComponent ?? ""
-    let picked = given ?? ((last as NSString).pathExtension.isEmpty ? (alt.isEmpty ? "image" : alt) + ".jpg" : last)
+    let picked = given ?? ((last as NSString).pathExtension.isEmpty ? (alt.isEmpty ? "Image" : alt) : last)
     return picked.replacingOccurrences(of: "/", with: "-")
   }
 
@@ -183,8 +184,9 @@ struct ReplyImage: View {
       .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: SIS.radius))
       .onTapGesture { if taps { fetch { preview = $0 } } }
       .contextMenu {
-        Button("Quick Look", systemImage: "eye") { fetch { preview = $0 } }
+        Button("Copy", systemImage: "doc.on.doc") { fetch { Blobs.copy($0) } }
         Button("Share", systemImage: "square.and.arrow.up") { fetch { shared = Shared(url: $0) } }
+        Button("Quick Look", systemImage: "eye") { fetch { preview = $0 } }
       }
       .quickLookPreview($preview)
       .sheet(item: $shared) { ShareSheet(url: $0.url).presentationDetents([.medium, .large]) }

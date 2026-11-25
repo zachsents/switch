@@ -106,9 +106,28 @@ nonisolated enum Pairing {
     return (JSON.parse(data) ?? .null, (response as? HTTPURLResponse)?.statusCode ?? 0)
   }
 
+  /// This phone, by an id of its own kept in the Keychain (made once, it outlasts a reinstall): pairing
+  /// again under it replaces the phone's last credential.
+  static var device: String {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "Switch", kSecAttrAccount as String: "device",
+    ]
+    var found: AnyObject?
+    if SecItemCopyMatching(query.merging([kSecReturnData as String: true]) { _, new in new } as CFDictionary, &found) == errSecSuccess,
+      let data = found as? Data, let id = String(data: data, encoding: .utf8), !id.isEmpty
+    {
+      return id
+    }
+    let id = UUID().uuidString
+    let change: [String: Any] = [kSecValueData as String: Data(id.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
+    SecItemAdd(query.merging(change) { _, new in new } as CFDictionary, nil)
+    return id
+  }
+
   static func start(_ core: URL, name: String) async throws -> Started {
     let (body, status) = try await post(
-      core.appending(path: "pair"), ["name": .string(name), "kind": "device", "scopes": ["client"]])
+      core.appending(path: "pair"),
+      ["name": .string(name), "kind": "device", "scopes": ["client"], "device": .string(device)])
     guard status == 200, let pairing = body["pairing"].string, let token = body["token"].string, let code = body["code"].string else {
       throw Failed(reason: "Core refused")
     }
@@ -126,7 +145,8 @@ nonisolated enum Pairing {
   }
 
   static func redeem(_ core: URL, offer: String, name: String) async throws -> Credential {
-    let (body, status) = try await post(core.appending(path: "pair/redeem"), ["offer": .string(offer), "name": .string(name)])
+    let (body, status) = try await post(
+      core.appending(path: "pair/redeem"), ["offer": .string(offer), "name": .string(name), "device": .string(device)])
     if status == 404 { throw Failed(reason: "Code expired") }
     guard status == 200, let token = body["token"].string else { throw Failed(reason: "Core refused") }
     return Credential(core: core, token: token)

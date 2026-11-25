@@ -391,8 +391,8 @@ pub struct Pending {
     /// The core said no.
     pub failed: bool,
     pub landed: Option<u64>,
-    /// The files' names, still going up.
-    pub files: Vec<String>,
+    /// Its files, kept here until they're up.
+    pub files: Vec<crate::outbox::KeptFile>,
     /// What it replies to.
     pub reply_to: Vec<Reply>,
 }
@@ -451,6 +451,10 @@ pub struct Credential {
     pub at: f64,
     /// Good until then, in ms.
     pub until: Option<f64>,
+    /// The device it's for, by an id of the device's own.
+    pub device: Option<String>,
+    /// When it was last used, in ms.
+    pub seen: Option<f64>,
 }
 
 /// An installed extension.
@@ -814,6 +818,8 @@ fn credential_of(c: &Value, status: Option<CredentialStatus>, at: f64) -> Creden
         code: get(c, "code").as_str().map(str::to_string),
         at: get(c, "at").as_f64().unwrap_or(at),
         until: get(c, "until").as_f64(),
+        device: get(c, "device").as_str().map(str::to_string),
+        seen: get(c, "seen").as_f64(),
     }
 }
 
@@ -1274,7 +1280,7 @@ impl Brain {
         self.touch_thread(&thread);
     }
 
-    /// A credential's events: requested, issued, approved, denied, revoked.
+    /// A credential's events: requested, issued, approved, denied, revoked, seen.
     fn fold_credential(&mut self, e: &Event) {
         let p = &e.payload;
         let id = gs(p, "id");
@@ -1293,6 +1299,11 @@ impl Brain {
             }
             "credential.denied" => {
                 self.credentials.shift_remove(&id);
+            }
+            "credential.seen" => {
+                if let Some(c) = self.credentials.get_mut(&id) {
+                    c.seen = Some(e.time);
+                }
             }
             "credential.revoked" => {
                 if let Some(c) = self.credentials.get_mut(&id) {

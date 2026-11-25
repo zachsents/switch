@@ -254,7 +254,10 @@ impl Model {
             }
             this.update(cx, |m, cx| {
                 let state = match got {
-                    Ok(a) => Upload::Up(a),
+                    Ok(a) => {
+                        crate::own::up(&a.blob, &c.id, &c.name);
+                        Upload::Up(a)
+                    }
                     Err(e) => Upload::Failed { reason: e.reason().into(), refused: matches!(e, crate::files::UploadError::Refused(_)) },
                 };
                 m.uploads.insert(c.id.clone(), state);

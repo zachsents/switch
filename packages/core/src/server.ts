@@ -45,9 +45,11 @@ import {
   hooks,
   hookSettings,
   placeOf,
+  registerTriage,
   rulesAboutLayer,
   ownerOf,
   spaceOfWork,
+  TRIAGE,
 } from "@switch/autonomy"
 import {
   BLOB_MAX,
@@ -55,6 +57,7 @@ import {
   Brain,
   connectionsConfig,
   coversConfig,
+  defineRead,
   foldersOf,
   membershipConfig,
   messagesConfig,
@@ -69,12 +72,12 @@ import {
   reactorsConfig,
   bypassConfig,
 } from "@switch/brain"
-import type { CommandDef, EventDef, Projection, SpaceId, Upcast } from "@switch/brain"
+import type { CommandDef, EventDef, Projection, SpaceId, StoredEvent, Upcast } from "@switch/brain"
 import { Models } from "@switch/models"
 import { Effect, Layer } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 
-import { authLayer, authRoutes, layerMove } from "./auth.ts"
+import { authLayer, authRoutes, generationRead, layerMove } from "./auth.ts"
 import { Accounts } from "./account-service.ts"
 import { accountsRoute } from "./account-routes.ts"
 import { accountsApp } from "./accounts.ts"
@@ -104,7 +107,7 @@ import {
   tokenRoute,
 } from "./connections.ts"
 import { CoreConfig, osName } from "./config.ts"
-import { credentialsConfig, extensionToken, generationOf } from "./credentials.ts"
+import { credentialsConfig, extensionToken } from "./credentials.ts"
 import { IDENTITY, line, makeContext, spaceOf, threadOf } from "./context.ts"
 import { findConfig, historyApp } from "./find.ts"
 import { guardHook, guardOf } from "./guard.ts"
@@ -175,6 +178,14 @@ export const brainParts: readonly {
   asksConfig,
 ]
 
+/**
+ * One of the brain's reader threads (reader.ts), where reads run off the event loop. Named as it's
+ * emitted, `.js`: Bun runs reader.ts for it from source, and a compiled binary holds it as
+ * reader.js beside main (scripts/build-core.ts compiles it as an entry).
+ */
+const startReader = () => new Worker(new URL("reader.js", import.meta.url))
+const READERS = Number(process.env.SWITCH_READERS ?? 3)
+
 const layerBrain = Layer.unwrap(
   CoreConfig.pipe(
     Effect.map((c) => {
@@ -183,6 +194,7 @@ const layerBrain = Layer.unwrap(
       return Brain.layer({
         path: c.brain,
         ...(c.brain === ":memory:" ? {} : { checkpoint: checkpointer(c.brain) }),
+        readers: { start: startReader, size: READERS },
         events: brainParts.flatMap((p) => p.events),
         projections: brainParts.flatMap((p) => p.projections),
         commands: brainParts.flatMap((p) => p.commands),
@@ -249,6 +261,17 @@ const foldersOfThread = (db: Database, t: Thread) => {
   return space === null ? new Map<string, string>() : foldersOf(db, space)
 }
 
+const foldersRead = defineRead("core/server/folders", foldersOfThread)
+/** The identity the user set, or "" for the default. */
+const identityRead = defineRead("core/server/identity", (db) => String(dialOf(db, "identity")))
+/** The effort a turn runs at unless asked otherwise. */
+const effortRead = defineRead("core/server/effort", (db) => String(dialOf(db, "effort.default")))
+/** The space a thread works for. */
+const spaceOfThreadRead = defineRead(
+  "core/server/space-of-thread",
+  (db, thread: string) => placeOf(db, thread).space,
+)
+
 const layerSessions = Layer.unwrap(
   Effect.gen(function* sessions() {
     const c = yield* CoreConfig
@@ -260,12 +283,15 @@ const layerSessions = Layer.unwrap(
     // A session on another machine reaches the core by this machine's name on the tailnet, with
     // that machine's agent credential (here, as a process of this machine, it needs none).
     const base = (m: Machine) => (m.id === c.machine ? c.local : `http://${c.machine}:${c.port}`)
-    // brain.read is synchronous; the sessions want these URLs as plain strings.
+    // Its own machine's sessions need no token; another's carries that machine's agent credential.
     const query = (m: Machine) => {
       const name = `agent-${m.id.toLowerCase()}`
       return m.id === c.machine
-        ? ""
-        : `?token=${Effect.runSync(brain.read((db) => extensionToken(c.dir, name, generationOf(db, name))))}`
+        ? Effect.succeed("")
+        : Effect.map(
+            brain.read(generationRead, name),
+            (generation) => `?token=${extensionToken(c.dir, name, generation)}`,
+          )
     }
     // Where heavy work goes instead of the user's laptop: the other machines that take turns.
     const elsewhere = () => [
@@ -277,21 +303,22 @@ const layerSessions = Layer.unwrap(
       ),
     ]
     return Sessions.layer({
-      system: brain.read((db) => `${String(dialOf(db, "identity")) || IDENTITY}\n\n${skillsLine}`),
+      system: brain
+        .read(identityRead)
+        .pipe(Effect.map((identity) => `${identity || IDENTITY}\n\n${skillsLine}`)),
       cwd: c.cwd,
       delegateUrl: (m) => `${base(m)}/delegate`,
-      appsUrl: (m) => `${base(m)}/apps${query(m)}`,
+      appsUrl: (m) => Effect.map(query(m), (q) => `${base(m)}/apps${q}`),
+      worksOnly: [historyApp.name],
       stable: context.stable,
       delta: context.delta,
       settings: (m) =>
-        hookSettings(
-          `${base(m)}/hooks`,
-          m.guard ? [guardHook(m.guard, elsewhere())] : [],
-          query(m),
+        Effect.map(query(m), (q) =>
+          hookSettings(`${base(m)}/hooks`, m.guard ? [guardHook(m.guard, elsewhere())] : [], q),
         ),
-      folders: (t) => brain.read((db) => foldersOfThread(db, t)),
+      folders: (t) => brain.read(foldersRead, t),
       recover: !c.canary,
-      effort: brain.read((db) => String(dialOf(db, "effort.default"))),
+      effort: brain.read(effortRead),
       profile: modelProfiles.current,
       report: reports.read,
       waiting: (thread, resetAt, partway, key) =>
@@ -340,8 +367,7 @@ const layerGateway = Layer.unwrap(
       guard: yield* outboundGuard,
       sent: yield* outboundSent,
       connections: yield* extensionConnections,
-      spaceOf: async (thread) =>
-        await Effect.runPromise(brain.read((db) => placeOf(db, thread).space)),
+      spaceOf: async (thread) => await Effect.runPromise(brain.read(spaceOfThreadRead, thread)),
     })
   }),
 )
@@ -625,17 +651,18 @@ const layerHttpServer = Layer.unwrap(
 
 const layerNotify = Layer.unwrap(iphone.pipe(Effect.map((phone) => notifier(phone))))
 
+/** The space of the work that started a job's record, or null. */
+const ownedRead = defineRead("core/server/owned", (db, e: StoredEvent) => {
+  const owner = ownerOf(db, e)
+  return owner === null ? null : spaceOfWork(db, owner)
+})
+
 // A job's records go to the space of the work that started it.
-const layerTagger = Layer.effectDiscard(
-  Effect.forkScoped(
-    tagger(line, (db, e) => {
-      const owner = ownerOf(db, e)
-      return owner === null ? null : spaceOfWork(db, owner)
-    }),
-  ),
-)
+const layerTagger = Layer.effectDiscard(Effect.forkScoped(tagger(line, ownedRead)))
 
 const autonomy = { line, threadOf, openLine, openLines }
+// In every thread that loads this module, so triage's reads find them in the reader threads too.
+registerTriage(TRIAGE, autonomy)
 const layerMemory = Layer.unwrap(Profiles.pipe(Effect.map((p) => autonomyMemory(p.current))))
 const layerReports = Layer.unwrap(Profiles.pipe(Effect.map((p) => autonomyReports(p.current))))
 const layerTriage = Layer.unwrap(

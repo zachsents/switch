@@ -8,6 +8,8 @@ import { EventId, SpaceId } from "./ids.ts"
 import { defineEvent, on } from "./defs.ts"
 import type { Projection, StoredEvent } from "./defs.ts"
 import { MessageMoved } from "./messages.ts"
+import { defineRead } from "./reads.ts"
+import type { Read } from "./reads.ts"
 import { allSpaces, HOME, spaceAliases } from "./spaces.ts"
 import type { Space } from "./spaces.ts"
 
@@ -199,10 +201,69 @@ const record = (e: Pending, home: SpaceId) => ({
 const textOf = (line: (event: StoredEvent) => Line | null, row: EventRow) =>
   line(stored(row))?.text ?? ""
 
-// Everything the model sees besides the events being tagged, read when they're tagged.
-const context = (line: (event: StoredEvent) => Line | null, db: Database) => {
+/** What `context` reads about an event being tagged: where its conversation went, and its links. */
+interface Asked {
+  readonly seq: number
+  readonly time: number
+  readonly conversation: string | null
+  readonly links: readonly string[]
+}
+
+const askedOf = (e: Pending): Asked => ({
+  seq: e.event.seq,
+  time: e.event.time,
+  conversation:
+    e.line.conversation !== undefined && e.line.fast !== true ? e.line.conversation : null,
+  links: e.line.links ?? [],
+})
+
+/**
+ * What the model sees besides the events being tagged, as the brain holds it when they're tagged:
+ * the spaces, the names they had before, each space's latest events, and for each event asked about
+ * (by seq) the earlier ones in its conversation, and where its links went. Its words are the
+ * caller's to read (`line`), so `context` makes the text.
+ */
+const seenOf = (db: Database, asked: readonly Asked[]) => {
   const spaces = open(allSpaces(db))
-  const aliases = spaceAliases(db)
+  const latest = db.query<EventRow, [string, number]>(
+    "SELECT e.* FROM tags t JOIN events e ON e.seq = t.seq WHERE t.home = ? ORDER BY t.seq DESC LIMIT ?",
+  )
+  const earlier = db.query<EventRow & { home: SpaceId }, [string, number, number, number]>(
+    "SELECT e.*, t.home FROM tags t JOIN events e ON e.seq = t.seq WHERE t.conversation = ? AND e.time > ? AND t.seq < ? ORDER BY t.seq DESC LIMIT ?",
+  )
+  const linked = db.query<{ home: SpaceId }, [string]>(
+    "SELECT t.home FROM links l JOIN tags t ON t.seq = l.seq WHERE l.link = ? AND t.home != 'home' ORDER BY l.seq DESC LIMIT 1",
+  )
+  return {
+    spaces,
+    aliases: spaceAliases(db),
+    latest: new Map(spaces.map((sp) => [sp.id, latest.all(sp.id, LATEST).toReversed()])),
+    earlier: new Map(
+      asked.map((a) => [
+        a.seq,
+        a.conversation === null
+          ? []
+          : earlier.all(a.conversation, a.time - EARLIER_WITHIN, a.seq, EARLIER).toReversed(),
+      ]),
+    ),
+    linked: new Map(
+      asked.flatMap((a) =>
+        a.links.flatMap((l) => {
+          const hit = linked.get(l)
+          return hit ? [[l, hit.home] as const] : []
+        }),
+      ),
+    ),
+  }
+}
+
+type Seen = ReturnType<typeof seenOf>
+
+const seenRead = defineRead("brain/membership/seen", seenOf)
+
+// Everything the model sees besides the events being tagged, read when they're tagged.
+const context = (line: (event: StoredEvent) => Line | null, seen: Seen) => {
+  const { spaces, aliases } = seen
   const also = (s: (typeof spaces)[number]) => {
     const was = aliases.get(s.id)
     return was ? `, once called ${was.join(", ")}` : ""
@@ -216,36 +277,24 @@ const context = (line: (event: StoredEvent) => Line | null, db: Database) => {
     ...spaces.filter((s) => s.id !== HOME).map((s) => ({ value: s.id, description: describe(s) })),
     ...spaces.filter((s) => s.id === HOME).map((s) => ({ value: s.id, description: describe(s) })),
   ]
-  const latest = db.query<EventRow, [string, number]>(
-    "SELECT e.* FROM tags t JOIN events e ON e.seq = t.seq WHERE t.home = ? ORDER BY t.seq DESC LIMIT ?",
-  )
   const recent = spaces.flatMap((s) => {
-    const rows = latest.all(s.id, LATEST).toReversed()
+    const rows = seen.latest.get(s.id) ?? []
     return rows.length > 0
       ? [`- ${s.id}: ${rows.map((r) => clip(textOf(line, r), 140)).join(" | ")}`]
       : []
   })
-  const earlier = db.query<EventRow & { home: SpaceId }, [string, number, number, number]>(
-    "SELECT e.*, t.home FROM tags t JOIN events e ON e.seq = t.seq WHERE t.conversation = ? AND e.time > ? AND t.seq < ? ORDER BY t.seq DESC LIMIT ?",
-  )
-  const linked = db.query<{ home: SpaceId }, [string]>(
-    "SELECT t.home FROM links l JOIN tags t ON t.seq = l.seq WHERE l.link = ? AND t.home != 'home' ORDER BY l.seq DESC LIMIT 1",
-  )
   const about = (e: Pending) => {
     const parts: string[] = []
-    const c = e.line.conversation
-    if (c !== undefined && e.line.fast !== true) {
-      const rows = earlier.all(c, e.event.time - EARLIER_WITHIN, e.event.seq, EARLIER).toReversed()
-      // Where each went: a follow-up mostly goes where its conversation did.
-      if (rows.length > 0) {
-        parts.push(
-          `Earlier in the same conversation:\n${rows.map((r) => `- (in ${r.home}) ${clip(textOf(line, r), 240)}`).join("\n")}`,
-        )
-      }
+    const rows = seen.earlier.get(e.event.seq) ?? []
+    // Where each went: a follow-up mostly goes where its conversation did.
+    if (rows.length > 0) {
+      parts.push(
+        `Earlier in the same conversation:\n${rows.map((r) => `- (in ${r.home}) ${clip(textOf(line, r), 240)}`).join("\n")}`,
+      )
     }
     const hints = (e.line.links ?? []).flatMap((l) => {
-      const hit = linked.get(l)
-      return hit ? [`${l} is also on events in ${hit.home}`] : []
+      const hit = seen.linked.get(l)
+      return hit === undefined ? [] : [`${l} is also on events in ${hit}`]
     })
     if (hints.length > 0) {
       parts.push(`Links (hints, not answers): ${hints.join("; ")}`)
@@ -270,7 +319,7 @@ const homeOf = (
   Effect.gen(function* single() {
     const brain = yield* Brain
     const models = yield* Models
-    const c = given ?? (yield* brain.read((db) => context(line, db)))
+    const c = given ?? context(line, yield* brain.read(seenRead, [askedOf(e)]))
     const item = [...c.head, ...c.about(e), `Event (${when(e.event.time)}): ${e.line.text}`].join(
       "\n\n",
     )
@@ -296,19 +345,32 @@ const SURE = 0.8
 const NAMED = 0.7
 const CHAT = 8
 
-/** What routing a message reads: the spaces, their latest lines, and the message. */
-export const routing = (
-  line: (event: StoredEvent) => Line | null,
-  db: Database,
-  text: string,
-  time: number,
-) => {
-  const c = context(line, db)
+/** What routing reads of the brain: what `context` does, and each open space's latest chat. */
+const routedOf = (db: Database) => {
+  const seen = seenOf(db, [])
   const latest = db.query<{ source: string; text: string }, [string, number]>(
     "SELECT source, text FROM messages WHERE space = ? AND widget IS NULL ORDER BY seq DESC LIMIT ?",
   )
+  return {
+    seen,
+    chats: new Map<string, { source: string; text: string }[]>(
+      seen.spaces.map((sp) => [sp.id, latest.all(sp.id, CHAT).toReversed()]),
+    ),
+  }
+}
+
+const routedRead = defineRead("brain/membership/routed", routedOf)
+
+/** What routing a message reads: the spaces, their latest lines, and the message. */
+export const routing = (
+  line: (event: StoredEvent) => Line | null,
+  routed: ReturnType<typeof routedOf>,
+  text: string,
+  time: number,
+) => {
+  const c = context(line, routed.seen)
   const chats = c.choices.flatMap((s) => {
-    const rows = latest.all(s.value, CHAT).toReversed()
+    const rows = routed.chats.get(s.value) ?? []
     const said = rows.map(
       (r) =>
         `${r.source === "agent" ? "Switch" : "User"}: ${clip(r.text.replaceAll(/\s+/gu, " "), 160)}`,
@@ -329,12 +391,18 @@ export const routing = (
   }
 }
 
+/** The last event tagged. */
+const taggedRead = defineRead(
+  "brain/membership/tagged",
+  (db) => db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM tags").get()?.seq ?? 0,
+)
+
 /** The space a message the user sent with no space goes to: the model's pick when it's sure, else Home. */
 export const route = (line: (event: StoredEvent) => Line | null, text: string) =>
   Effect.gen(function* routingIt() {
     const brain = yield* Brain
     const models = yield* Models
-    const r = yield* brain.read((db) => routing(line, db, text, Date.now()))
+    const r = routing(line, yield* brain.read(routedRead), text, Date.now())
     const d = yield* models.decide(r.input, r.questions)
     const space = r.pick(d.answers.space?.choice)
     const sure = (d.answers.space?.probabilities[space] ?? 0) >= SURE
@@ -365,13 +433,15 @@ export const retagged = (
   },
 })
 
+const ownedByNone = defineRead("brain/membership/owned-by-none", (): SpaceId | null => null)
+
 /**
  * `owned`: the space of the work an event belongs to, when some work owns it (a job it started):
  * the event goes there without a model.
  */
 export const tagger = (
   line: (event: StoredEvent) => Line | null,
-  owned: (db: Database, event: StoredEvent) => SpaceId | null = () => null,
+  owned: Read<[event: StoredEvent], SpaceId | null> = ownedByNone,
 ) =>
   Effect.gen(function* tagging() {
     const brain = yield* Brain
@@ -380,7 +450,7 @@ export const tagger = (
     // A conversation's message the model couldn't place goes to Home, so triage still reads it.
     const one = (e: Pending) =>
       Effect.gen(function* single() {
-        const owner = yield* brain.read((db) => owned(db, e.event))
+        const owner = yield* brain.read(owned, e.event)
         if (owner !== null) {
           yield* brain.ingest([record(e, owner)])
           return
@@ -394,7 +464,7 @@ export const tagger = (
 
     const batch = (es: readonly Pending[]) =>
       Effect.gen(function* batched() {
-        const c = yield* brain.read((db) => context(line, db))
+        const c = context(line, yield* brain.read(seenRead, es.map(askedOf)))
         const listed = es.map((e, i) =>
           [`e${i} (${when(e.event.time)}): ${e.line.text}`, ...c.about(e)].join("\n"),
         )
@@ -438,10 +508,7 @@ export const tagger = (
         Effect.ignore({ log: "Warn", message: "Tagging failed" }),
       )
 
-    const after = yield* brain.read(
-      (db) =>
-        db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM tags").get()?.seq ?? 0,
-    )
+    const after = yield* brain.read(taggedRead)
     return yield* brain
       .changes(after)
       .pipe(Stream.groupedWithin(64, "50 millis"), Stream.runForEach(tagChunk))

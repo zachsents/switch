@@ -477,6 +477,45 @@ impl AskCard {
         .detach();
     }
 
+    /// What its keys can answer: an open one, nothing held, not one its owner completes.
+    fn answerable(&self) -> bool {
+        self.held.is_none() && self.item.is_open() && !self.item.owner_completes
+    }
+
+    /// ⌘↵: Approve, or a task's Done, as its key would.
+    pub fn key_approve(&mut self, cx: &mut Context<Self>) {
+        if !self.answerable() {
+            return;
+        }
+        match self.item.kind {
+            Kind::Approval => self.approve(cx),
+            Kind::Task if self.item.action.as_ref().is_none_or(|a| a.call.app != "connections") => {
+                let id = self.item.id.clone();
+                self.hold(Done::Close { id, status: CloseAs::Done }, "Done".into(), cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// ⌘⌫: Dismiss, as its key would.
+    pub fn key_dismiss(&mut self, cx: &mut Context<Self>) {
+        if self.held.is_none() && self.item.is_open() {
+            let id = self.item.id.clone();
+            self.hold(Done::Close { id, status: CloseAs::Dismissed }, "Dismissed".into(), cx);
+        }
+    }
+
+    /// ⌘1 to ⌘9: a question's option, by its place.
+    pub fn key_choose(&mut self, n: usize, cx: &mut Context<Self>) {
+        if !self.answerable() || self.item.kind != Kind::Question {
+            return;
+        }
+        if let Some(choice) = n.checked_sub(1).and_then(|i| self.item.options.get(i)).cloned() {
+            let id = self.item.id.clone();
+            self.hold(Done::Answer(ItemAnswer { id, choice: Some(choice.clone()), ..Default::default() }), choice, cx);
+        }
+    }
+
     fn approve(&mut self, cx: &mut Context<Self>) {
         // Exactly what's shown: each draft's field as it reads now.
         let left: HashMap<String, String> = self.drafts.iter().map(|(n, f)| (n.clone(), f.read(cx).get_value().to_string())).collect();
@@ -961,6 +1000,10 @@ impl Render for AskCard {
         let error = self.error.clone();
         let lower = if open { self.doing(&l, window, cx) } else { self.decided(&l, window, cx) };
         div()
+            // ⌘↵ and ⌘⌫ from any of its controls, as in its window.
+            .key_context("AskCard")
+            .on_action(cx.listener(|this, _: &crate::commands::Approve, _, cx| this.key_approve(cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::Dismiss, _, cx| this.key_dismiss(cx)))
             .flex()
             .flex_col()
             .gap(u(12.))

@@ -78,13 +78,13 @@ detail.
 |---|---|---|---|
 | `bun/auth.ts` | 4 | `auth.rs`, `net.rs` | done: the Keychain item the desktop keeps (asked with no prompt), else the desktop's file; mint on loopback, else pair; one refused is dropped and paired again as the socket dials (revoking closes the socket) |
 | `bun/dictation.ts` | 4 | `platform/dictation.rs` | done |
-| `bun/extension.ts` | 4 | `platform/extension.rs`, `platform/snapshot.rs`, `platform/notify.rs` | done: rmcp over the socket, the token in a header; a notification's click opens its space directly |
+| `bun/extension.ts` | 4 | `platform/extension.rs`, `platform/snapshot.rs`, `platform/notify.rs`, `base/src/notify.rs` | done: rmcp over the socket, the token in a header; a notification's click opens its space directly |
 | `bun/files.test.ts` | 4 |  | not ported: a test (no tests) |
 | `bun/files.ts` | 4 | `platform/files.rs`, `platform/quicklook.rs` | done |
 | `bun/frame.ts` | 4 | `platform/windows.rs` | done: frames on a display, at least 200 a side; the full-screen-video workaround is Electrobun's own and not needed |
 | `bun/index.ts` | 4 | `platform/lifecycle.rs`, `main.rs` | done |
 | `bun/local.ts` | 3 | `local.rs` | done |
-| `bun/menu.ts` | 3 | `menu.rs`, `native_menu.rs` | done |
+| `bun/menu.ts` | 3 | `menu.rs`, `base/src/native_menu.rs` | done |
 | `bun/mesh.ts` | 4 | `platform/mesh.rs` | done |
 | `bun/native.ts` | 4 | `platform/helpers.rs` | done |
 | `bun/oauth-relay.ts` | 4 | `platform/oauth.rs` | done (tiny_http loopback) |
@@ -136,7 +136,7 @@ detail.
 | `mainview/ui/ask-files.tsx` | 2 | `asks/files.rs` | done |
 | `mainview/ui/ask-in-chat.tsx` | 2 | `asks/chat.rs`, `chat.rs` | done: a closed ask's line is a key; an ask that closes or leaves the chat drops its card, so open again it's a fresh one, its closed line drawn or not |
 | `mainview/ui/ask-outcome.ts` | 2 | `items.rs` (`ending_of`, `detail_of`, `recipient_of`) | done |
-| `mainview/ui/ask-portal.tsx` | 2 | `asks/portal.rs`, `webview.rs` | done: none in a quiet copy (its page would act on the remote Mac with the credential); the live screen streams only while drawn (let go two seconds off screen), and goes with its card (closed, gone from the chat, its space left); the picture is a key; the controller lies over the whole window as a dialog, the page takes keys, wheel and pointer; Esc in the live screen is the remote Mac's (the page has the keys, as the desktop's frame does); the controller's own Esc, with the window's keys, closes it and nothing else (not the ask's window, not up a space), the keyboard back on the picture, as when it ends |
+| `mainview/ui/ask-portal.tsx` | 2 | `asks/portal.rs`, `base/src/webview.rs` | done: none in a quiet copy (its page would act on the remote Mac with the credential); the live screen streams only while drawn (let go two seconds off screen), and goes with its card (closed, gone from the chat, its space left); the picture is a key; the controller lies over the whole window as a dialog, the page takes keys, wheel and pointer; Esc in the live screen is the remote Mac's (the page has the keys, as the desktop's frame does); the controller's own Esc, with the window's keys, closes it and nothing else (not the ask's window, not up a space), the keyboard back on the picture, as when it ends |
 | `mainview/ui/ask-reply.tsx` | 2 | `asks/card.rs` | done: closed (or sent), the reply goes with its words and error, a fresh one when it opens again; opened, the field has the keys (its `autoFocus`); Reply says it's pressed |
 | `mainview/ui/ask-sealed.tsx` | 2 | `asks/card.rs`, `mutations.rs` (`answer_sealed`) | done: label and placeholder `sealed.use` as it is, else "Secret" |
 | `mainview/ui/attached.tsx` | 1 | `attached.rs` | done: a row of pictures and videos that scrolls sideways (count under it when it holds more than it shows), a lone picture, sound, 3D files, a file line that turns while it opens; a picture's or video's click opens it full screen (`viewer.rs`: zoom, pan, ←/→ through the message's); Open, Quick Look, the file menu (platform/files.rs). Its overlay scrollbar isn't drawn: the row scrolls by trackpad and wheel |
@@ -211,7 +211,7 @@ detail.
 | `mainview/ui/settings/account-completion.tsx` | 3 | `settings/providers.rs` (`completion`) | done |
 | `mainview/ui/settings/account-row.tsx` | 3 | `settings/providers.rs` (`account_row`) | done |
 | `mainview/ui/settings/accounts.ts` | 3 | `settings/accounts.rs` | done |
-| `mainview/ui/settings/color-field.tsx` | 3 | `color_panel.rs` | done |
+| `mainview/ui/settings/color-field.tsx` | 3 | `base/src/color_panel.rs` | done |
 | `mainview/ui/settings/devices.tsx` | 3 | `settings/devices.rs` | done |
 | `mainview/ui/settings/general.tsx` | 3 | `settings/general.rs` | done |
 | `mainview/ui/settings/notifications.tsx` | 3 | `settings/notifications.rs` | done |
@@ -371,7 +371,7 @@ detail.
 | TS file | Rust module | Status |
 |---|---|---|
 | `shared/commands.ts` (Command, SpaceMenu, MenuModel, spaceLink) | `commands.rs`, `spaces.rs`, `menu.rs` | done |
-| `bun/menu.ts` (the menu bar, a space's right-click menu) | `menu.rs`, `native_menu.rs` | done: an NSMenu at the pointer; About is AppKit's panel |
+| `bun/menu.ts` (the menu bar, a space's right-click menu) | `menu.rs`, `base/src/native_menu.rs` | done: an NSMenu at the pointer; About is AppKit's panel |
 | `ui/use-commands.ts` | `commands.rs` | done; ⌘D is passed on as `Do(Command::Dictate)` for dictation to answer |
 | `ui/use-shortcuts.ts` (SHORTCUTS, Escape) | `commands.rs`, `app.rs` | done; Escape goes up unless the palette, ⌘F's bar, the sheet or a rename has it |
 | `ui/use-menu.ts` | `menu.rs`, `spaces.rs`, `settings/mod.rs`, `links.rs` | done for the menu bar, right-click menus, Copy, Settings, an item's link (`OpenItem`); files, pictures, item and widget windows are the chat's, asks' and widgets'; typing's update hold is the platform's |
@@ -395,7 +395,7 @@ detail.
 | `settings/settings-window.tsx` | `settings/mod.rs` | done |
 | `settings/setting.tsx` | `kit.rs` (`setting`, `group`) | done |
 | `settings/general.tsx`, `bun/local.ts` | `settings/general.rs`, `local.rs` | done; the version and Update now read `settings::Updates` and send `UpdateNow` (the updater's) |
-| `settings/theme-section.tsx`, `settings/color-field.tsx` | `settings/theme.rs`, `color_panel.rs` | done: the system color panel |
+| `settings/theme-section.tsx`, `settings/color-field.tsx` | `settings/theme.rs`, `base/src/color_panel.rs` | done: the system color panel |
 | `settings/spaces.tsx` | `settings/spaces.rs` | done |
 | `settings/notifications.tsx` | `settings/notifications.rs` | done |
 | the first frame in its final layout | `net.rs` (`keep_snapshot`), `model.rs`, `theme.rs` | done: the last snapshot and the theme kept on disk |
@@ -477,7 +477,7 @@ On the server (the mini), as its user, with nothing else of the cutover needed f
    `tailscale serve --https=8446 off`, remove `~/.switch/updates-gpui`, `~/.switch/gpui-src` (a
    worktree of repo.git: `git -C ~/.switch/repo.git worktree remove`) and `~/.switch/gpui-target`.
 
-## Web content (`webview.rs`)
+## Web content (`base/src/webview.rs`)
 
 A page (an extension's MCP App, an agent's page, an ask's live view, a video or a sound) is a
 WKWebView laid over the window where its element is: a clip view the size of what clips the element
@@ -541,6 +541,21 @@ for the parent). `widgets/page.rs` answers the MCP Apps bridge.
   cancelled. Checked on the mini (`SWITCH_GPUI_PAGES=copy`): words selected in a sandboxed page
   land on the pasteboard.
 - Cost: three WebKit processes for the first page, about 69 MB (GPU 27, network 11, content 31).
+
+## Hot reloading
+
+`sh scripts/dev.sh` runs the app with hot reloading (UI SDK for gpui's `hot-reload`, on Subsecond,
+through `dx serve --hot-patch`): a debug build, quiet beside the live app, as "Switch Dev"
+(`Dioxus.toml`). A saved change to a render, or to the app code it calls, is patched into the
+running app in about 5 to 8 seconds (the app crate rebuilt and relinked), its state kept. A change
+to a type's layout, a dependency, `build.rs`, the kit or `base/` is rebuilt and relaunched.
+
+Each patch carries its own copy of every `static` and thread-local in the app crate, from its
+initial value, so what must outlast a patch lives in `base/` (crate `switch-gpui-base`), which a
+patch only calls into: the Objective-C classes (`webview`, `native_menu`, `color_panel`, the
+notification delegate) and the app's state, declared with `base::kept!` (a `static`) and
+`base::kept_local!` (a thread-local), read as before. A cache that refills when empty (a
+`LazyLock<Regex>`, a formatter) stays a plain `static`.
 
 ## Looking at it without a screen
 
@@ -628,6 +643,11 @@ launches. `cutover.rs`, `outbox.rs`; `scripts/cutover.sh` does the steps below.
   has `choose`/`choose_paths`, `type_of`, `size_of`, `blob_url`, `image_blob`. `Net` has
   `core_url` and `portal_url` (credential in the address, for web views), `watch(types)`, `get`,
   `post`, `http`, `request`, `fetch_url`. `SWITCH_GPUI_QUIET=1` sends nothing (for looking at the app on the mini).
+- A message being sent draws its files from their bytes here (`attached::sending`), as its line
+  will: a picture from the kept bytes, a video, sound or model from a link under its name
+  (`own.rs`). Each file sent from here stays linked under its blob for a day, so its line reads it
+  from this Mac, draws the decode its bubble had until its own is in, and keeps the bubble's player
+  or model: no empty box or reload as it lands.
 - Pictures: `Pictures::get` decodes at chat size (720 px); `Pictures::sized(hash, format, px)` at
   a drawn size; `Pictures::local(path, px)` for a chip. ImageIO decodes straight at that size (HEIC
   too); bounded (48 MB decoded, 16 MB fetched), textures freed as they go. On the mini after ten

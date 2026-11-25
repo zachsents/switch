@@ -27,6 +27,7 @@ import {
   allSpaces,
   Brain,
   cursorOf,
+  defineRead,
   EventId,
   MessageMoved,
   passed,
@@ -296,17 +297,39 @@ const rejected = <A, R>(dispatched: Effect.Effect<A, Rejected, R>) =>
 
 const decodeCreated = Schema.decodeUnknownOption(SpaceCreated.payload)
 
+/** What a take-in starts from: the new space as triage reads it, the parent's chat, and how far it got. */
+const startRead = defineRead(
+  "core/take-in/start",
+  (db, space: SpaceId, parent: SpaceId, key: string) => ({
+    subject: subjectOf(db, space, parent),
+    chat: chatIn(db, parent),
+    through: cursorOf(db, key) ?? 0,
+  }),
+)
+/** The spaces the event at `seq` mentions. */
+const mentionsRead = defineRead("core/take-in/mentions", (db, seq: number) =>
+  db
+    .query<{ space: SpaceId }, [number]>("SELECT space FROM mentions WHERE seq = ?")
+    .all(seq)
+    .map((m) => m.space),
+)
+/** An item. */
+const itemRead = defineRead("core/take-in/item", getItem)
+/** An expectation. */
+const expectationRead = defineRead("core/take-in/expectation", getExpectation)
+/** The parent's work, items, expectations and widgets. */
+const restRead = defineRead("core/take-in/rest", (db, parent: SpaceId, made: StoredEvent) => [
+  ...workIn(db, parent),
+  ...restIn(db, parent, made),
+])
+
 /** What `space`, just made under `parent` by `made`, takes in from it. */
 const takeIn = (space: SpaceId, parent: SpaceId, made: StoredEvent) =>
   Effect.gen(function* taking() {
     const brain = yield* Brain
     const models = yield* Models
     const key = `taken-in:${space}`
-    const { subject, chat, through } = yield* brain.read((db) => ({
-      subject: subjectOf(db, space, parent),
-      chat: chatIn(db, parent),
-      through: cursorOf(db, key) ?? 0,
-    }))
+    const { subject, chat, through } = yield* brain.read(startRead, space, parent, key)
     const moved = new Map<string, number>()
     const count = (kind: string) => {
       moved.set(kind, (moved.get(kind) ?? 0) + 1)
@@ -333,19 +356,14 @@ const takeIn = (space: SpaceId, parent: SpaceId, made: StoredEvent) =>
           ])
         } else if (h.kind === "message" && verdict.also.has(h.key)) {
           count("chat lines shown in both")
-          const mentions = yield* brain.read((db) =>
-            db
-              .query<{ space: SpaceId }, [number]>("SELECT space FROM mentions WHERE seq = ?")
-              .all(h.event.seq)
-              .map((m) => m.space),
-          )
+          const mentions = yield* brain.read(mentionsRead, h.event.seq)
           const all = [...new Set([...mentions, space])]
           yield* brain.ingest([retagged(h.event, h.line, parent, all, `${key}:also`)])
         } else if (isIn && (h.kind === "event" || h.kind === "work")) {
           count(h.kind === "work" ? "tasks" : "event lines")
           yield* brain.ingest([retagged(h.event, h.line, space, [], key)])
         } else if (isIn && h.kind === "item") {
-          const i = yield* brain.read((db) => getItem(db, h.id))
+          const i = yield* brain.read(itemRead, h.id)
           if (i?.status === "open") {
             count("open items")
             yield* rejected(
@@ -358,7 +376,7 @@ const takeIn = (space: SpaceId, parent: SpaceId, made: StoredEvent) =>
             )
           }
         } else if (isIn && h.kind === "expectation") {
-          const x = yield* brain.read((db) => getExpectation(db, h.id))
+          const x = yield* brain.read(expectationRead, h.id)
           if (x?.status === "open") {
             count("expectations")
             yield* rejected(
@@ -401,7 +419,7 @@ const takeIn = (space: SpaceId, parent: SpaceId, made: StoredEvent) =>
     }
 
     // Then work, items, expectations and widgets.
-    const rest = yield* brain.read((db) => [...workIn(db, parent), ...restIn(db, parent, made)])
+    const rest = yield* brain.read(restRead, parent, made)
     const batches = Array.from({ length: Math.ceil(rest.length / BATCH) }, (_, i) =>
       rest.slice(i * BATCH, (i + 1) * BATCH),
     )

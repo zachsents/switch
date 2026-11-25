@@ -156,12 +156,18 @@ impl Model {
                 let space = e.payload.get("space")?.as_str()?.to_string();
                 let text = e.payload.get("text")?.as_str()?.to_string();
                 // Read all or nothing, as the desktop decodes the view.
+                // Each file up already draws from here under its blob.
+                for f in e.files.iter().flatten() {
+                    if let Some(b) = &f.blob {
+                        crate::own::up(b, &f.id, &f.name);
+                    }
+                }
                 let reply_to: Vec<Reply> = e.view.as_ref().and_then(|v| v.get("replyTo")).and_then(crate::brain::replies_strict).unwrap_or_default();
                 Some(Pending {
                     id: e.id,
                     space,
                     text,
-                    files: e.files.unwrap_or_default().into_iter().filter(|f| f.blob.is_none()).map(|f| f.name).collect(),
+                    files: e.files.unwrap_or_default(),
                     failed: e.rejected.is_some(),
                     landed: None,
                     reply_to,

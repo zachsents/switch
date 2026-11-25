@@ -8,7 +8,7 @@
 // viewer itself: a page with no data in it, which the apps load with the item and their credential
 // in its fragment.
 import { getItem } from "@switch/autonomy"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Gateway } from "@switch/gateway"
 import { Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
@@ -39,6 +39,12 @@ export const portalPageRoute = HttpRouter.add("GET", "/portal", () =>
   ),
 )
 
+/** An open item's view, or null. */
+const portalRead = defineRead("core/portal/open", (db, id: string) => {
+  const i = getItem(db, id)
+  return i?.status === "open" ? (i.portal ?? null) : null
+})
+
 /** GET /portal/:item (a WebSocket): the item's view relayed; `?watch=1` only shows it. */
 export const portalRoute = HttpRouter.add("GET", "/portal/:item", (request) =>
   Effect.gen(function* relaying() {
@@ -47,10 +53,7 @@ export const portalRoute = HttpRouter.add("GET", "/portal/:item", (request) =>
     const url = new URL(request.url, "http://core")
     const id = decodeURIComponent(url.pathname.split("/")[2] ?? "")
     const scope = url.searchParams.get("watch") === "1" ? "watch" : "control"
-    const isOpen = brain.read((db) => {
-      const i = getItem(db, id)
-      return i?.status === "open" ? (i.portal ?? null) : null
-    })
+    const isOpen = brain.read(portalRead, id)
     const portal = yield* isOpen
     if (portal === null) {
       return HttpServerResponse.text("No such view", { status: 404 })

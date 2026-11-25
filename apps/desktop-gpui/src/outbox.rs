@@ -109,7 +109,9 @@ struct Outbox {
 /// What's kept before a core is known goes under "", then to the first core reached.
 const UNKNOWN: &str = "";
 
-static OUTBOX: OnceLock<Mutex<Outbox>> = OnceLock::new();
+base::kept! {
+    static OUTBOX: OnceLock<Mutex<Outbox>> = OnceLock::new();
+}
 
 pub fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.)

@@ -6,7 +6,7 @@
 // surprises, core docs.md), counted while it's open; only a newly open one wakes its space.
 import { openSurprises, resolveSurprise, troubledWith } from "@switch/autonomy"
 import { Sessions } from "@switch/agent"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import type { SpaceId, ThreadId } from "@switch/brain"
 import { Effect } from "effect"
 
@@ -50,10 +50,15 @@ export const pushFailed = (space: SpaceId, line: string, reason: string) => {
   }).pipe(Effect.ignore({ log: "Warn", message: "A failed push couldn't be raised" }))
 }
 
+/** The failed pushes still open. */
+const openPushRead = defineRead("core/trouble/open-push", (db) =>
+  openSurprises(db).filter((s) => s.id.startsWith(PUSH)),
+)
+
 /** A push got through: what kept them from it came right. */
 export const pushWorks = Effect.gen(function* resolving() {
   const brain = yield* Brain
-  const open = yield* brain.read((db) => openSurprises(db).filter((s) => s.id.startsWith(PUSH)))
+  const open = yield* brain.read(openPushRead)
   for (const s of open) {
     yield* resolveSurprise(s.id)
   }

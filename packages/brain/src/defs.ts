@@ -91,6 +91,9 @@ export interface Projection {
   readonly version: number
   readonly tables: readonly string[]
   readonly create: string
+  /** Indexes on its tables, each `CREATE INDEX IF NOT EXISTS`, made on every open: one added
+   * later reaches a brain without a rebuild. */
+  readonly indexes?: string
   readonly on: readonly On[]
   readonly snapshot: (db: Database) => unknown
   /** What it offers to queries. */

@@ -9,7 +9,7 @@ import path from "node:path"
 import { AccountAdded, allLogins, atHome, cliDirectory, discover, ownedHomes } from "@switch/agent"
 import type { Login } from "@switch/agent"
 import { InstalledAgent, installedAgent, registryDirectory } from "@switch/agent/acp-install"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { SUBSCRIPTIONS } from "@switch/models"
 import { Effect, Option, Schema } from "effect"
 
@@ -54,14 +54,19 @@ const fileLogins = (file: string, kind: "native" | "acp"): Login[] | null => {
   )
 }
 
+/** Whether no login was ever recorded: a brain's first start. */
+const firstRead = defineRead(
+  "core/logins/first",
+  (db) => db.query("SELECT 1 FROM events WHERE type = ? LIMIT 1").get(AccountAdded.type) === null,
+)
+/** The core's logins, as recorded. */
+const loginsRead = defineRead("core/logins/logins", allLogins)
+
 /** The core's logins, as hosts are made of them: what's from before recorded first. */
 export const loadLogins = (c: CoreConfigShape) =>
   Effect.gen(function* loading() {
     const brain = yield* Brain
-    const first = yield* brain.read(
-      (db) =>
-        db.query("SELECT 1 FROM events WHERE type = ? LIMIT 1").get(AccountAdded.type) === null,
-    )
+    const first = yield* brain.read(firstRead)
     const files = [
       {
         file: nativeFile(c.dir),
@@ -94,7 +99,7 @@ export const loadLogins = (c: CoreConfigShape) =>
         })),
       )
       .pipe(Effect.orDie)
-    const recorded = yield* brain.read(allLogins)
+    const recorded = yield* brain.read(loginsRead)
     for (const f of files) {
       if (f.found === null) {
         yield* Effect.logWarning(`${f.file} can't be read; kept`)

@@ -8,7 +8,8 @@
     "./memory-commands": "./src/memory-commands.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
   },
   "dependencies": {
     "@switch/agent": "workspace:*",

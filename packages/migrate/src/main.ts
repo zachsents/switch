@@ -21,7 +21,7 @@ import { Effect, Layer } from "effect"
 
 import { serveLayer } from "./serve.ts"
 import { exportMemories, importMemories } from "./transfer.ts"
-import { spentOn, subscriptionModels } from "./subscription.ts"
+import { spentRead, subscriptionModels } from "./subscription.ts"
 
 import { distill } from "./distill.ts"
 import { inventory, table } from "./inventory.ts"
@@ -64,7 +64,7 @@ const programs: Record<Command, () => Program> = {
   run: () =>
     Effect.gen(function* running() {
       const from = flag("from")
-      const r = yield* run(from === undefined ? undefined : Number(from))
+      const r = yield* run(brainPath ?? "", from === undefined ? undefined : Number(from))
       const rows = [...r.counts.in.entries()].toSorted((a, b) => b[1] - a[1])
       yield* print("| Switchboard | In | Switch | Out |\n| --- | ---: | --- | ---: |")
       for (const [key, n] of rows) {
@@ -114,7 +114,7 @@ const programs: Record<Command, () => Program> = {
         !args.includes("--no-cores"),
       )
       const brainNow = yield* Brain
-      const spent = yield* brainNow.read((db) => spentOn(db, ledger))
+      const spent = yield* brainNow.read(spentRead, ledger)
       yield* print(
         `${r.taken} taken: ${r.kept} kept, ${r.merged} merged, ${r.skipped} skipped; ${spent.calls} calls on ledger ${ledger}, $${spent.usd.toFixed(2)} of $${budget}, ${r.errors.length} errors`,
       )

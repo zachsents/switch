@@ -11,7 +11,7 @@ import { CoreConfig } from "@switch/core"
 import { Models, ModelError } from "@switch/models"
 import type { ModelsShape } from "@switch/models"
 import type { Database } from "bun:sqlite"
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { Effect, Layer, Ref } from "effect"
 
 import { MigrateSpent } from "./events.ts"
@@ -73,13 +73,17 @@ export const spentOn = (db: Database, ledger: string): Spend =>
     )
     .get(MigrateSpent.type, ledger) ?? { calls: 0, usd: 0, errors: 0 }
 
+export const spentRead = defineRead("migrate/subscription/spent", (db, ledger: string) =>
+  spentOn(db, ledger),
+)
+
 /** `budgetUsd` caps the ledger's total, this run's calls and every earlier run's together. */
 export const subscriptionModels = (model: string, budgetUsd: number, ledger: string) =>
   Layer.effect(
     Models,
     Effect.gen(function* making() {
       const brain = yield* Brain
-      const spend = yield* Ref.make(yield* brain.read((db) => spentOn(db, ledger)))
+      const spend = yield* Ref.make(yield* brain.read(spentRead, ledger))
       const config = yield* CoreConfig
       const machine = localMachine(mkdtempSync(path.join(tmpdir(), "switch-distill-")))
       const logins = config.logins.length > 0 ? config.logins : discover()

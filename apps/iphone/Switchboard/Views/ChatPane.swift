@@ -242,14 +242,6 @@ struct ChatPane: View {
         Attached(attachments: l.line.attachments, right: !l.line.agent).opacity(held ? 1 : 0.6).padding(.top, l.line.text.isEmpty ? 0 : l.line.attachments.count(where: { $0.kind == .image }) > 1 ? 12 : 4)
       }
     }
-    if let p = l.pending, !p.going.isEmpty {
-      Text(p.going.joined(separator: ", "))
-        .font(SIS.text(12))
-        .foregroundStyle(SIS.ink3)
-        .lineLimit(1)
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.top, 4)
-    }
     if let p = l.pending, p.failed {
       // Back in the box, to change or send again.
       Button {

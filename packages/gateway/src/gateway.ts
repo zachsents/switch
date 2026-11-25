@@ -21,6 +21,7 @@ import {
   Blobs,
   Brain,
   bypassOf,
+  defineRead,
   EventId,
   eventFromJsonSchema,
   Fingerprints,
@@ -307,6 +308,27 @@ const decodeItemApp = Schema.decodeUnknownOption(
       completion: Schema.optionalKey(Schema.Literal("owner")),
     }),
   ),
+)
+
+// The gateway's reads of the brain, by name (reads.ts), so they run in a reader thread.
+/** An app's open item, decoded, or null: none open, or not one of an app's. */
+const itemAppRead = defineRead("gateway/gateway/item-app", (db, id: string) =>
+  Option.getOrNull(decodeItemApp(itemApp(db, id)?.data ?? "")),
+)
+const failingRead = defineRead("gateway/gateway/failing", (db) => latestFailing(db))
+const headRead = defineRead(
+  "gateway/gateway/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+const spaceForRead = defineRead("gateway/gateway/space-for", (db, given: string | undefined) =>
+  spaceFor(db, given, null),
+)
+const placementsRead = defineRead("gateway/gateway/placements", (db) => placements(db))
+const placedInputRead = defineRead(
+  "gateway/gateway/placed-input",
+  (db, app: string, name: string, placement: string | undefined) =>
+    placedInput(db, app, name, placement),
 )
 
 /** A model call's answer, or its ModelError as an MCP error. */
@@ -688,7 +710,7 @@ export class Gateway extends Context.Service<
 
         // What's failing, by part and app, as last recorded: recorded again only once it works.
         const failingNow = new Map<string, string>(
-          (yield* brain.read(latestFailing)).flatMap((f) =>
+          (yield* brain.read(failingRead)).flatMap((f) =>
             f.failing === null ? [] : [[`${f.part}\n${f.extension}`, f.failing] as const],
           ),
         )
@@ -888,11 +910,7 @@ export class Gateway extends Context.Service<
               // what the relay it replaces had sent: `relayed`, where that relay got to, never past
               // what it sent, so following again while one is still catching up loses nothing.
               const following = new Set<string>()
-              let relayed = yield* brain.read(
-                (db) =>
-                  db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()
-                    ?.seq ?? 0,
-              )
+              let relayed = yield* brain.read(headRead)
               const relaying = yield* FiberMap.makeRuntime<never, "follow">()
               const relay = (from: number, before: readonly string[], through: number) =>
                 brain.changes(from).pipe(
@@ -966,14 +984,12 @@ export class Gateway extends Context.Service<
               client.setRequestHandler("asks/open", asksOpen, async (p) => {
                 const { space, ...ask } = p.ask
                 const id = p.id ?? `${plug.name}-${crypto.randomUUID().slice(0, 8)}`
-                const open = await Effect.runPromise(
-                  brain.read((db) => Option.getOrNull(decodeItemApp(itemApp(db, id)?.data ?? ""))),
-                )
+                const open = await Effect.runPromise(brain.read(itemAppRead, id))
                 if (p.id !== undefined && open?.app !== plug.name) {
                   throw new ProtocolError(ProtocolErrorCode.InvalidParams, `No open item ${id}`)
                 }
                 // The space it names, else Home: an extension's call carries no asking work.
-                const there = await Effect.runPromise(brain.read((db) => spaceFor(db, space, null)))
+                const there = await Effect.runPromise(brain.read(spaceForRead, space))
                 // A passkey approval's one link: its ceremony's page, and only its own extension closes it.
                 const payload = {
                   ...ask,
@@ -1005,11 +1021,7 @@ export class Gateway extends Context.Service<
                 return { id }
               })
               client.setRequestHandler("asks/close", asksClose, async (p) => {
-                const open = await Effect.runPromise(
-                  brain.read((db) =>
-                    Option.getOrNull(decodeItemApp(itemApp(db, p.id)?.data ?? "")),
-                  ),
-                )
+                const open = await Effect.runPromise(brain.read(itemAppRead, p.id))
                 if (open?.app === plug.name) {
                   await Effect.runPromise(
                     open.completion === "owner" && p.status === "done"
@@ -1330,11 +1342,24 @@ const redacted = async (result: CallToolResult): Promise<CallToolResult> => {
   }
 }
 
-/** `look`: only the tools that look (read-only), for a session that only looks things up. */
-const agentServer = (gateway: typeof Gateway.Service, thread: string | null, look: boolean) => {
+/**
+ * `look`: only the tools that look (read-only), for a session that only looks things up; none of
+ * the apps `without` names.
+ */
+const agentServer = (
+  gateway: typeof Gateway.Service,
+  thread: string | null,
+  look: boolean,
+  without: ReadonlySet<string>,
+) => {
   const all = gateway
     .tools()
-    .filter((l) => !appOnly(l.tool) && (!look || l.tool.annotations?.readOnlyHint === true))
+    .filter(
+      (l) =>
+        !appOnly(l.tool) &&
+        !without.has(l.app) &&
+        (!look || l.tool.annotations?.readOnlyHint === true),
+    )
     .map(exposed)
   const callable = new Set(all.map((t) => t.name))
   // What would speak in the user's name is the guard's to let through, hold or send back. What a
@@ -1458,7 +1483,7 @@ export const widgetRouter = ({
         ...(w.size && { size: w.size }),
         ...(w.settings && { settings: w.settings }),
       }))
-      const placed = await Effect.runPromise(brain.read(placements))
+      const placed = await Effect.runPromise(brain.read(placementsRead))
       const views = await Promise.all(
         placed
           .filter((p) => p.app === brainName)
@@ -1485,7 +1510,7 @@ export const widgetRouter = ({
     const given = decodeBody(url.searchParams.get("input") ?? "").pipe(Option.getOrUndefined)
     const placement = url.searchParams.get("placement") ?? undefined
     const input =
-      given ?? (await Effect.runPromise(brain.read((db) => placedInput(db, app, named, placement))))
+      given ?? (await Effect.runPromise(brain.read(placedInputRead, app, named, placement)))
     const messages = await gateway.view(app, named, input).catch((): null => null)
     return messages === null
       ? new Response("No such widget", { status: 404, headers })
@@ -1496,14 +1521,15 @@ export const widgetRouter = ({
 /**
  * Agent sessions attach to this route: `{ "type": "http", "url": "<url>?thread=<thread>" }` in
  * Claude Code's MCP config, the thread its calls are held for; `&look=1` lists only the tools that
- * look.
+ * look, and each `&without=<app>` none of that app's.
  */
 export const agentRoute = Gateway.pipe(
   Effect.map((gateway) => async (request: Request) => {
     const url = new URL(request.url)
     const thread = url.searchParams.get("thread")
     const look = url.searchParams.get("look") === "1"
-    const handler = createMcpHandler(() => agentServer(gateway, thread, look), {
+    const without = new Set(url.searchParams.getAll("without"))
+    const handler = createMcpHandler(() => agentServer(gateway, thread, look, without), {
       legacy: "stateless",
     })
     return await handler.fetch(request)

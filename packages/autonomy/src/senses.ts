@@ -14,7 +14,7 @@
 //   gateway's `extension.failing`).
 // Any other stream follows the world or the user, and its silence is no surprise.
 import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Effect } from "effect"
 
 import { openSurprises, resolve, SENSED, troubled } from "./surprise.ts"
@@ -473,6 +473,9 @@ const gatewayTrouble = (
   }
 }
 
+const lookRead = defineRead("autonomy/senses/look", (db, now: number) => lookAt(db, now))
+const openRead = defineRead("autonomy/senses/open", (db) => openSurprises(db))
+
 /** Everything in trouble now, read in one go. */
 const lookAt = (db: Database, now: number): Found => {
   const found: Found = { raise: [], hold: [] }
@@ -497,12 +500,12 @@ export const sensesWatch = (wake: Waker) =>
   Effect.gen(function* watching() {
     const brain = yield* Brain
     const look = Effect.gen(function* looking() {
-      const found = yield* brain.read((db) => lookAt(db, Date.now()))
+      const found = yield* brain.read(lookRead, Date.now())
       for (const s of found.raise) {
         yield* troubled(s, wake)
       }
       const holds = new Set([...found.hold, ...found.raise.map((s) => s.id)])
-      for (const s of yield* brain.read((db) => openSurprises(db))) {
+      for (const s of yield* brain.read(openRead)) {
         if (SENSED.some((p) => s.id.startsWith(p)) && !holds.has(s.id)) {
           yield* resolve(s.id)
         }

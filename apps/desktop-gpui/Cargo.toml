@@ -15,9 +15,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 csscolorparser = "0.7"
 dirs = "6"
 env_logger = "0.11"
-futures = "0.3"
+futures.workspace = true
 hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+gpui.workspace = true
 image = { version = "0.25.1", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 indexmap = "2"
 # test-support: the window's picture drawn by the app (`Window::render_to_image`), which the desktop
@@ -25,21 +25,21 @@ indexmap = "2"
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4", features = ["font-kit", "test-support"] }
 glam = "0.34"
 gltf = { version = "1.4", default-features = false, features = ["import", "utils"] }
-log = "0.4"
+log.workspace = true
 lru = "0.16"
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSAppearance", "NSView", "NSMenu", "NSMenuItem", "NSEvent", "NSApplication", "NSColor", "NSColorPanel", "NSColorSpace", "NSPanel", "NSWindow", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSButton", "NSControl", "NSScreen", "block2", "objc2-core-foundation", "NSAccessibility", "NSPasteboard", "NSPasteboardItem", "libc"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSKeyValueCoding", "NSValue", "NSObject", "NSURL", "NSURLRequest", "NSError", "NSArray", "NSUserDefaults", "NSDate", "NSDateFormatter", "NSFormatter", "NSLocale", "NSNumberFormatter", "NSData"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKUserScript", "WKNavigation", "WKScriptMessage", "WKScriptMessageHandler", "WKFrameInfo", "WKNavigationDelegate", "WKNavigationAction", "WKUIDelegate", "WKSecurityOrigin", "WKContentRuleList", "WKContentRuleListStore", "WKWebsiteDataStore", "WKPreferences", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-web-kit.workspace = true
 rand = "0.9"
 # Platform (src/platform): notifications, idle time, the extension's MCP, sign-in's loopback, files.
-block2 = "0.6"
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger"] }
-objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }
+block2.workspace = true
+objc2-user-notifications.workspace = true
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType", "UTCoreTypes"] }
 objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData", "CFDictionary", "CFNumber", "CFString", "CFCGTypes"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGColor"] }
-objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
+objc2-core-graphics.workspace = true
+objc2-quartz-core.workspace = true
 percent-encoding = "2"
 qrcode = { version = "0.14", default-features = false }
 rmcp = { version = "3", default-features = false, features = ["server"] }
@@ -49,7 +49,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVVideoSettings", "objc2-core-foundation", "objc2-core-media", "objc2-core-video"] }
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMBase", "CMTime"] }
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-raw-window-handle = "0.6"
+raw-window-handle.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # Math (src/math.rs): RaTeX lays TeX out as KaTeX does and outlines its glyphs into SVG, its KaTeX
 # fonts built in.
@@ -74,7 +74,7 @@ rusqlite = { version = "0.37", features = ["bundled", "collation"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "stream"] }
 security-framework = "3"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json.workspace = true
 quick-xml = "0.41"
 stl_io = "0.11"
 tobj = "4"
@@ -83,8 +83,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 # wss cores: rustls, with this Mac's trusted roots.
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-ui-sdk = { git = "https://github.com/zachsents/ui-sdk-gpui", tag = "v0.3.0" }
-url = "2"
+base = { path = "base", package = "switch-gpui-base" }
+ui-sdk = { git = "https://github.com/zachsents/ui-sdk-gpui", tag = "v0.5.0" }
+url.workspace = true
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1"
@@ -94,6 +95,7 @@ scraper = "0.24"
 ego-tree = "0.10"
 wgpu = { version = "30", default-features = false, features = ["metal", "wgsl", "std", "parking_lot"] }
 global-hotkey = "0.10"
+nucleo-matcher = "0.3.1"
 
 [build-dependencies]
 cc = "1"
@@ -101,10 +103,30 @@ cc = "1"
 [features]
 # Saves the window's frames as pictures ($SWITCH_GPUI_SHOT), for looking at the app where the screen
 # can't be captured.
-shot = []
+shot = ["base/shot"]
+# Hot reloading (UI SDK for gpui's), which `sh scripts/dev.sh` runs the app with; debug builds only.
+hot-reload = ["ui-sdk/hot-reload"]
 
 # The app is a crate of its own, outside the TypeScript workspace.
 [workspace]
+members = ["base"]
+
+# What the app and its base (base/) both take, at one version.
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSAppearance", "NSView", "NSMenu", "NSMenuItem", "NSEvent", "NSApplication", "NSColor", "NSColorPanel", "NSColorSpace", "NSPanel", "NSWindow", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSButton", "NSControl", "NSScreen", "block2", "objc2-core-foundation", "NSAccessibility", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSSharingService", "libc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSKeyValueCoding", "NSValue", "NSObject", "NSURL", "NSURLRequest", "NSError", "NSArray", "NSUserDefaults", "NSDate", "NSDateFormatter", "NSFormatter", "NSLocale", "NSNumberFormatter", "NSData", "NSDictionary"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKUserScript", "WKNavigation", "WKScriptMessage", "WKScriptMessageHandler", "WKFrameInfo", "WKNavigationDelegate", "WKNavigationAction", "WKUIDelegate", "WKSecurityOrigin", "WKContentRuleList", "WKContentRuleListStore", "WKWebsiteDataStore", "WKPreferences", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger"] }
+block2 = "0.6"
+futures = "0.3"
+raw-window-handle = "0.6"
+serde_json = { version = "1", features = ["preserve_order"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGColor"] }
+url = "2"
+log = "0.4"
 
 # Zed's dev profile (ui-sdk-gpui's README): gpui's layout engine and proc macros
 # are too slow unoptimized.

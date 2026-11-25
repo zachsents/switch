@@ -2,7 +2,7 @@
 // spaces it bears on (global first), and the rules among the memories that match what it decides
 // about which those cores don't already carry. Criteria stay in code; these say which way they go.
 import type { Database } from "bun:sqlite"
-import { SpaceId } from "@switch/brain"
+import { defineRead, SpaceId } from "@switch/brain"
 import { Layer } from "effect"
 
 import { RulesAbout } from "./bypass.ts"
@@ -36,10 +36,11 @@ export const rulesAt = (db: Database, spaces: readonly Scope[], about: string, k
 
 /** The rules among the memories that bear on a bypass's reason, a line each, for its judge. */
 export const rulesAboutLayer = Layer.succeed(RulesAbout, {
-  about: (db, space, text) =>
+  about: defineRead("autonomy/rules/about", (db, space: string, text: string) =>
     rulesFor(db, SpaceId.make(space), text, 6)
       .map((r) => `- ${r.text}`)
       .join("\n"),
+  ),
 })
 
 /**
@@ -137,12 +138,14 @@ export const ruleOf = (m: {
   wakes: filterOf(m.body),
 })
 
+// The rules alone, a range of the `memories_name` index (`wake-rule.` is the first name past every
+// `wake-rule-…`): reading every live memory's row to find them was ~1,500 pages a call, 7 to 55 s
+// each once a deploy's or backup's read of a brain-sized file had pushed them out of the disk cache.
+export const LIVE_RULES =
+  "SELECT name, description, body, scope FROM memories WHERE status = 'live' AND name >= 'wake-rule-' AND name < 'wake-rule.' ORDER BY written_at"
+
 const liveRules = (db: Database) =>
-  db
-    .query<{ name: string; description: string; body: string; scope: string }, []>(
-      "SELECT name, description, body, scope FROM memories WHERE status = 'live' AND name LIKE 'wake-rule-%' ORDER BY written_at",
-    )
-    .all()
+  db.query<{ name: string; description: string; body: string; scope: string }, []>(LIVE_RULES).all()
 
 /**
  * A resource alarm's `Alarm: {…}` line: what of a machine's vitals it reads (`on`, a field of the

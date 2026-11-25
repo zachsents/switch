@@ -8,7 +8,7 @@
 #   ship.sh watch <sha> <prev>       N minutes of health after a swap, then it's proven
 #   ship.sh rollback <sha> <prev>    puts <prev> back if <sha> is still live
 #   ship.sh swap <sha> <label> [pause]  under brain.lock: turns paused, core stopped, brain backed
-#                                    up, <sha> live
+#                                    up (compressed, never a clone), <sha> live
 #   ship.sh settle                   under landings.lock: the landings the live release has dropped
 #   ship.sh compress                 deploy backups compressed, under tidy.lock
 #   ship.sh tidy                     after a deploy: backups compacted, old ones and old releases gone
@@ -57,6 +57,20 @@ say() { echo "[ship $(date +%H:%M:%S)] $*"; }
 # lanes after a deploy at background. Not the canary: it's timed, and throttled behind a copy it
 # missed its 30 s and failed a good release. Children inherit either.
 behind() { /usr/sbin/taskpolicy -c utility "$@"; }
+# A whole file streamed past the file cache (F_NOCACHE): `uncached in <file>` to stdout, `uncached
+# out <file>` from stdin. A clone or copy of the brain is a file of its own in the cache, so reading
+# one of brain size through it (a backup's compress, its test, a copy) fills memory with a second
+# brain and pushes the live one's pages out, right as a new core warms after a swap: the core's next
+# writes then read them back from a disk the copy saturates, and stalled it for seconds (84 s once).
+# A pipeline of it runs under pipefail, so a reader cut short fails the step, not a short backup.
+uncached() {
+  perl -e 'my ($d, $p) = @ARGV; open(my $f, $d eq "in" ? "<" : ">", $p) or die "$p: $!\n";
+    fcntl($f, 48, 1) or die "F_NOCACHE $p: $!\n"; binmode $f; binmode STDIN; binmode STDOUT;
+    my ($i, $o) = $d eq "in" ? ($f, \*STDOUT) : (\*STDIN, $f);
+    while (1) { my $n = sysread($i, my $b, 1 << 20); defined $n or die "read $p: $!\n"; last if !$n;
+      for (my $at = 0; $at < $n;) { my $w = syswrite($o, $b, $n - $at, $at); defined $w or die "write $p: $!\n"; $at += $w } }
+    close($f) or die "close $p: $!\n";' "$@"
+}
 now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
 since() { perl -e "printf '%.1f', $(now) - $1"; }
 
@@ -142,11 +156,11 @@ deploy_backups() {
   ls -1 "$S/backups" 2>/dev/null | sort -r | grep -E -- '-([0-9a-f]{40}|rollback-from-[0-9a-f]{40})\.db(\.zst)?$' || true
 }
 
-# Every deploy backup compressed, the swap's own as soon as the swap is done: a clone left whole
-# comes to hold every page the brain (and the new build's prepare) changes after it.
-# A backup is the brain at rest, checkpointed (the swap's), so it's compressed as it is, straight
-# from the file: no compacted copy beside it, and only its .zst is written. The .zst is tested
-# before the clone goes.
+# Every deploy backup compressed: the swap writes its own as a .zst, so what's left whole is one an
+# older release made, a clone holding every page the brain changed after it.
+# A backup is the brain at rest, checkpointed, so it's compressed as it is, straight from the file:
+# no compacted copy beside it, and only its .zst is written. The .zst is tested before the whole
+# one goes. Both pass the file cache by (uncached): the live core runs beside it.
 compress() {
   # What a run cut short left (a compacted copy, a .zst half written).
   rm -f "$S/backups"/.*.vacuum "$S/backups"/.*.vacuum-journal "$S/backups"/.*.zst.part
@@ -156,7 +170,14 @@ compress() {
     if [ -s "$src-wal" ]; then
       sqlite3 -cmd ".timeout 10000" "$src" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null || continue
     fi
-    if zstd -q -T0 -10 "$src" -o "$part" && zstd -q -t "$part" && mv "$part" "$src.zst"; then
+    # Its head (the last event's seq) beside it, <b>.head: backup.sh's manifest takes it from there,
+    # never decompressing the brain to read it.
+    sqlite3 -readonly "file:$src?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;" >"$src.head" 2>/dev/null ||
+      rm -f "$src.head"
+    if (
+      set -o pipefail
+      uncached in "$src" | zstd -q -T0 -10 -c | uncached out "$part" && uncached in "$part" | zstd -q -t
+    ) && mv "$part" "$src.zst"; then
       rm -f "$src" "$src-shm" "$src-wal"
     fi
     rm -f "$part"
@@ -175,7 +196,7 @@ tidy() {
     [ "$kept" -lt 3 ] && keep=1
     if [ "$day" -ge "$(date -v-6d +%Y%m%d)" ] && ! echo "$days" | grep -q "$day"; then keep=1; days="$days $day"; fi
     kept=$((kept + 1))
-    [ -n "$keep" ] || rm -f "$S/backups/$b" "$S/backups/$b-shm" "$S/backups/$b-wal"
+    [ -n "$keep" ] || rm -f "$S/backups/$b" "$S/backups/$b-shm" "$S/backups/$b-wal" "$S/backups/${b%.zst}.head"
   done
   live=$(basename "$(readlink "$S/current")")
   prev=$(cat "$S/previous" 2>/dev/null || true)
@@ -224,9 +245,19 @@ swap() {
   stores > "$S/releases/$to/stores-before"
   if [ -f "$S/brain.db" ]; then
     # Waits out another process's moment on the brain; without it, a busy checkpoint is silent
-    # and the clone below misses what was still in the WAL.
+    # and the backup below misses what was still in the WAL.
     sqlite3 -cmd ".timeout 10000" "$S/brain.db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
-    cp -c "$S/brain.db" "$S/backups/$(date +%Y%m%d-%H%M%S)-$label.db"
+    # The brain at rest kept compressed, streamed from the file while no core has it (about 5 s),
+    # never as an APFS clone: the first write into a file while a clone of it is alive copies its
+    # whole extent map, holding every read and write of the file meanwhile (2-3 s for a brain
+    # rewritten in place for months), and that write was the new core's first checkpoint, the
+    # core's thread waiting on its next read. Its head (the last event's seq) beside it, <b>.head,
+    # for backup.sh's manifest.
+    b=$S/backups/$(date +%Y%m%d-%H%M%S)-$label.db
+    sqlite3 -readonly "file:$S/brain.db?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;" >"$b.head" 2>/dev/null ||
+      rm -f "$b.head"
+    (set -o pipefail; uncached in "$S/brain.db" | zstd -q -T0 -6 -c | uncached out "$b.zst.part") && mv "$b.zst.part" "$b.zst" ||
+      { rm -f "$b.zst.part" "$b.head"; say "FAILED: the brain's backup before $to"; exit 1; }
   fi
   install_bundle "$to"
   # The brain brought up to this build (schema, indexes, projections) before the core starts, so it
@@ -745,13 +776,11 @@ PLIST
   fi
   say "swapped in $(perl -e "printf '%.1f', $td - $tw") s; live core served $(since "$td") s after start"
   say "DEPLOYED $sha in $(since "$t0") s"
-  # The swap's backup compressed now, its clone gone, before it comes to hold what the live brain
-  # changes.
-  lockf -t 900 "$S/tidy.lock" /usr/sbin/taskpolicy -c utility sh "$rel/ship.sh" compress ||
-    say "the swap's backup not compressed: tidy tries again"
+  # The swap's backup tested where it landed, past the file cache like its writing.
+  b=$(deploy_backups | head -1)
+  (set -o pipefail; uncached in "$S/backups/$b" | zstd -q -t) 2>/dev/null || say "the swap's backup $b is damaged"
   # Every store to the backup disk, with the brain as it was before this build's migration: the
   # core runs it (backup.sh, which takes the backup's .zst), and tells the agent if it fails.
-  b=$(deploy_backups | head -1)
   curl -sf -m 15 --retry 4 --retry-all-errors --retry-delay 5 -X POST "http://127.0.0.1:$PORT/backup?label=$sha&brain=$S/backups/${b%.zst}" >/dev/null ||
     say "backup: the core didn't take it"
   lockf -k "$S/landings.lock" sh "$rel/ship.sh" settle

@@ -6,8 +6,9 @@
 //! stays past the bound (a row of ten square pictures on a Retina screen is 58 MB) rather than
 //! each decode putting out one still drawn, which shows its empty box and decodes again, putting
 //! out the next. The fetched bytes are kept in another, so a picture scrolled back to decodes
-//! again without the network. Views that draw them observe this entity, so a picture shows as it
-//! comes.
+//! again without the network. A blob sent from this Mac is read from its file here (`own.rs`), and
+//! draws as that file did while it was being sent until its own decode is in. Views that draw them
+//! observe this entity, so a picture shows as it comes.
 // The typed API the views use; parts not yet drawn are still the API.
 #![allow(dead_code)]
 
@@ -301,12 +302,21 @@ impl Pictures {
     fn want(from: From, hint: Option<ImageFormat>, px: u32, cx: &mut App) -> Option<ImageSource> {
         let key = (from.clone(), bucket(px));
         let this = Self::entity(cx);
+        // A blob sent from here draws as its kept file did while it was sent, until its own is in.
+        let sent = match &from {
+            From::Blob(hash) => crate::own::sent_as(hash).map(|id| (From::File(crate::outbox::file_path(&id)), key.1)),
+            From::File(_) => None,
+        };
         let (hit, start) = this.update(cx, |p, _| {
             if let Some((s, drawn)) = p.decoded.get_mut(&key) {
                 *drawn = Instant::now();
                 return (Some(s.source()), false);
             }
-            (None, !p.loading.contains(&key) && !p.failed.contains(&from))
+            let was = sent.and_then(|k| p.decoded.get_mut(&k)).map(|(s, drawn)| {
+                *drawn = Instant::now();
+                s.source()
+            });
+            (was, !p.loading.contains(&key) && !p.failed.contains(&from))
         });
         if start {
             this.update(cx, |p, cx| p.load(key, hint, cx));
@@ -327,10 +337,15 @@ impl Pictures {
             return;
         }
         let job: gpui::Task<Option<Vec<u8>>> = match &from {
-            From::Blob(hash) => {
-                let job = cx.global::<Net>().fetch(format!("/blobs/{hash}"));
-                cx.background_executor().spawn(async move { job.await.ok().flatten() })
-            }
+            // One sent from here is read from its link on this Mac.
+            From::Blob(hash) => match crate::own::of_blob(hash) {
+                // Gone meanwhile, it's fetched on the retry.
+                Some(path) => cx.background_executor().spawn(async move { std::fs::read(path).ok() }),
+                None => {
+                    let job = cx.global::<Net>().fetch(format!("/blobs/{hash}"));
+                    cx.background_executor().spawn(async move { job.await.ok().flatten() })
+                }
+            },
             From::File(path) => {
                 let path = path.clone();
                 cx.background_executor().spawn(async move {

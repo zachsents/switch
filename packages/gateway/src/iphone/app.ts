@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import type { Database } from "bun:sqlite"
-import { BlobHash, Brain, EventId, react, spaceFor, SpaceId } from "@switch/brain"
+import { BlobHash, Brain, defineRead, EventId, react, spaceFor, SpaceId } from "@switch/brain"
 import type { BlobsShape } from "@switch/brain"
 import { Effect, Schedule, Schema } from "effect"
 
@@ -172,6 +172,34 @@ const openItems = (db: Database) =>
     )
     .get()?.n ?? 0
 
+// The iPhone's reads of the brain, by name (reads.ts), so they run in a reader thread.
+const devicesRead = defineRead("gateway/iphone/devices", (db) => devices(db))
+/** The phones, and the queue's count for their badge. */
+const devicesBadgeRead = defineRead("gateway/iphone/devices-badge", (db) => ({
+  ds: devices(db),
+  badge: openItems(db),
+}))
+/** The phones, and the name and ink of the space an activity shows. */
+const activityPushRead = defineRead("gateway/iphone/activity-push", (db, space: SpaceId) => ({
+  ds: devices(db),
+  name: spaceName(db, space),
+  ink: spaceInk(db, space),
+}))
+/** The phones, the queue's count, and the name of the space a note is from. */
+const alertRead = defineRead("gateway/iphone/alert", (db, space: SpaceId) => ({
+  ds: devices(db),
+  badge: openItems(db),
+  name: spaceName(db, space),
+}))
+const lastActivityRead = defineRead("gateway/iphone/last-activity", (db, id: string) =>
+  lastActivity(db, id),
+)
+const madeBlobRead = defineRead("gateway/iphone/made-blob", (db, id: string) => madeBlob(db, id))
+const spaceForRead = defineRead(
+  "gateway/iphone/space-for",
+  (db, given: string | undefined, asker: string | null) => spaceFor(db, given, asker),
+)
+
 /** Something to tell the user: a new item, or a reply or a task's report they left unread. */
 export interface Note {
   /**
@@ -242,7 +270,7 @@ const placed = (given: string | undefined) =>
   Effect.gen(function* placing() {
     const brain = yield* Brain
     const caller = yield* Caller
-    return yield* brain.read((db) => spaceFor(db, given, caller.space))
+    return yield* brain.read(spaceForRead, given, caller.space)
   })
 
 /** The lock screen's keys for an item, by its kind (Shared/Categories.swift); a task's are "item". */
@@ -293,11 +321,7 @@ export const makeIphone = (options: IphoneOptions) => {
   const activityPush = (a: ActivityPayload) =>
     Effect.gen(function* pushing() {
       const brain = yield* Brain
-      const { ds, name, ink } = yield* brain.read((db) => ({
-        ds: devices(db),
-        name: spaceName(db, a.space),
-        ink: spaceInk(db, a.space),
-      }))
+      const { ds, name, ink } = yield* brain.read(activityPushRead, a.space)
       const seconds = Math.floor(now() / 1000)
       const targets: { target: Target; payload: Record<string, unknown> }[] = []
       for (const d of ds) {
@@ -382,7 +406,7 @@ export const makeIphone = (options: IphoneOptions) => {
           i.id ?? `${i.title.toLowerCase().replaceAll(/[^a-z0-9]+/gu, "-")}-${now().toString(36)}`
         // Replacing one still running (its app reconnecting) keeps whether they follow it, as an
         // activity's facts stood until changed there (Switchboard's core projectors/entities.rs).
-        const was = yield* brain.read((db) => lastActivity(db, id))
+        const was = yield* brain.read(lastActivityRead, id)
         const follow = i.follow ?? (was?.phase === "end" ? undefined : was?.follow)
         return yield* activity({
           id,
@@ -413,7 +437,7 @@ export const makeIphone = (options: IphoneOptions) => {
   const change = (phase: "update" | "end") => (i: typeof changeInput.Type) =>
     Effect.gen(function* changing() {
       const brain = yield* Brain
-      const was = yield* brain.read((db) => lastActivity(db, i.id))
+      const was = yield* brain.read(lastActivityRead, i.id)
       if (was === null || was.phase === "end") {
         return yield* Effect.fail(new Error(`No running Live Activity ${i.id}`))
       }
@@ -471,7 +495,7 @@ export const makeIphone = (options: IphoneOptions) => {
   const issued = (id: string) =>
     Effect.gen(function* finding() {
       const brain = yield* Brain
-      const made = yield* brain.read((db) => madeBlob(db, id))
+      const made = yield* brain.read(madeBlobRead, id)
       const file = made === null ? null : yield* options.blobs.path(BlobHash.make(made.blob))
       return made === null || file === null ? null : { file, type: made.bundle ? MIME_MANY : MIME }
     })
@@ -538,7 +562,7 @@ export const makeIphone = (options: IphoneOptions) => {
           events.emit(PassIssued.make({ serial: made.serial, title: i.title, space })),
         )
         const brain = yield* Brain
-        const ds = yield* brain.read(devices)
+        const ds = yield* brain.read(devicesRead)
         const sent = yield* send(alerts(ds), {
           type: "alert",
           payload: {
@@ -661,7 +685,7 @@ export const makeIphone = (options: IphoneOptions) => {
           ),
         )
         const brain = yield* Brain
-        const { ds, badge } = yield* brain.read((db) => ({ ds: devices(db), badge: openItems(db) }))
+        const { ds, badge } = yield* brain.read(devicesBadgeRead)
         const sent = yield* send(alerts(ds), {
           type: "alert",
           payload: {
@@ -708,10 +732,7 @@ export const makeIphone = (options: IphoneOptions) => {
       Effect.gen(function* one() {
         const brain = yield* Brain
         const item = decodeItem(e.payload)
-        const { ds, badge } = yield* brain.read((db) => ({
-          ds: devices(db),
-          badge: openItems(db),
-        }))
+        const { ds, badge } = yield* brain.read(devicesBadgeRead)
         const targets = alerts(ds)
         const r = yield* send(targets, {
           type: "background",
@@ -726,7 +747,7 @@ export const makeIphone = (options: IphoneOptions) => {
   /** Whether any phone can be pushed to. */
   const reachable = Effect.gen(function* reaching() {
     const brain = yield* Brain
-    return push() !== null && alerts(yield* brain.read(devices)).length > 0
+    return push() !== null && alerts(yield* brain.read(devicesRead)).length > 0
   })
 
   /**
@@ -736,11 +757,7 @@ export const makeIphone = (options: IphoneOptions) => {
   const alert = (n: Note) =>
     Effect.gen(function* alerting() {
       const brain = yield* Brain
-      const { ds, badge, name } = yield* brain.read((db) => ({
-        ds: devices(db),
-        badge: openItems(db),
-        name: spaceName(db, n.space),
-      }))
+      const { ds, badge, name } = yield* brain.read(alertRead, n.space)
       const aps = {
         alert:
           n.kind === "reply"

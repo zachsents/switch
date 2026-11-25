@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite"
 import { Reports } from "@switch/agent"
 import type { Report } from "@switch/agent"
-import { Brain, SpaceId } from "@switch/brain"
+import { Brain, defineRead, SpaceId } from "@switch/brain"
 import { Models } from "@switch/models"
 import { Effect, Layer } from "effect"
 
@@ -42,17 +42,20 @@ export const reportContext = (db: Database, report: Report, space: string) => {
   ].join("\n\n")
 }
 
+/** Where a report's task is, what it's read against there, and the user's rules for it. */
+const atRead = defineRead("autonomy/report/at", (db, report: Report) => {
+  const space = SpaceId.make(placeOf(db, report.thread).space)
+  return {
+    space,
+    context: reportContext(db, report, space),
+    preferences: rulesAt(db, [space], report.text),
+  }
+})
+
 const read = (report: Report) =>
   Effect.gen(function* reading() {
     const brain = yield* Brain
-    const at = yield* brain.read((db) => {
-      const space = SpaceId.make(placeOf(db, report.thread).space)
-      return {
-        space,
-        context: reportContext(db, report, space),
-        preferences: rulesAt(db, [space], report.text),
-      }
-    })
+    const at = yield* brain.read(atRead, report)
     const verdict = yield* gate("report", {
       key: `report:${report.turn}`,
       space: at.space,

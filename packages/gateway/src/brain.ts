@@ -29,6 +29,7 @@ import {
   BYPASS,
   Bypass,
   bypassOf,
+  defineRead,
   emDashRefusal,
   stringsIn,
   unheardTask,
@@ -57,6 +58,58 @@ import { brainName, keepView, surfaceOf } from "./views.ts"
 import type { View } from "./views.ts"
 
 const parse: (json: string) => unknown = JSON.parse
+
+// The brain app's reads of the brain, by name (reads.ts), so they run in a reader thread.
+const spaceNamedRead = defineRead("gateway/brain/space-named", (db, given: string) =>
+  spaceNamed(db, given, { archived: true }),
+)
+const spacesRead = defineRead("gateway/brain/spaces", (db) =>
+  db
+    .query<Pick<Space, "id" | "name" | "parent"> & { archived: number; aliases: string }, []>(
+      "SELECT id, name, parent, archived, aliases FROM spaces ORDER BY id",
+    )
+    .all()
+    .map((s) => ({ ...s, archived: s.archived === 1, aliases: parse(s.aliases) })),
+)
+const spaceForRead = defineRead(
+  "gateway/brain/space-for",
+  (db, given: string | undefined, asker: string | null) => spaceFor(db, given, asker),
+)
+const spaceIdsRead = defineRead(
+  "gateway/brain/space-ids",
+  (db) => new Set(allSpaces(db).map((s) => s.id)),
+)
+const coverLooksRead = defineRead("gateway/brain/cover-looks", (db) =>
+  allCovers(db).map((c) => c.image),
+)
+/** The message a reaction goes on: `seq`, else the space's last one not the agent's. */
+const reactedRead = defineRead(
+  "gateway/brain/reacted",
+  (db, space: string, seq: number | undefined) =>
+    seq === undefined
+      ? db
+          .query<{ seq: number; source: string }, [string]>(
+            "SELECT seq, source FROM messages WHERE space = ? AND source != 'agent' ORDER BY seq DESC LIMIT 1",
+          )
+          .get(space)
+      : db
+          .query<{ seq: number; source: string }, [number]>(
+            "SELECT seq, source FROM messages WHERE seq = ?",
+          )
+          .get(seq),
+)
+const placementsRead = defineRead("gateway/brain/placements", (db) => placements(db))
+const unheardRead = defineRead("gateway/brain/unheard-task", (db, thread: string) =>
+  unheardTask(db, thread),
+)
+const userRead = defineRead("gateway/brain/user", (db) => userOf(db))
+const foldersRead = defineRead("gateway/brain/folders", (db) =>
+  db
+    .query<{ space: string; machine: string; path: string }, []>(
+      "SELECT space, machine, path FROM space_folders ORDER BY space, machine",
+    )
+    .all(),
+)
 
 const QUERY = `Query the brain: a source, then conditions. Rows newest first.
 - from: "events" (the log: seq, id, time, type, source, payload; default), "spaces", "messages", "work" (threads and tasks), "items", "expectations", "surprises", "memories", "leads".
@@ -97,7 +150,7 @@ const query = tool(
         where.push({ field: "source", op: "==", value: source })
       }
       if (space !== undefined) {
-        const id = yield* brain.read((db) => spaceNamed(db, space, { archived: true }))
+        const id = yield* brain.read(spaceNamedRead, space)
         where.push({ field: "payload.space", op: "==", value: id ?? space })
       }
       if (after !== undefined) {
@@ -118,14 +171,7 @@ const spaces = tool(
   () =>
     Effect.gen(function* listing() {
       const brain = yield* Brain
-      const found = yield* brain.read((db) =>
-        db
-          .query<Pick<Space, "id" | "name" | "parent"> & { archived: number; aliases: string }, []>(
-            "SELECT id, name, parent, archived, aliases FROM spaces ORDER BY id",
-          )
-          .all()
-          .map((s) => ({ ...s, archived: s.archived === 1, aliases: parse(s.aliases) })),
-      )
+      const found = yield* brain.read(spacesRead)
       return { spaces: found }
     }),
 )
@@ -134,7 +180,7 @@ const spaces = tool(
 const named = (given: string) =>
   Effect.gen(function* resolving() {
     const brain = yield* Brain
-    const found = yield* brain.read((db) => spaceNamed(db, given, { archived: true }))
+    const found = yield* brain.read(spaceNamedRead, given)
     return found ?? (yield* new Rejected({ reason: `No space ${given}` }))
   })
 
@@ -156,7 +202,7 @@ const placed = (given: string | undefined) =>
   Effect.gen(function* placing() {
     const brain = yield* Brain
     const caller = yield* Caller
-    return yield* brain.read((db) => spaceFor(db, given, caller.space))
+    return yield* brain.read(spaceForRead, given, caller.space)
   })
 
 const create = tool(
@@ -185,7 +231,7 @@ const create = tool(
         .replaceAll(/[^a-z0-9]+/gu, "-")
         .replaceAll(/^-|-$/gu, "")
         .slice(0, 40)
-      const taken = yield* brain.read((db) => new Set(allSpaces(db).map((s) => s.id)))
+      const taken = yield* brain.read(spaceIdsRead)
       let id = base || "space"
       for (let n = 2; taken.has(SpaceId.make(id)); n += 1) {
         id = `${base || "space"}-${n}`
@@ -196,7 +242,7 @@ const create = tool(
         parent,
         ...(input.about !== undefined && { about: input.about }),
       })
-      const looks = yield* brain.read((db) => allCovers(db).map((c) => c.image))
+      const looks = yield* brain.read(coverLooksRead)
       return {
         id,
         ...made,
@@ -282,19 +328,7 @@ const react = tool(
     Effect.gen(function* reacting() {
       const brain = yield* Brain
       const space = yield* placed(input.space)
-      const said = yield* brain.read((db) =>
-        input.seq === undefined
-          ? db
-              .query<{ seq: number; source: string }, [string]>(
-                "SELECT seq, source FROM messages WHERE space = ? AND source != 'agent' ORDER BY seq DESC LIMIT 1",
-              )
-              .get(space)
-          : db
-              .query<{ seq: number; source: string }, [number]>(
-                "SELECT seq, source FROM messages WHERE seq = ?",
-              )
-              .get(input.seq),
-      )
+      const said = yield* brain.read(reactedRead, space, input.seq)
       if (!said) {
         return yield* new Rejected({ reason: "No such message" })
       }
@@ -337,7 +371,7 @@ const widgets = tool(
   () =>
     Effect.gen(function* listing() {
       const brain = yield* Brain
-      return { widgets: yield* brain.read(placements) }
+      return { widgets: yield* brain.read(placementsRead) }
     }),
 )
 
@@ -364,7 +398,7 @@ const place = tool(
       const done = yield* command(PlaceWidget.type, { ...input, space })
       const brain = yield* Brain
       // Its placements now, so a new one's id is at hand to move or remove it by.
-      const its = (yield* brain.read(placements)).filter(
+      const its = (yield* brain.read(placementsRead)).filter(
         (w) => w.app === input.app && w.name === input.name,
       )
       return { ...done, placements: its }
@@ -458,10 +492,7 @@ const show = tool(
       // A task's work goes to its parent in its report, as its words do (autonomy app.ts say).
       const brain = yield* Brain
       const caller = yield* Caller
-      if (
-        caller.thread !== null &&
-        (yield* brain.read((db) => unheardTask(db, caller.thread ?? "")))
-      ) {
+      if (caller.thread !== null && (yield* brain.read(unheardRead, caller.thread ?? ""))) {
         return yield* new Rejected({
           reason:
             "In a task, what you show answers the user's words to it, and none have reached it: what's for them goes in your report, or an item when it needs their hands.",
@@ -535,7 +566,7 @@ const previewHtml = tool(
 const who = tool("user", { description: "Who the user is: name and about.", readOnly: true }, () =>
   Effect.gen(function* reading() {
     const brain = yield* Brain
-    return { user: yield* brain.read(userOf) }
+    return { user: yield* brain.read(userRead) }
   }),
 )
 
@@ -575,13 +606,7 @@ const folders = tool(
   () =>
     Effect.gen(function* listing() {
       const brain = yield* Brain
-      const found = yield* brain.read((db) =>
-        db
-          .query<{ space: string; machine: string; path: string }, []>(
-            "SELECT space, machine, path FROM space_folders ORDER BY space, machine",
-          )
-          .all(),
-      )
+      const found = yield* brain.read(foldersRead)
       return { folders: found }
     }),
 )

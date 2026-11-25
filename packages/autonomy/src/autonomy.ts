@@ -2,7 +2,7 @@
 // triage), and the workers that start work on their own (expectations, reflection, the senses watch,
 // items that close themselves, after checks).
 import { Sessions } from "@switch/agent"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import type { Line, SpaceId, StoredEvent, ThreadId } from "@switch/brain"
 import { Models } from "@switch/models"
 import type { Profile } from "@switch/models"
@@ -13,6 +13,7 @@ import { expectationWorker, expectConfig } from "./expect.ts"
 import { gateConfig } from "./gate.ts"
 import { itemsConfig } from "./items.ts"
 import { memoryConfig } from "./memory.ts"
+import type { Scope } from "./memory.ts"
 import { promisesConfig, promisesKernel } from "./promises.ts"
 import { memoryLayer } from "./recall.ts"
 import { reflectConfig, reflecting } from "./reflect.ts"
@@ -25,6 +26,18 @@ import { dialNumber, settingsConfig, untune } from "./settings.ts"
 import { surpriseConfig } from "./surprise.ts"
 import { triageConfig, triageLayer } from "./triage.ts"
 import type { TriageConfig } from "./triage.ts"
+
+/** The user's rules in these scopes, as triage's prompts hold them. */
+const rulesRead = defineRead(
+  "autonomy/autonomy/rules",
+  (db, spaces: readonly Scope[], about: string) => rulesAt(db, spaces, about),
+)
+/** The wake rules in these scopes. */
+const wakeRulesRead = defineRead("autonomy/autonomy/wake-rules", (db, spaces: readonly Scope[]) =>
+  wakeRulesOf(db, spaces),
+)
+/** The `wake.at` dial. */
+const wakeAtRead = defineRead("autonomy/autonomy/wake-at", (db) => dialNumber(db, "wake.at"))
 
 /** Events, projections and commands to add to the brain. */
 export const autonomyConfig = {
@@ -95,9 +108,9 @@ export const autonomyTriage = (
         threadOf: config.threadOf,
         openLine: config.openLine,
         openLines: config.openLines,
-        rules: (spaces, about) => brain.read((db) => rulesAt(db, spaces, about)),
-        wakeRules: (spaces) => brain.read((db) => wakeRulesOf(db, spaces)),
-        wakeAt: brain.read((db) => dialNumber(db, "wake.at")),
+        rules: (spaces, about) => brain.read(rulesRead, spaces, about),
+        wakeRules: (spaces) => brain.read(wakeRulesRead, spaces),
+        wakeAt: brain.read(wakeAtRead),
       })
     }),
   ).pipe(Layer.provide(smallModels(config.profile)))

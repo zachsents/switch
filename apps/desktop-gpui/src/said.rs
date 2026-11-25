@@ -69,6 +69,8 @@ pub struct Shared {
     /// The chat it's in, and its name (a reading window's title).
     pub space: String,
     pub title: String,
+    /// The line picked from the keys, by its key: its bubble ringed, its bar shown.
+    pub picked: Rc<RefCell<Option<String>>>,
 }
 
 impl Shared {
@@ -98,6 +100,7 @@ impl Shared {
             hovered: Default::default(),
             drawn: Default::default(),
             blips: Default::default(),
+            picked: Default::default(),
             focus: Default::default(),
             on_link: crate::chat::on_link(),
             on_picture: crate::chat::on_picture(),
@@ -348,7 +351,7 @@ fn said_bar(time: f64, model: Option<&str>, text: String, right: bool, key: &str
     // the bubble to Copy, straight or slanting, or overshooting it, never leaves it.
     let at = window.mouse_position();
     let drawn = sh.drawn.borrow();
-    let shown = focused || sh.hovered.borrow().iter().any(|h| h.0 == key && drawn.get(h).is_none_or(|b| b.contains(&at)));
+    let shown = focused || sh.picked.borrow().as_deref() == Some(key) || sh.hovered.borrow().iter().any(|h| h.0 == key && drawn.get(h).is_none_or(|b| b.contains(&at)));
     drop(drawn);
     let mut bar = div()
         .id(SharedString::from(format!("{key}.bar")))
@@ -381,7 +384,7 @@ fn open_menu(sh: &Shared, seq: u64, mine: Option<String>, window: &mut Window, c
 /// changes no layout.
 pub fn keyed(d: gpui::Stateful<gpui::Div>, focus: &gpui::FocusHandle, radius: Pixels, l: &Look, window: &Window) -> gpui::Stateful<gpui::Div> {
     let ring = focus.is_focused(window) && window.last_input_was_keyboard();
-    d.track_focus(focus).relative().when(ring, |d| d.child(div().absolute().inset_0().rounded(radius).border_1().border_color(l.ink3)))
+    d.track_focus(focus).relative().when(ring, |d| d.child(div().absolute().inset_0().rounded(radius).border_2().border_color(l.ink2)))
 }
 
 /// A focus kept for the element `id` names, for `keyed`.
@@ -474,6 +477,7 @@ pub fn said(p: Said, sh: &Shared, l: &Look, window: &mut Window, cx: &mut App) -
         .bg(color)
         .text_color(if right { l.white } else { l.ink })
         .when(p.dim, |d| d.opacity(0.6))
+        .when(sh.picked.borrow().as_deref() == Some(key.as_str()), |d| d.shadow(crate::kit::outer_ring(l)))
         .when(p.tail, |d| d.child(tail(right, color)))
         .when(!p.reply_to.is_empty() && p.here.is_some(), |d| d.child(reply_insets(p.reply_to, right, p.here.unwrap_or_default(), has_words, &key, p.order, sh, l, window, cx)))
         .when(has_words, |d| d.child(words))

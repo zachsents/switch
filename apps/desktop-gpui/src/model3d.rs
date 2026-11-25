@@ -615,7 +615,9 @@ struct Gpu {
     white: wgpu::TextureView,
 }
 
-static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
+base::kept! {
+    static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
+}
 
 fn gpu() -> Option<&'static Gpu> {
     GPU.get_or_init(Gpu::new).as_ref()
@@ -969,8 +971,15 @@ impl Models {
         if let Some(v) = cx.default_global::<Models>().views.get(route) {
             return v.clone();
         }
+        // One sent from here goes on as the view it had while it was being sent.
+        let sent = route.strip_prefix("/blobs/").and_then(crate::own::of_blob).map(|p| p.to_string_lossy().to_string());
+        if let Some(v) = sent.and_then(|k| cx.global::<Models>().views.get(&k).cloned()) {
+            cx.global_mut::<Models>().views.insert(route.to_string(), v.clone());
+            return v;
+        }
         Self::sweep(cx);
-        let view = cx.new(|cx| ModelView::new(route, name, Source::Core(route.to_string()), cx));
+        let source = if crate::own::holds(route) { Source::File(PathBuf::from(route)) } else { Source::Core(route.to_string()) };
+        let view = cx.new(|cx| ModelView::new(route, name, source, cx));
         cx.global_mut::<Models>().views.insert(route.to_string(), view.clone());
         view
     }

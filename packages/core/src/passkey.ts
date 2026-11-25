@@ -7,7 +7,7 @@
 // the item itself; nothing here can approve one. `origin` and `rp` (its host, the passkey's
 // relying party) come from the pages' base.
 import { getItem } from "@switch/autonomy"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Gateway, Pages, passkeyToken } from "@switch/gateway"
 import { Effect, Schema } from "effect"
 import type { CallToolResult } from "@modelcontextprotocol/server"
@@ -134,6 +134,19 @@ const errorText = (r: CallToolResult) =>
 export const isPasskey = (request: Request): boolean =>
   new URL(request.url).pathname.startsWith("/p/passkey/")
 
+/** The open items' ids. */
+const openIdsRead = defineRead("core/passkey/open-ids", (db) =>
+  db
+    .query<{ id: string }, []>("SELECT id FROM action_items WHERE status = 'open'")
+    .all()
+    .map((r) => r.id),
+)
+/** An item, if it asks for a passkey from an app. */
+const passkeyItemRead = defineRead("core/passkey/item", (db, id: string) => {
+  const item = getItem(db, id)
+  return item?.passkey !== undefined && item.app !== undefined ? item : null
+})
+
 export const passkeyRoute = Effect.gen(function* routing() {
   const brain = yield* Brain
   const gateway = yield* Gateway
@@ -146,16 +159,10 @@ export const passkeyRoute = Effect.gen(function* routing() {
     if (!/^[0-9a-f]{32}$/u.test(token)) {
       return null
     }
-    return await Effect.runPromise(
-      brain.read((db) => {
-        const ids = db
-          .query<{ id: string }, []>("SELECT id FROM action_items WHERE status = 'open'")
-          .all()
-        const id = ids.find((r) => passkeyToken(pages, r.id) === token)?.id
-        const item = id === undefined ? null : getItem(db, id)
-        return item?.passkey !== undefined && item.app !== undefined ? item : null
-      }),
-    )
+    // A token is the pages key's: matched here, where the key is, against what's open.
+    const ids = await Effect.runPromise(brain.read(openIdsRead))
+    const id = ids.find((open) => passkeyToken(pages, open) === token)
+    return id === undefined ? null : await Effect.runPromise(brain.read(passkeyItemRead, id))
   }
 
   const ask = async (app: string, tool: string, args: Record<string, unknown>) => {

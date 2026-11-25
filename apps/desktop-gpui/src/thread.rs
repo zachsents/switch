@@ -263,6 +263,7 @@ impl ThreadView {
                         div()
                         .id(SharedString::from(format!("step-{seq}")))
                         .track_focus(&self.handle(seq, cx))
+                        .key_context("Row")
                         .relative()
                         .mx(u(-8.))
                         .flex()
@@ -384,6 +385,7 @@ impl ThreadView {
                                 div()
                                     .id(SharedString::from(format!("steps-{key}")))
                                     .track_focus(&self.handle(*key ^ (1 << 63), cx))
+                                    .key_context("Row")
                                     .relative()
                                     .ml(u(-4.))
                                     .flex()
@@ -532,6 +534,50 @@ impl ThreadView {
         self.handles.entry(key).or_insert_with(|| cx.focus_handle().tab_stop(true)).clone()
     }
 
+    /// The folds and steps the keys move through, in their order, each with its block's row.
+    fn rows(&self) -> Vec<(usize, u64)> {
+        let mut out = vec![];
+        for (ix, b) in self.blocks.iter().enumerate() {
+            if let Block::Steps { key, items } = b {
+                out.push((ix, key ^ (1 << 63)));
+                if !self.shut.contains(key) {
+                    out.extend(items.iter().filter(|i| i.kind == ItemKind::Tool).map(|i| (ix, i.seq)));
+                }
+            }
+        }
+        out
+    }
+
+    /// ↑ ↓ (J K) from a fold or a step: the one before or after, brought into view; J or K with none,
+    /// the latest.
+    fn step_row(&mut self, by: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let Some(last) = rows.len().checked_sub(1) else { return cx.propagate() };
+        let to = match rows.iter().position(|(_, k)| self.handles.get(k).is_some_and(|h| h.is_focused(window))) {
+            Some(at) => (at as isize + by).clamp(0, last as isize) as usize,
+            // None has the keys: a letter typed goes to the steer box while it's there; else J or K
+            // takes the latest fold or step.
+            None if self.running(cx) => return cx.propagate(),
+            None => last,
+        };
+        // One not yet drawn takes the keyboard once it is, brought into view.
+        let (ix, k) = rows[to];
+        let h = self.handle(k, cx);
+        self.fl.release();
+        self.list.scroll_to_reveal_item(ix);
+        window.on_next_frame(move |window, cx| window.focus(&h, cx));
+        cx.notify();
+    }
+
+    /// Esc from a fold or a step: the keyboard to the page (or the steer box), one level up.
+    fn leave_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handles.values().any(|h| h.is_focused(window)) {
+            self.focus_box(window, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
     /// A paste no field took goes to the steer box while it's there.
     pub fn paste_outside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running(cx) {
@@ -551,11 +597,14 @@ impl ThreadView {
         cx.notify();
     }
 
-    /// "/" puts the cursor in the steer box, while it's there.
+    /// "/" puts the cursor in the steer box, while it's there; with none, the page itself takes the
+    /// keys (J, K, Esc).
     pub fn focus_box(&self, window: &mut Window, cx: &mut App) {
         if self.running(cx) {
             let b = self.steer.clone();
             b.update(cx, |b, cx| b.focus(window, cx));
+        } else {
+            window.focus(&self.focus, cx);
         }
     }
 
@@ -607,11 +656,6 @@ impl Focusable for ThreadView {
     }
 }
 
-/// ⌘. stops a running turn; ⌘C copies what's selected.
-pub fn bindings() -> Vec<gpui::KeyBinding> {
-    vec![gpui::KeyBinding::new("cmd-.", StopTurn, Some("Thread")), gpui::KeyBinding::new("cmd-c", CopyThread, Some("Thread && !TextField")), gpui::KeyBinding::new("cmd-a", ui_sdk::native::text_field::SelectAll, Some("Thread && !TextField"))]
-}
-
 impl ThreadView {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Paged again whenever the brain dropped it (a snapshot), as the desktop's query refetches.
@@ -645,6 +689,9 @@ impl ThreadView {
         div()
             .key_context("Thread")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &crate::commands::NextRow, window, cx| this.step_row(1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::PreviousRow, window, cx| this.step_row(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::Escape, window, cx| this.leave_row(window, cx)))
             // ⌘. only while it runs: otherwise the key isn't the page's.
             .when(running, |d| d.on_action(cx.listener(|this, _: &StopTurn, _, cx| this.stop(cx))))
             // ⌘V or Edit ▸ Paste with the page focused: to the steer box while it's there.
@@ -748,5 +795,5 @@ impl Render for ThreadView {
 fn ring(d: gpui::Stateful<gpui::Div>, focus: &FocusHandle, l: &Look, window: &Window) -> gpui::Stateful<gpui::Div> {
     // From the keyboard only, as `focus-visible`: a click shows none.
     let on = focus.is_focused(window) && window.last_input_was_keyboard();
-    d.when(on, |d| d.child(div().absolute().top_0().left_0().size_full().rounded(u(4.)).border_1().border_color(l.ink3)))
+    d.when(on, |d| d.child(div().absolute().top_0().left_0().size_full().rounded(u(4.)).border_2().border_color(l.ink2)))
 }

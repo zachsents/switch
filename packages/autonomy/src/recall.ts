@@ -8,7 +8,7 @@
 import type { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { Memory as MemorySlot } from "@switch/agent"
-import { allSpaces, Brain, EventId, whoOf } from "@switch/brain"
+import { allSpaces, Brain, defineRead, EventId, whoOf } from "@switch/brain"
 import { Models } from "@switch/models"
 import type { Question } from "@switch/models"
 import type { SpaceId } from "@switch/brain"
@@ -215,14 +215,17 @@ const buildCore = (scope: string, where: string, cap: number, rules: readonly Me
     }
   })
 
+/** The rules held, the spaces open, and the cores built so far. */
+const builtRead = defineRead("autonomy/recall/built", (db) => ({
+  live: liveMemories(db).filter(isRule),
+  spaces: allSpaces(db).filter((sp) => !sp.archived),
+  built: cores(db),
+}))
+
 /** Rebuilds every core field whose rules changed. Returns what each cost. */
 export const buildCores = Effect.gen(function* rebuilding() {
   const brain = yield* Brain
-  const { live, spaces, built } = yield* brain.read((db) => ({
-    live: liveMemories(db).filter(isRule),
-    spaces: allSpaces(db).filter((s) => !s.archived),
-    built: cores(db),
-  }))
+  const { live, spaces, built } = yield* brain.read(builtRead)
   const scopes = [
     { scope: GLOBAL, where: "everywhere", cap: GLOBAL_CAP },
     ...spaces.map((s) => ({
@@ -342,22 +345,28 @@ const render = (kept: readonly Memory[]) =>
     })
     .join("\n")
 
+/** Candidates near a query's vector (none without one) and its words, minus what `skip` holds. */
+const candidatesRead = defineRead(
+  "autonomy/recall/candidates",
+  (db, query: string, vector: Float32Array | null, skip: ReadonlySet<string>, k: number) => {
+    const live = new Set(liveMemories(db).map((m) => m.id))
+    const keep = (id: string) => live.has(id) && !skip.has(id)
+    const byVector = vector === null ? [] : nearest(db, vector, k, keep)
+    const byText = fts(db, query, Math.min(600, k + skip.size))
+      .filter(keep)
+      .slice(0, k)
+    return [...new Set([...byVector, ...byText])].flatMap((id) => getMemory(db, id) ?? [])
+  },
+)
+
 /** Candidates for `query`: vector top 20 and full-text top 20, minus what `skip` holds. */
 export const candidates = (query: string, skip: ReadonlySet<string>, k = K) =>
   Effect.gen(function* finding() {
     const brain = yield* Brain
     const models = yield* Models
     const q = yield* Effect.option(models.embed([query]))
-    return yield* brain.read((db) => {
-      const live = new Set(liveMemories(db).map((m) => m.id))
-      const keep = (id: string) => live.has(id) && !skip.has(id)
-      const byVector =
-        q._tag === "Some" && q.value.vectors[0] ? nearest(db, q.value.vectors[0], k, keep) : []
-      const byText = fts(db, query, Math.min(600, k + skip.size))
-        .filter(keep)
-        .slice(0, k)
-      return [...new Set([...byVector, ...byText])].flatMap((id) => getMemory(db, id) ?? [])
-    })
+    const vector = q._tag === "Some" && q.value.vectors[0] ? q.value.vectors[0] : null
+    return yield* brain.read(candidatesRead, query, vector, skip, k)
   })
 
 // The exchange before the message: the agent's last reply carries what a short follow-up is about.
@@ -378,6 +387,16 @@ const exchangeBefore = (db: Database, space: SpaceId) => {
   return user === "" && me === "" ? "" : `User: ${user.slice(0, 400)}\nMe: ${me.slice(0, 500)}`
 }
 
+/** A space's name, what its core fields convey besides `skip`, and the exchange before, unless given. */
+const situationRead = defineRead(
+  "autonomy/recall/situation",
+  (db, space: SpaceId, skip: ReadonlySet<string> | undefined, before: string | undefined) => ({
+    name: allSpaces(db).find((s) => s.id === space)?.name ?? space,
+    skip: new Set([...conveyed(db, space), ...(skip ?? [])]),
+    before: before ?? exchangeBefore(db, space),
+  }),
+)
+
 export interface RecallOptions {
   /** The exchange before the message; read from the space's chat when left out. */
   readonly before?: string
@@ -393,11 +412,12 @@ export interface RecallOptions {
 export const situational = (space: SpaceId, message: string, options: RecallOptions = {}) =>
   Effect.gen(function* recalling() {
     const brain = yield* Brain
-    const { name, skip, before } = yield* brain.read((db) => ({
-      name: allSpaces(db).find((s) => s.id === space)?.name ?? space,
-      skip: new Set([...conveyed(db, space), ...(options.skip ?? [])]),
-      before: options.before ?? exchangeBefore(db, space),
-    }))
+    const { name, skip, before } = yield* brain.read(
+      situationRead,
+      space,
+      options.skip,
+      options.before,
+    )
     const where = options.title === undefined ? name : `${name} / ${options.title}`
     const query = `${message}\nSpace: ${where}${before === "" ? "" : `\nBefore: ${before}`}`
     const found = yield* candidates(query, skip)
@@ -429,6 +449,29 @@ const glob = (pattern: string, name: string) => {
 
 const TRIGGER_MAX = 30
 
+/** Live memories tied to a call of `tool` whose input (lowercased) has their words, but `skip`'s. */
+const hitsRead = defineRead(
+  "autonomy/recall/hits",
+  (db, tool: string, lower: string, skip: ReadonlySet<string> | undefined) =>
+    liveMemories(db).filter(
+      (m) =>
+        m.trigger !== null &&
+        skip?.has(m.id) !== true &&
+        m.trigger.tools.some((t) => glob(t, tool)) &&
+        (m.trigger.words.length === 0 || m.trigger.words.some((w) => lower.includes(w))),
+    ),
+)
+
+/** Of `ids`, the nearest `k` to a vector, best first. */
+const nearestRead = defineRead(
+  "autonomy/recall/nearest",
+  (db, vector: Float32Array, k: number, ids: ReadonlySet<string>) =>
+    nearest(db, vector, k, (id) => ids.has(id)),
+)
+
+/** The core fields' text for a space. */
+const coreRead = defineRead("autonomy/recall/core", (db, space: SpaceId) => coreText(db, space))
+
 /** Memories tied to this kind of call, filtered against it. `before` is the turn so far. */
 export const triggered = (
   space: SpaceId,
@@ -441,15 +484,7 @@ export const triggered = (
     const brain = yield* Brain
     const models = yield* Models
     const lower = input.toLowerCase()
-    let hits = yield* brain.read((db) =>
-      liveMemories(db).filter(
-        (m) =>
-          m.trigger !== null &&
-          options.skip?.has(m.id) !== true &&
-          m.trigger.tools.some((t) => glob(t, tool)) &&
-          (m.trigger.words.length === 0 || m.trigger.words.some((w) => lower.includes(w))),
-      ),
-    )
+    let hits = yield* brain.read(hitsRead, tool, lower, options.skip)
     if (hits.length === 0) {
       return []
     }
@@ -458,9 +493,7 @@ export const triggered = (
       const [query] = q._tag === "Some" ? q.value.vectors : []
       if (query) {
         const ids = new Set(hits.map((m) => m.id))
-        const order = yield* brain.read((db) =>
-          nearest(db, query, TRIGGER_MAX, (id) => ids.has(id)),
-        )
+        const order = yield* brain.read(nearestRead, query, TRIGGER_MAX, ids)
         hits = order.flatMap((id) => hits.find((m) => m.id === id) ?? [])
       } else {
         hits = hits.slice(0, TRIGGER_MAX)
@@ -498,7 +531,7 @@ export const memoryLayer = Layer.effect(
     const provide = <A, E>(e: Effect.Effect<A, E, Brain | Models>) =>
       e.pipe(Effect.provideService(Brain, brain), Effect.provideService(Models, models))
     return {
-      core: (space: SpaceId) => brain.read((db) => coreText(db, space)),
+      core: (space: SpaceId) => brain.read(coreRead, space),
       recall: (space: SpaceId, text: string) =>
         provide(situational(space, text)).pipe(
           Effect.map(render),
@@ -512,7 +545,7 @@ export const memoryLayer = Layer.effect(
 export const memory = (space: SpaceId, message: string) =>
   Effect.gen(function* both() {
     const brain = yield* Brain
-    const core = yield* brain.read((db) => coreText(db, space))
+    const core = yield* brain.read(coreRead, space)
     const kept = yield* Effect.orElseSucceed(situational(space, message), () => [])
     return [core, render(kept)].filter((s) => s.trim() !== "").join("\n\n")
   })

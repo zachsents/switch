@@ -1,5 +1,5 @@
 // The agent's tools for scripts (scripts.ts): set one, list them with a log, retire one.
-import { Brain, machines, spaceFor } from "@switch/brain"
+import { Brain, defineRead, machines, spaceFor } from "@switch/brain"
 import { Caller, defineApp, Rejected, tool } from "switch-ext-kit"
 import { Effect, Schema } from "effect"
 
@@ -10,12 +10,25 @@ import type { Script } from "./scripts.ts"
 
 const LINES = 50
 
+/** A space by its id or name, else the asker's, else Home. */
+const spaceRead = defineRead("core/scripts-app/space", spaceFor)
+/** The machines' names. */
+const machinesRead = defineRead("core/scripts-app/machines", (db) =>
+  machines(db).map((m) => m.machine),
+)
+/** The scripts not retired, in a space or everywhere. */
+const listRead = defineRead("core/scripts-app/list", (db, space: string | undefined) =>
+  listScripts(db, space),
+)
+/** A script. */
+const scriptRead = defineRead("core/scripts-app/script", getScript)
+
 /** Where a script lives: the space given, else the asking work's, else Home. */
 const spaceOf = (given: string | undefined) =>
   Effect.gen(function* resolving() {
     const brain = yield* Brain
     const caller = yield* Caller
-    return yield* brain.read((db) => spaceFor(db, given, caller.space))
+    return yield* brain.read(spaceRead, given, caller.space)
   })
 
 const shown = (s: Script) => ({
@@ -61,7 +74,7 @@ export const scriptsApp = defineApp<Brain | Runtime | CoreConfig>({
             return yield* new Rejected({ reason: "Give a name and the script to run" })
           }
           const machine = input.machine ?? c.machine
-          const known = yield* brain.read((db) => machines(db).map((m) => m.machine))
+          const known = yield* brain.read(machinesRead)
           if (!known.includes(machine)) {
             return yield* new Rejected({
               reason: `No machine ${machine}: ${known.join(", ")}`,
@@ -102,10 +115,10 @@ export const scriptsApp = defineApp<Brain | Runtime | CoreConfig>({
           const runtime = yield* Runtime
           if (input.name === undefined) {
             const space = input.space === undefined ? undefined : yield* spaceOf(input.space)
-            return (yield* brain.read((db) => listScripts(db, space))).map(shown)
+            return (yield* brain.read(listRead, space)).map(shown)
           }
           const id = scriptId(yield* spaceOf(input.space), input.name.trim())
-          const s = yield* brain.read((db) => getScript(db, id))
+          const s = yield* brain.read(scriptRead, id)
           if (s === null || s.status === "retired") {
             return yield* new Rejected({ reason: `No script ${input.name}` })
           }

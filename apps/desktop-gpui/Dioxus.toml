@@ -1,0 +1,7 @@
+# dx's settings for `sh scripts/dev.sh`, the hot-reloading run: a dev copy under its own name and
+# bundle id, beside the live app and any test build.
+[application]
+name = "Switch Dev"
+
+[bundle]
+identifier = "switch.gpui.dev"

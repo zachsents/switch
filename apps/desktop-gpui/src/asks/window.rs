@@ -36,10 +36,39 @@ pub struct AskWindow {
     shown: bool,
     opened_at: std::time::Instant,
     title: String,
+    /// What its row's keys asked of it, done once its card is made.
+    then: Option<Then>,
+}
+
+/// What an ask's window does once it's open, asked from its row's keys.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Then {
+    Approve,
+    Dismiss,
+}
+
+/// Opens an ask's window and answers it there, where its Undo shows: open already, at once.
+pub fn open_to(id: &str, then: Then, cx: &mut App) {
+    let open_one = cx.try_global::<Open>().and_then(|o| o.0.get(id).copied()).and_then(|h| h.downcast::<AskWindow>());
+    if let Some(h) = open_one
+        && h
+            .update(cx, |w, window, cx| {
+                window.activate_window();
+                w.then(then, cx);
+            })
+            .is_ok()
+    {
+        return;
+    }
+    open_with(id, Some(then), cx);
 }
 
 /// Opens an ask's window, or brings it to the front.
 pub fn open(id: &str, cx: &mut App) {
+    open_with(id, None, cx);
+}
+
+fn open_with(id: &str, then: Option<Then>, cx: &mut App) {
     if !cx.has_global::<Open>() {
         cx.set_global(Open::default());
     }
@@ -71,7 +100,7 @@ pub fn open(id: &str, cx: &mut App) {
         move |window, cx| {
             crate::platform::appkit::set_alpha(window, 0.);
             crate::platform::appkit::still(window);
-            let w = cx.new(|cx| AskWindow::new(id, opened_at, window, cx));
+            let w = cx.new(|cx| AskWindow::new(id, opened_at, then, window, cx));
             let focus = w.read(cx).focus.clone();
             window.focus(&focus, cx);
             w
@@ -89,7 +118,7 @@ pub fn handle(id: &str, cx: &App) -> Option<AnyWindowHandle> {
 }
 
 impl AskWindow {
-    fn new(id: String, opened_at: std::time::Instant, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(id: String, opened_at: std::time::Instant, then: Option<Then>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let item = model(cx).read(cx).brain.items.find(&id).cloned();
         let decided = item.as_ref().is_some_and(|i| !i.is_open());
         let card = item.map(|i| card::make(i, window, cx));
@@ -104,7 +133,27 @@ impl AskWindow {
             }
         })
         .detach();
-        AskWindow { id, decided, card, focus: cx.focus_handle(), fitted: 0., shown: false, opened_at, title: String::new() }
+        let mut w = AskWindow { id, decided, card, focus: cx.focus_handle(), fitted: 0., shown: false, opened_at, title: String::new(), then };
+        w.pending(cx);
+        w
+    }
+
+    /// What its row asked of it, once its card is made.
+    fn pending(&mut self, cx: &mut Context<Self>) {
+        if self.card.is_some()
+            && let Some(then) = self.then.take()
+        {
+            self.then(then, cx);
+        }
+    }
+
+    fn then(&mut self, then: Then, cx: &mut Context<Self>) {
+        if let Some(c) = self.card.clone() {
+            c.update(cx, |c, cx| match then {
+                Then::Approve => c.key_approve(cx),
+                Then::Dismiss => c.key_dismiss(cx),
+            });
+        }
     }
 
     /// Opened on an open ask, it closes once the ask does.
@@ -123,6 +172,7 @@ impl AskWindow {
             let c = card::make(item, window, cx);
             c.update(cx, |c, _| c.own = true);
             self.card = Some(c);
+            self.pending(cx);
         }
         if !self.decided && !open {
             window.remove_window();
@@ -163,6 +213,14 @@ impl Render for AskWindow {
         }
         div()
             .track_focus(&self.focus)
+            .key_context("AskWindow")
+            .on_action(cx.listener(|this, _: &crate::commands::Approve, _, cx| this.then(Then::Approve, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::Dismiss, _, cx| this.then(Then::Dismiss, cx)))
+            .on_action(cx.listener(|this, c: &crate::commands::Choose, _, cx| {
+                if let Some(card) = this.card.clone() {
+                    card.update(cx, |card, cx| card.key_choose(c.0, cx));
+                }
+            }))
             .on_key_down(|e: &KeyDownEvent, window, _| {
                 let k = &e.keystroke;
                 if k.key == "escape" || (k.key == "w" && k.modifiers.platform) {

@@ -346,6 +346,11 @@ final class Outbox {
     guard let i = here.entries.firstIndex(where: { $0.id == entry }), let j = here.entries[i].files?.firstIndex(where: { $0.id == file })
     else { return }
     here.entries[i].files?[j].blob = blob
+    // Its message draws it from here once it's in, as its bubble did while it went up.
+    if let f = here.entries[i].files?[j], let a = f.attachment {
+      Blobs.keep(Self.bytes(file), as: a)
+      if let was = Blobs.sending(f) { Drawn.same(was.path, as: a.blob) }
+    }
     save()
     try? FileManager.default.removeItem(at: Self.bytes(file))
   }
@@ -363,7 +368,10 @@ final class Outbox {
     guard let e = here.entries.first(where: { $0.id == id }) else { return }
     here.entries.removeAll { $0.id == id }
     if e.view != nil { landed(e, seq) }
-    for f in e.files ?? [] { try? FileManager.default.removeItem(at: Self.bytes(f.id)) }
+    for f in e.files ?? [] {
+      try? FileManager.default.removeItem(at: Self.bytes(f.id))
+      Blobs.sent(f.id)
+    }
     save()
   }
 

@@ -5,7 +5,7 @@
 import path from "node:path"
 import { Sessions } from "@switch/agent"
 import { openSurprises, resolveSurprise } from "@switch/autonomy"
-import { Brain, HOME } from "@switch/brain"
+import { Brain, defineRead, HOME } from "@switch/brain"
 import { Effect, Layer, Semaphore } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
@@ -15,6 +15,11 @@ import { troubled } from "./trouble.ts"
 const SURPRISE = "backup:"
 /** When the nightly one runs, by this machine's clock. */
 const NIGHTLY = Temporal.PlainTime.from("03:30")
+
+/** The backup failures still open. */
+const openRead = defineRead("core/backup/open", (db) =>
+  openSurprises(db).filter((s) => s.id.startsWith(SURPRISE)),
+)
 
 const run = (label: string, brain: string | null) =>
   Effect.gen(function* backingUp() {
@@ -43,9 +48,7 @@ const run = (label: string, brain: string | null) =>
     })
     if (result.code === 0) {
       const brainService = yield* Brain
-      const open = yield* brainService.read((db) =>
-        openSurprises(db).filter((s) => s.id.startsWith(SURPRISE)),
-      )
+      const open = yield* brainService.read(openRead)
       for (const s of open) {
         yield* resolveSurprise(s.id)
       }

@@ -5,7 +5,7 @@ import type { Database } from "bun:sqlite"
 import { existsSync, readdirSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { Brain, EventId, defineEvent, on } from "@switch/brain"
+import { Brain, EventId, defineEvent, defineRead, on } from "@switch/brain"
 import type { Projection } from "@switch/brain"
 import { isLoginProvider, LOGIN_PROVIDERS, SUBSCRIPTIONS } from "@switch/models"
 import type { LoginProvider, Subscription } from "@switch/models"
@@ -86,6 +86,9 @@ const accountRow = (db: Database, host: string) => {
   return row === null ? undefined : parseAccount(row.state)
 }
 
+/** A host's account, as last logged. */
+const accountRead = defineRead("agent/accounts/account", (db, host: string) => accountRow(db, host))
+
 /** Usage is news a step at a time, not each percent. */
 const STEP = 0.05
 const step = (used: number) => Math.floor(used / STEP + 1e-9)
@@ -117,7 +120,7 @@ export const changed = (before: Account | undefined, after: Account) => {
 export const reportAccount = (account: Account) =>
   Effect.gen(function* reporting() {
     const brain = yield* Brain
-    const before = yield* brain.read((db) => accountRow(db, account.host))
+    const before = yield* brain.read(accountRead, account.host)
     if (!changed(before, account)) {
       return false
     }

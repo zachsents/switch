@@ -34,5 +34,5 @@ puts a first one on a machine.
 
 A bad Switch deploy is rolled back by the watch on its own. By hand:
 `ssh <server> sh ~/.switch/current/ship.sh rollback <live sha> <earlier sha>`. A brain to go back
-to: `~/.switch/backups/<time>-<sha>.db.zst`, one per deploy (the newest an uncompressed `.db` clone; the last 3 and a day's newest for 7 days kept), restored with the core stopped (`zstd -d` first):
-`launchctl bootout gui/$(id -u)/ax.switch.core; cp -c <backup> ~/.switch/brain.db; rm -f ~/.switch/brain.db-wal ~/.switch/brain.db-shm; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ax.switch.core.plist`.
+to: `~/.switch/backups/<time>-<sha>.db.zst`, one per deploy (the last 3 and a day's newest for 7 days kept), restored with the core stopped, decompressed straight into place (never a clone of a copy: the brain's first write while a clone of it lives holds the file for seconds):
+`launchctl bootout gui/$(id -u)/ax.switch.core; zstd -d -f <backup> -o ~/.switch/brain.db; rm -f ~/.switch/brain.db-wal ~/.switch/brain.db-shm; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ax.switch.core.plist`.

@@ -2,6 +2,8 @@
 //! app (apps/desktop), reading the same core the same way. PORTING.md says what's in it and what
 //! the full port still takes.
 
+use base::{color_panel, native_menu, webview};
+
 mod a2ui;
 mod app;
 mod asks;
@@ -20,7 +22,6 @@ mod chat;
 mod checks;
 mod chat_marks;
 mod chatbox;
-mod color_panel;
 mod commands;
 mod composer;
 mod cutover;
@@ -41,11 +42,11 @@ mod menu;
 mod media;
 mod model;
 mod mutations;
-mod native_menu;
 mod model3d;
 mod nav;
 mod net;
 mod outbox;
+mod own;
 mod palette;
 mod pictures;
 mod platform;
@@ -66,7 +67,6 @@ mod theme;
 mod thread;
 mod time;
 mod track;
-mod webview;
 mod viewer;
 mod widgets;
 
@@ -103,6 +103,7 @@ fn main() {
         theme::Held::init(cx);
         cx.set_global(Look::of(&theme::Held::theme(cx), true));
         pictures::Pictures::init(cx);
+        own::sweep();
         queries::init(cx);
         nav::Nav::init(cx);
         nav::Beat::init(cx);
@@ -110,13 +111,7 @@ fn main() {
         model::new_model(rx, started, cx);
         track::init(cx);
         widgets::host::Host::init(cx);
-        cx.bind_keys(app::bindings());
-        cx.bind_keys(chat::bindings());
-        cx.bind_keys(thread::bindings());
         cx.bind_keys(commands::bindings());
-        cx.bind_keys(composer::bindings());
-        cx.bind_keys(kit::bindings());
-        cx.bind_keys([gpui::KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         menu::init(cx);
         cx.set_menus(menu::build(&menu::model_of(cx)));
@@ -170,6 +165,8 @@ fn main() {
         widgets::basic::gallery::shot(cx);
         #[cfg(feature = "shot")]
         shot::wheel(window.into(), cx);
+        #[cfg(feature = "shot")]
+        shot::film(window.into(), cx);
         let _ = window;
         cx.activate(true);
     });

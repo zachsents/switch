@@ -78,8 +78,10 @@ struct Tried {
     open: bool,
 }
 
-static TYPED_AT: AtomicU64 = AtomicU64::new(0);
-static FOCUSED: AtomicBool = AtomicBool::new(true);
+base::kept! {
+    static TYPED_AT: AtomicU64 = AtomicU64::new(0);
+    static FOCUSED: AtomicBool = AtomicBool::new(true);
+}
 
 /// They typed into a field.
 pub fn typed() {

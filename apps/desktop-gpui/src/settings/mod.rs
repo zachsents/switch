@@ -152,6 +152,14 @@ fn open_section(section: &str, window: &mut Window, cx: &mut App) -> AnyElement 
 }
 
 impl SettingsWindow {
+    /// ⌃⇥ and ⌃⇧⇥: the next section or the one before, round.
+    fn step(&mut self, by: isize, cx: &mut Context<Self>) {
+        let n = SECTIONS.len() as isize;
+        let at = SECTIONS.iter().position(|(k, _)| *k == self.section).unwrap_or(0) as isize;
+        self.section = SECTIONS[((at + by + n) % n) as usize].0;
+        cx.notify();
+    }
+
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = Look::get(cx);
         if window.rem_size() != px(16. * l.zoom) {
@@ -169,6 +177,8 @@ impl SettingsWindow {
         crate::menu::window_roles(div(), false)
             .track_focus(&self.focus)
             .key_context("Settings")
+            .on_action(cx.listener(|this, _: &crate::commands::NextSection, _, cx| this.step(1, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::PreviousSection, _, cx| this.step(-1, cx)))
             .on_key_down(|e: &KeyDownEvent, window, _| {
                 if e.keystroke.key == "escape" {
                     window.remove_window();

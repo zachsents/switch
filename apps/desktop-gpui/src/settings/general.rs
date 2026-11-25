@@ -3,7 +3,7 @@
 
 use gpui::{AnyElement, App, Global, InteractiveElement, IntoElement, ParentElement, Styled, Window, div, prelude::*};
 
-use crate::commands::SHORTCUTS;
+use crate::commands::sheet_lines;
 use crate::kit::{self, Btn, W40};
 use crate::local::{Local, local, set_local};
 use crate::look::Look;
@@ -86,6 +86,9 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
                 .into_any_element(),
         );
     }
-    let shortcuts: Vec<AnyElement> = SHORTCUTS.iter().map(|(label, keys)| kit::setting(*label, W40, &l).child(kit::controls().child(kit::ui(div()).text_color(l.ink).child(*keys))).into_any_element()).collect();
-    kit::pane_scroll("general", None, div().flex().flex_col().child(kit::group("App", None, app, &l)).child(kit::group("Shortcuts", None, shortcuts, &l)), window, cx)
+    let shortcuts = sheet_lines().into_iter().map(|(group, lines)| {
+        let rows: Vec<AnyElement> = lines.into_iter().map(|(label, keys)| kit::setting(label, W40, &l).child(kit::controls().child(kit::ui(div()).text_color(l.ink).child(keys))).into_any_element()).collect();
+        kit::group(group, None, rows, &l)
+    });
+    kit::pane_scroll("general", None, div().flex().flex_col().child(kit::group("App", None, app, &l)).children(shortcuts), window, cx)
 }

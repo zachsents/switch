@@ -680,7 +680,7 @@ fn gfm_footnotes(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark::
     out
 }
 
-thread_local! {
+base::kept_local! {
     /// The `details` opened or shut here, by where they are.
     static OPENED: std::cell::RefCell<std::collections::HashMap<String, bool>> = Default::default();
 }
@@ -715,7 +715,7 @@ pub struct Ctx {
 fn pictures_in(list: &[Block], out: &mut Vec<crate::viewer::Item>) {
     for b in list {
         match b {
-            Block::Image { src, .. } => out.push(picture_item(src)),
+            Block::Image { src, alt } => out.push(picture_item(src, alt)),
             Block::Heading(_, more) | Block::Task(_, _, more) | Block::Quote(more) | Block::Group(more) => pictures_in(more, out),
             Block::Details { summary, body, .. } => {
                 pictures_in(&summary.1, out);
@@ -730,8 +730,8 @@ fn pictures_in(list: &[Block], out: &mut Vec<crate::viewer::Item>) {
 }
 
 /// A picture's address as the viewer shows it: the core's blob, or a link's.
-fn picture_item(src: &str) -> crate::viewer::Item {
-    crate::viewer::Item { route: src.to_string(), name: name_of(src), kind: "image/*".into(), blob: crate::files::image_blob(src) }
+fn picture_item(src: &str, alt: &str) -> crate::viewer::Item {
+    crate::viewer::Item { route: src.to_string(), name: name_of(src, alt), kind: "image/*".into(), blob: crate::files::image_blob(src) }
 }
 
 fn font(bold: bool, italic: bool, code: bool) -> Font {
@@ -1040,7 +1040,7 @@ fn scroll_of(id: String, window: &mut Window, app: &mut App) -> gpui::ScrollHand
 /// A picture in an agent's words, at a set height so the column keeps still while it loads; one
 /// that can't be fetched is its name, as a file is.
 fn inline_image(src: &str, alt: &str, cx: &Ctx, l: &Look, window: &mut Window, app: &mut App) -> AnyElement {
-    let name = name_of(src);
+    let name = name_of(src, alt);
     // At most the column's width, in the screen's pixels.
     if let Some(hash) = crate::files::image_blob(src) {
         crate::attached::mount(&format!("{}.img.{src}", cx.id), &hash, window, app);
@@ -1053,7 +1053,7 @@ fn inline_image(src: &str, alt: &str, cx: &Ctx, l: &Look, window: &mut Window, a
             let menu = cx.on_picture.clone();
             let (s2, n2) = (src.to_string(), name.clone());
             let all = cx.pictures.clone();
-            let me = picture_item(src);
+            let me = picture_item(src, alt);
             let id = SharedString::from(format!("{}.img.{src}", cx.id));
             let focus = crate::said::focus_for(id.clone(), window, app);
             crate::said::keyed(div().id(id), &focus, l.z(4.), l, window)
@@ -1094,17 +1094,25 @@ fn picture_of(src: &str, most: u32, cx: &mut App) -> Option<Result<gpui::ImageSo
     crate::widgets::media::WebPictures::get(src, cx).map(|i| Ok(gpui::ImageSource::from(i)))
 }
 
-/// A picture's name: the address's own, its last part, or "Image".
-fn name_of(src: &str) -> String {
+/// A picture's name, as a file: the address's own, else its last part when that's a file's name,
+/// else what it's said to be, else "Image" (never a blob's hash). Its extension is its bytes' to
+/// give when it's saved.
+fn name_of(src: &str, alt: &str) -> String {
+    let said = alt.trim().replace(['/', ':'], "-");
+    let fallback = if said.is_empty() { "Image".to_string() } else { said };
     if src.starts_with("data:") {
-        return "Image".into();
+        return fallback;
     }
-    url::Url::parse(src)
-        .or_else(|_| url::Url::parse(&format!("http://x{src}")))
-        .ok()
-        .and_then(|u| u.query_pairs().find(|(k, _)| k == "name").map(|(_, v)| v.to_string()).or_else(|| u.path_segments().and_then(|mut s| s.next_back().map(str::to_string))))
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "Image".into())
+    let Ok(u) = url::Url::parse(src).or_else(|_| url::Url::parse(&format!("http://x{src}"))) else { return fallback };
+    if let Some((_, given)) = u.query_pairs().find(|(k, v)| k == "name" && !v.is_empty()) {
+        return given.to_string();
+    }
+    if crate::files::image_blob(src).is_none()
+        && let Some(last) = u.path_segments().and_then(|mut s| s.next_back().map(str::to_string)).filter(|l| l.contains('.') || alt.trim().is_empty()).filter(|l| !l.is_empty())
+    {
+        return last;
+    }
+    fallback
 }
 
 /// A message's Markdown, drawn.

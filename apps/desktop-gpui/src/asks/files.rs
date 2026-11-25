@@ -22,7 +22,7 @@ fn shown_of(a: &Attachment) -> Shown {
         Some(h) => format!("/blobs/{h}?type={}&name={}", q(&a.kind), q(&a.name)),
         None => a.url.clone().unwrap_or_default(),
     };
-    Shown { route, name: a.name.clone(), kind: a.kind.clone(), size: a.size, blob }
+    Shown { route, name: a.name.clone(), kind: a.kind.clone(), size: a.size, blob, local: None }
 }
 
 /// One file, as an option's (beside its key); a video is a row of its own, its own scroll.

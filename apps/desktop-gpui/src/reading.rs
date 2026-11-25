@@ -30,7 +30,6 @@ pub struct Reading {
 
 /// Says how the platform's reading window draws a reply: this page.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([gpui::KeyBinding::new("cmd-c", CopyWords, Some("Reading")), gpui::KeyBinding::new("cmd-a", ui_sdk::native::text_field::SelectAll, Some("Reading"))]);
     crate::platform::windows::register(
         "read",
         |shows, window, cx| {

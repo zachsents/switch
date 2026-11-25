@@ -154,7 +154,9 @@ fn runs(kinds: Vec<(String, Kind_, u64, Option<String>)>) -> Vec<Entry> {
             Kind_::Pending(p) => {
                 p.failed.hash(&mut h);
                 p.text.hash(&mut h);
-                p.files.hash(&mut h);
+                for f in &p.files {
+                    (&f.id, &f.blob).hash(&mut h);
+                }
                 p.reply_to.hash(&mut h);
             }
             Kind_::Ask(item, open) => {
@@ -277,6 +279,8 @@ pub struct ChatView {
     failures: usize,
     /// The row brought into view, to centre once it's laid out.
     centering: Option<usize>,
+    /// The line picked from the keys (⌥↑), by seq: ↑ ↓ move, R replies, T reacts, C copies.
+    picked: Option<u64>,
 }
 
 impl ChatView {
@@ -342,6 +346,7 @@ impl ChatView {
                 this.editing = None;
                 cx.notify();
             }
+            BoxEvent::Pick => this.pick(-1, window, cx),
         })
         .detach();
         // Its box takes the focus as the space first opens.
@@ -377,6 +382,7 @@ impl ChatView {
             hovered: false,
             failures: 0,
             centering: None,
+            picked: None,
         }
     }
 
@@ -389,6 +395,91 @@ impl ChatView {
     fn follow(&mut self, cx: &mut Context<Self>) {
         self.fl.follow();
         cx.notify();
+    }
+
+    /// The lines the keys can pick (a bubble's), by their row and seq.
+    fn pickable(&self) -> Vec<(usize, u64)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, e)| match &e.kind {
+                Kind_::Line(l) if l.quiet.is_none() && l.widget.is_none() && (!general_of(l).is_empty() || !l.reply_to.is_empty() || l.item.is_some()) => Some((ix, l.seq)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The line `by` places from the one picked (none picked: the last); past the last, the box.
+    fn pick(&mut self, by: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let lines = self.pickable();
+        let Some(last) = lines.len().checked_sub(1) else { return };
+        let at = self.picked.and_then(|p| lines.iter().position(|(_, s)| *s == p));
+        let to = match at {
+            None => last as isize,
+            Some(i) => i as isize + by,
+        };
+        if to > last as isize {
+            self.unpick(cx);
+            self.focus_box(window, cx);
+            return;
+        }
+        let (ix, seq) = lines[to.max(0) as usize];
+        self.picked = Some(seq);
+        *self.sh.picked.borrow_mut() = Some(self.entries[ix].key.clone());
+        if ix + 1 < self.entries.len() {
+            self.fl.release();
+        }
+        self.list.scroll_to_reveal_item(ix);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn unpick(&mut self, cx: &mut Context<Self>) {
+        if self.picked.take().is_some() {
+            *self.sh.picked.borrow_mut() = None;
+            cx.notify();
+        }
+    }
+
+    /// The line picked, with its row's key.
+    fn picked_line(&self) -> Option<(Arc<Line>, String)> {
+        let seq = self.picked?;
+        self.entries.iter().find_map(|e| match &e.kind {
+            Kind_::Line(l) if l.seq == seq => Some((l.clone(), e.key.clone())),
+            _ => None,
+        })
+    }
+
+    /// R or ↵ on the line picked: a reply to it in the box.
+    fn reply_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((line, _)) = self.picked_line() else { return };
+        crate::replying::attach(&self.space, Reply::Quote { seq: line.seq, text: general_of(&line), reply: None }, cx);
+        self.unpick(cx);
+        crate::chatbox::focus_box_of(&self.space, window, cx);
+    }
+
+    /// T on the line picked: the reactions menu over it.
+    fn react_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((line, _)) = self.picked_line() else { return };
+        let Some(anchor) = self.sh.bubbles.borrow().get(&line.seq).copied() else { return };
+        let space = self.space.clone();
+        let mine = line.reactions.user.clone();
+        self.menu.update(cx, |m, cx| m.open(Target { seq: line.seq, space, quote: None, mine, anchor }, window, cx));
+    }
+
+    /// C or ⌘C on the line picked: its words, as its Copy.
+    fn copy_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((line, key)) = self.picked_line() else { return };
+        cx.write_to_clipboard(ClipboardItem::new_string(general_of(&line)));
+        *self.sh.copied.borrow_mut() = Some((key, std::time::Instant::now()));
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Space or O on the line picked: it whole, with its detail, in its reading window.
+    fn read_picked(&mut self, cx: &mut Context<Self>) {
+        let Some((line, _)) = self.picked_line() else { return };
+        crate::chat_platform::read(&self.sh.title, &crate::said::whole_of(&general_of(&line), line.detail.as_deref()), cx);
     }
 
     /// ↑ in the empty box: the user's last message here, to edit, unless it's still being sent.
@@ -685,7 +776,8 @@ impl ChatView {
             ));
         }
         if !p.files.is_empty() {
-            col = col.child(attached::sending(&p.files, l));
+            let row = self.rows.entry(e.key.clone()).or_default().clone();
+            col = col.child(attached::sending(&p.files, !p.text.is_empty(), &e.key, &row, l, window, cx));
         }
         if p.failed {
             let (id, space) = (p.id.clone(), self.space.clone());
@@ -986,11 +1078,6 @@ impl Focusable for ChatView {
     }
 }
 
-/// ⌘C copies what's selected in a chat.
-pub fn bindings() -> Vec<gpui::KeyBinding> {
-    vec![gpui::KeyBinding::new("cmd-c", CopySelection, Some("Chat")), gpui::KeyBinding::new("cmd-a", ui_sdk::native::text_field::SelectAll, Some("Chat && !TextField"))]
-}
-
 impl ChatView {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = Look::get(cx);
@@ -1049,9 +1136,20 @@ impl ChatView {
         }
         let latest = self.fl.latest(window);
         let thumb = self.fl.thumb_shown(self.hovered).then(|| follow::thumb(&self.list, &l));
+        // The keyboard gone elsewhere (a click in the box), nothing stays picked.
+        if self.picked.is_some() && !self.focus.is_focused(window) && !self.menu.read(cx).is_open() {
+            self.picked = None;
+            *self.sh.picked.borrow_mut() = None;
+        }
         div()
-            .key_context("Chat")
+            .key_context(if self.picked.is_some() { "Chat Picking" } else { "Chat" })
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &crate::commands::PickUp, window, cx| this.pick(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::PickDown, window, cx| this.pick(1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::ReplyPicked, window, cx| this.reply_picked(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::ReactPicked, window, cx| this.react_picked(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::CopyPicked, window, cx| this.copy_picked(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::ReadPicked, _, cx| this.read_picked(cx)))
             // Edit ▸ Copy, as ⌘C.
             // ⌘A and Edit ▸ Select All: the column's words.
             // ⌘V or Edit ▸ Paste with the column focused (no field): to the box, files and words.
@@ -1088,6 +1186,10 @@ impl ChatView {
                     this.menu.update(cx, |m, cx| m.escape(window, cx));
                 } else if this.blip.take().is_some() {
                     cx.notify();
+                } else if this.picked.is_some() {
+                    // Esc from a line picked: back to the box.
+                    this.unpick(cx);
+                    this.focus_box(window, cx);
                 } else {
                     cx.propagate();
                 }

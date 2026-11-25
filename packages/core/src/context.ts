@@ -9,6 +9,7 @@ import type { Thread } from "@switch/agent"
 import {
   allSpaces,
   Brain,
+  defineRead,
   HOME,
   MessagePosted,
   MessageReacted,
@@ -388,6 +389,70 @@ const selfOf = (t: Thread, profile: Profile) => {
   return `You: ${id} on the ${provider} subscription (${t.model}), running on ${hostname()}. Triage ${r.triage.id}, gates ${r.gate.id}, decisions ${r.decision.id}.`
 }
 
+/** What `delta` reads of the brain: a thread's view of its space, from `after`. */
+interface DeltaInput {
+  readonly space: SpaceId
+  readonly thread: ThreadId
+  readonly seen: number
+  readonly after: number
+  /** Triage's lines for the space since `after`, when it noted them; else the events' own. */
+  readonly noted: string | null
+  readonly recall: string
+  readonly now: number
+}
+
+/** The message before a turn in a space's thread: what changed here and elsewhere, and now. */
+const deltaRead = defineRead(
+  "core/context/delta",
+  (db, { space, thread, seen, after, noted, recall, now }: DeltaInput) => {
+    const names = new Map(allSpaces(db).map((s) => [s.id, s.name]))
+    const fresh = since(db, space, after)
+    const raw = () =>
+      fresh.map((e) => {
+        const l = line(e)?.text ?? e.type
+        return `- ${hhmm(e.time)} ${clip(l, 160)}`
+      })
+    const here = noted === null ? raw() : noted.split("\n").filter((l) => l !== "")
+    const get = db.query<Row, [number]>(
+      "SELECT e.*, t.home FROM events e JOIN tags t ON t.seq = e.seq WHERE e.seq = ?",
+    )
+    const other = elsewhere(db, {
+      space,
+      after,
+      names,
+      now,
+      lineOf: (seq) => {
+        const r = get.get(seq)
+        return r ? (line(stored(r))?.text ?? r.type) : ""
+      },
+    })
+    const flight = inFlight(db, thread, now)
+    const parts = [
+      here.length > 0 ? `In this space:\n${here.join("\n")}` : "",
+      ...lately(db, fresh),
+      surprisesFor(db, space, thread, seen),
+      openHere(db, space, thread, now),
+      other.length > 0 ? `Elsewhere:\n${other.join("\n")}` : "",
+      flight.length > 0 ? `In flight:\n${flight.join("\n")}` : "",
+      recall === "" ? "" : `Recall:\n${recall}`,
+      macsLine(db, now),
+      healthLine(db, now),
+      nowLine(db, now),
+    ]
+    return parts.filter((p) => p !== "").join("\n\n")
+  },
+)
+
+/** Where a first look starts: the event six hours before `now`. */
+const firstLookRead = defineRead(
+  "core/context/first-look",
+  (db, now: number) => seqAt(db, now - SIX_HOURS) - 1,
+)
+/** Every space. */
+const spacesRead = defineRead("core/context/spaces", allSpaces)
+/** Who the user is. */
+const userRead = defineRead("core/context/user", userOf)
+
 /** `profile` is the one in use now. */
 export const makeContext = (profile: Effect.Effect<Profile>) =>
   Effect.gen(function* making() {
@@ -403,10 +468,10 @@ export const makeContext = (profile: Effect.Effect<Profile>) =>
           // A task told only it orchestrates handed its whole job to one child, hop after hop.
           return t.parent === null ? "" : `You are a task (${t.thread}), started by ${t.parent}.`
         }
-        const spaces = yield* brain.read(allSpaces)
+        const spaces = yield* brain.read(spacesRead)
         const s = spaces.find((x) => x.id === space)
         const core = (yield* memory.core(space)).trim()
-        const u = yield* brain.read(userOf)
+        const u = yield* brain.read(userRead)
         const who = [u?.name ?? "", u?.about ?? ""].filter((x) => x.trim() !== "").join(". ")
         return [
           selfOf(t, yield* profile),
@@ -428,46 +493,16 @@ export const makeContext = (profile: Effect.Effect<Profile>) =>
         const now = Date.now()
         const recall = text === "" ? "" : (yield* memory.recall(space, text)).trim()
         // A first look covers the last six hours.
-        const after = yield* brain.read((db) =>
-          t.seen > 0 ? t.seen : seqAt(db, now - SIX_HOURS) - 1,
-        )
+        const after = t.seen > 0 ? t.seen : yield* brain.read(firstLookRead, now)
         const noted = triage.delta === undefined ? null : (yield* triage.delta(space, after)).trim()
-        return yield* brain.read((db) => {
-          const names = new Map(allSpaces(db).map((s) => [s.id, s.name]))
-          const fresh = since(db, space, after)
-          const raw = () =>
-            fresh.map((e) => {
-              const l = line(e)?.text ?? e.type
-              return `- ${hhmm(e.time)} ${clip(l, 160)}`
-            })
-          const here = noted === null ? raw() : noted.split("\n").filter((l) => l !== "")
-          const get = db.query<Row, [number]>(
-            "SELECT e.*, t.home FROM events e JOIN tags t ON t.seq = e.seq WHERE e.seq = ?",
-          )
-          const other = elsewhere(db, {
-            space,
-            after,
-            names,
-            now,
-            lineOf: (seq) => {
-              const r = get.get(seq)
-              return r ? (line(stored(r))?.text ?? r.type) : ""
-            },
-          })
-          const flight = inFlight(db, t.thread, now)
-          const parts = [
-            here.length > 0 ? `In this space:\n${here.join("\n")}` : "",
-            ...lately(db, fresh),
-            surprisesFor(db, space, t.thread, t.seen),
-            openHere(db, space, t.thread, now),
-            other.length > 0 ? `Elsewhere:\n${other.join("\n")}` : "",
-            flight.length > 0 ? `In flight:\n${flight.join("\n")}` : "",
-            recall === "" ? "" : `Recall:\n${recall}`,
-            macsLine(db, now),
-            healthLine(db, now),
-            nowLine(db, now),
-          ]
-          return parts.filter((p) => p !== "").join("\n\n")
+        return yield* brain.read(deltaRead, {
+          space,
+          thread: t.thread,
+          seen: t.seen,
+          after,
+          noted,
+          recall,
+          now,
         })
       })
 

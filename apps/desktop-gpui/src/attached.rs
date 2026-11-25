@@ -4,7 +4,7 @@
 //! (`viewer.rs`; a row's, on the row's pictures and videos at that one); a video's key plays it in
 //! place; a file's name, clicked, saves it to Downloads and opens it (a 3D file in Preview), turning
 //! while it's fetched. Right-click gives Open, Quick Look,
-//! Show in Finder and Download. Each is a set height before it loads, so a column keeps to its
+//! Copy, Download, Show in Finder (once downloaded) and Share. Each is a set height before it loads, so a column keeps to its
 //! latest as they come in. When a row holds more than it shows, its count shows under it.
 
 use std::collections::HashMap;
@@ -58,12 +58,24 @@ pub struct Shown {
     pub size: Option<f64>,
     /// Its blob, when it's the core's.
     pub blob: Option<String>,
+    /// Its bytes on this Mac while it's being sent: drawn from here, not opened yet.
+    pub local: Option<std::path::PathBuf>,
 }
 
 /// A message's file, served from the core's blobs under its name.
 pub fn shown_of(a: &Attachment) -> Shown {
     let q = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
-    Shown { route: format!("/blobs/{}?type={}&name={}", a.blob, q(&a.kind), q(&a.name)), name: a.name.clone(), kind: a.kind.clone(), size: Some(a.size), blob: Some(a.blob.clone()) }
+    Shown { route: format!("/blobs/{}?type={}&name={}", a.blob, q(&a.kind), q(&a.name)), name: a.name.clone(), kind: a.kind.clone(), size: Some(a.size), blob: Some(a.blob.clone()), local: None }
+}
+
+/// A file of a message being sent, drawn from its bytes here: a video, a sound or a model from its
+/// link under its name (`own.rs`), a picture from the kept bytes, so once it's up its message's
+/// picture is that one, decoded already.
+pub fn shown_kept(k: &crate::outbox::KeptFile) -> Shown {
+    let kind = crate::files::type_of(&k.name, &k.kind);
+    let linked = matches!(kind_of(&kind, &k.name), FileKind::Video | FileKind::Audio | FileKind::Model).then(|| crate::own::link(&k.id, &k.name)).flatten();
+    let route = linked.map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| format!("own:{}", k.id));
+    Shown { route, name: k.name.clone(), kind, size: Some(k.size), blob: None, local: Some(crate::outbox::file_path(&k.id)) }
 }
 
 /// Where the chat draws a file: big in chat, small in an ask.
@@ -99,6 +111,9 @@ fn opened(cx: &mut App) -> Entity<Opened> {
 
 /// Opened, turning while it's fetched; failed, its stop mark.
 fn open(f: &Shown, window: &mut Window, cx: &mut App) {
+    if f.local.is_some() {
+        return;
+    }
     let e = opened(cx);
     if e.read(cx).0.get(&f.route) == Some(&Opening::Opening) {
         return;
@@ -120,6 +135,9 @@ fn open(f: &Shown, window: &mut Window, cx: &mut App) {
 }
 
 fn menu_of(f: &Shown) -> Rc<dyn Fn(&mut Window, &mut App)> {
+    if f.local.is_some() {
+        return Rc::new(|_, _| {});
+    }
     let (route, name) = (f.route.clone(), f.name.clone());
     Rc::new(move |window, cx| {
         chat_platform::file(&route, &name, Do::Menu, window, cx).detach();
@@ -213,9 +231,10 @@ fn picture(f: &Shown, h: gpui::Pixels, max_w: gpui::Pixels, fit: gpui::ObjectFit
     if f.blob.as_ref().is_some_and(|b| Pictures::failed(b, cx)) {
         return div().h(h).max_w(max_w).flex().items_center().px(u(4.)).text_color(l.ink2).child(div().min_w_0().truncate().child(f.name.clone())).into_any_element();
     }
-    let shown = match &f.blob {
-        Some(b) => Pictures::sized(b, format_of(&f.kind, &f.name), most, cx),
-        None => crate::widgets::media::WebPictures::get(&f.route, cx).map(gpui::ImageSource::Image),
+    let shown = match (&f.blob, &f.local) {
+        (Some(b), _) => Pictures::sized(b, format_of(&f.kind, &f.name), most, cx),
+        (None, Some(p)) => Pictures::local(p.clone(), most, cx),
+        (None, None) => crate::widgets::media::WebPictures::get(&f.route, cx).map(gpui::ImageSource::Image),
     };
     match shown {
         Some(image) => img(image).h(h).max_w(max_w).object_fit(fit).rounded(radius).into_any_element(),
@@ -239,7 +258,12 @@ fn picture_row(pictures: &[Shown], size: Size, right: bool, key: &str, scroll: &
         .enumerate()
         .map(|(i, p)| {
             let all = all.clone();
-            let open: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, cx| crate::viewer::open((*all).clone(), i, window, cx));
+            let here = p.local.is_some();
+            let open: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, cx| {
+                if !here {
+                    crate::viewer::open((*all).clone(), i, window, cx);
+                }
+            });
             if kind_of(&p.kind, &p.name) == FileKind::Video {
                 return crate::media::video_tile(&p.route, &p.kind, &p.name, u(if any_video { tall } else { high }), open, menu_of(p), window, cx);
             }
@@ -278,20 +302,26 @@ fn attached_file(f: &Shown, size: Size, key: &str, scroll: &ScrollHandle, l: &Lo
         FileKind::Image => {
             // `h-60 max-w-full` in a chat, `h-24 max-w-60` in an ask.
             let h = l.z(if size == Size::Chat { 240. } else { 96. });
-            let (one, fm) = (item_of(f), menu_of(f));
+            let (one, fm, here) = (item_of(f), menu_of(f), f.local.is_some());
             let id = SharedString::from(format!("{key}.img.{}", f.route));
             let focus = crate::said::focus_for(id.clone(), window, cx);
             let pic = crate::said::keyed(div().id(id), &focus, l.z(18.), l, window)
                 .flex_none()
                 .max_w_full()
                 .overflow_hidden()
-                .on_click(move |_, window, cx| crate::viewer::open(vec![one.clone()], 0, window, cx))
+                .on_click(move |_, window, cx| {
+                    if !here {
+                        crate::viewer::open(vec![one.clone()], 0, window, cx);
+                    }
+                })
                 .on_mouse_down(MouseButton::Right, move |_, window, cx| fm(window, cx))
                 .child(picture(f, h, if size == Size::Chat { max.unwrap_or(l.z(420.)) } else { l.z(240.) }, gpui::ObjectFit::Contain, l.z(18.), l, window, cx));
             capped(pic, size, l).into_any_element()
         }
         FileKind::Video => picture_row(std::slice::from_ref(f), size, false, key, scroll, l, window, cx),
         FileKind::Audio => crate::media::audio_player(&f.route, &f.kind, &f.name, menu_of(f), window, cx),
+        // A model being sent whose bytes aren't linked yet is its name until they are.
+        FileKind::Model if f.route.starts_with("own:") => file_line(f, true, size, key, l, window, cx),
         FileKind::Model => {
             let fm = menu_of(f);
             let frame = div()
@@ -338,15 +368,19 @@ pub fn attached(list: &[Attachment], right: bool, under: bool, key: &str, scroll
         .into_any_element()
 }
 
-/// A message's files while it's being sent: their names.
-pub fn sending(names: &[String], l: &Look) -> AnyElement {
+/// A message's files while it's being sent, drawn from their bytes here as its own will be once it's
+/// in, so it takes their place as it is.
+pub fn sending(list: &[crate::outbox::KeptFile], under: bool, key: &str, scroll: &ScrollHandle, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
+    let shown: Vec<Shown> = list.iter().map(shown_kept).collect();
+    let gallery = !row_of(&shown).is_empty();
     div()
         .flex()
         .flex_col()
+        .max_w_full()
+        .gap(u(6.))
         .items_end()
         .self_end()
-        .gap(u(6.))
-        .opacity(0.6)
-        .children(names.iter().map(|n| div().flex().h(u(40.)).items_center().rounded(u(18.)).border_1().border_color(l.line1).px(u(12.)).text_size(u(12.)).text_color(l.ink).child(n.clone())))
+        .when(under && gallery, |d| d.pt(u(12.)))
+        .children(files(&shown, Size::Chat, true, key, scroll, l, window, cx))
         .into_any_element()
 }

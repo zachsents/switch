@@ -22,9 +22,9 @@ use crate::widgets::basic::controls::{Drag, track};
 use crate::widgets::basic::{data, glyph, nothing, share, span_of};
 use crate::widgets::render::Ctx;
 
-thread_local! {
+base::kept_local! {
     /// Every player made, so one starting pauses the rest.
-    static PLAYERS: RefCell<Vec<Weak<WebView>>> = const { RefCell::new(vec![]) };
+    static PLAYERS: RefCell<Vec<Weak<WebView>>> = RefCell::new(vec![]);
 }
 
 /// A player's state, as its element tells it.

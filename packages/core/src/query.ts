@@ -2,7 +2,7 @@
 // query`, answered from their own records in the log. An entity's facts are its latest
 // observation's. Anything else is refused, so a caller never mistakes it for no rows.
 import type { Database } from "bun:sqlite"
-import { Brain } from "@switch/brain"
+import { Brain, defineRead } from "@switch/brain"
 import { Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/http"
 
@@ -64,6 +64,9 @@ const answer = (db: Database, q: string, source: string) => {
   return null
 }
 
+/** `q` answered from `source`'s observations, or null when it isn't a query Switch knows. */
+const answerRead = defineRead("core/query/answer", answer)
+
 export const queryRoute = Layer.unwrap(
   Brain.pipe(
     Effect.map((brain) =>
@@ -76,7 +79,7 @@ export const queryRoute = Layer.unwrap(
             return Response.json({ error: "Bad query" }, { status: 400 })
           }
           const { q, source } = asked.value
-          const found = await Effect.runPromise(brain.read((db) => answer(db, q, source)))
+          const found = await Effect.runPromise(brain.read(answerRead, q, source))
           return found === null
             ? Response.json({ error: `Not in Switch: ${q}` }, { status: 400 })
             : Response.json(found)

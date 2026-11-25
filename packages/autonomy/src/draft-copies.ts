@@ -4,7 +4,7 @@
 // revises it, before Approve & send runs, after each change on the card, and every minute while it's
 // open. The user, Nov 23: "if I edit a draft either in Gmail or in the little editor in the task, I
 // want the agent to be aware of it."
-import { Brain, EventId } from "@switch/brain"
+import { Brain, defineRead, EventId } from "@switch/brain"
 import { Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
 
 import { sameWords } from "./draft-words.ts"
@@ -17,6 +17,11 @@ type Call = (name: string, args: Record<string, unknown>) => Promise<unknown>
 type Copy = NonNullable<NonNullable<ActionItem["drafts"]>[number]["copy"]>
 
 const decodeText = Schema.decodeUnknownOption(Schema.Struct({ text: Schema.String }))
+
+/** What a copy and its card last agreed on, null before anything's known. */
+const agreedRead = defineRead("autonomy/draft-copies/agreed", agreedOn)
+/** An item as it stands. */
+const itemRead = defineRead("autonomy/draft-copies/item", getItem)
 
 export class DraftCopies extends Context.Service<
   DraftCopies,
@@ -42,7 +47,7 @@ export class DraftCopies extends Context.Service<
       /** What a copy and its card agree on now, kept in the brain (`item.agreed`). */
       const agree = (id: string, name: string, text: string) =>
         Effect.gen(function* agreeing() {
-          if ((yield* brain.read((db) => agreedOn(db, id, name))) === text) {
+          if ((yield* brain.read(agreedRead, id, name)) === text) {
             return
           }
           yield* Effect.ignore(
@@ -76,14 +81,14 @@ export class DraftCopies extends Context.Service<
       /** What they last agreed on; before anything's known, the side he hasn't touched. */
       const lastAgreed = (item: ActionItem, name: string, there: string) =>
         Effect.map(
-          brain.read((db) => agreedOn(db, item.id, name)),
+          brain.read(agreedRead, item.id, name),
           (was) => was ?? (item.edits[name] === undefined ? shownText(item, name) : there),
         )
 
       const sync = (id: string) =>
         lane.withPermit(
           Effect.gen(function* syncing() {
-            const item = yield* brain.read((db) => getItem(db, id))
+            const item = yield* brain.read(itemRead, id)
             if (item?.status !== "open" || call === null) {
               return
             }

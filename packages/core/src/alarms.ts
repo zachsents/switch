@@ -21,7 +21,7 @@ import {
 } from "@switch/autonomy"
 import type { Alarm, AlarmLine } from "@switch/autonomy"
 import { Sessions } from "@switch/agent"
-import { Brain, HOME, ThreadId } from "@switch/brain"
+import { Brain, defineRead, HOME, ThreadId } from "@switch/brain"
 import type { StoredEvent } from "@switch/brain"
 import { Gateway } from "@switch/gateway"
 import { Effect, Layer, Schema, Stream } from "effect"
@@ -169,6 +169,33 @@ const ownerLine = (o: Owner, titles: ReadonlyMap<string, string>, woken: string 
   return `${what}: ${weight}${whose}`
 }
 
+/**
+ * The titles of the `shown` owners' works, and the first of `among` the brain knows: the work an
+ * alarm wakes, with its space.
+ */
+const ringRead = defineRead(
+  "core/alarms/ring",
+  (db, shown: readonly Owner[], among: readonly Owner[]) => {
+    const title = db.query<{ title: string }, [string]>(
+      "SELECT title FROM threads WHERE thread = ?",
+    )
+    const named = new Map(
+      shown.flatMap((o) => {
+        const t = o.work === undefined ? null : title.get(o.work)
+        return o.work === undefined || t === null ? [] : [[o.work, t.title] as const]
+      }),
+    )
+    // A work the brain doesn't know (one long gone) is no one to wake.
+    const blamed = among.find((o) => o.work !== undefined && title.get(o.work) !== null)?.work
+    const thread = blamed === undefined ? null : ThreadId.make(blamed)
+    return {
+      titles: named,
+      work: thread,
+      space: thread === null ? HOME : (spaceOfWork(db, thread) ?? HOME),
+    }
+  },
+)
+
 /** One alarm rung on a machine: its text, carrying the numbers and the heaviest, to the work. */
 const ring = (alarm: Alarm, id: string, machine: string, e: StoredEvent, v: number | string) =>
   Effect.gen(function* ringing() {
@@ -176,27 +203,7 @@ const ring = (alarm: Alarm, id: string, machine: string, e: StoredEvent, v: numb
     const sessions = yield* Sessions
     const owners = ((yield* ownersOn(e.source)) ?? []).toSorted(heavier(alarm.alarm.by))
     const shown = owners.slice(0, SHOWN)
-    const { titles, work, space } = yield* brain.read((db) => {
-      const title = db.query<{ title: string }, [string]>(
-        "SELECT title FROM threads WHERE thread = ?",
-      )
-      const named = new Map(
-        shown.flatMap((o) => {
-          const t = o.work === undefined ? null : title.get(o.work)
-          return o.work === undefined || t === null ? [] : [[o.work, t.title] as const]
-        }),
-      )
-      // A work the brain doesn't know (one long gone) is no one to wake.
-      const blamed = owners
-        .slice(0, BLAMED)
-        .find((o) => o.work !== undefined && title.get(o.work) !== null)?.work
-      const thread = blamed === undefined ? null : ThreadId.make(blamed)
-      return {
-        titles: named,
-        work: thread,
-        space: thread === null ? HOME : (spaceOfWork(db, thread) ?? HOME),
-      }
-    })
+    const { titles, work, space } = yield* brain.read(ringRead, shown, owners.slice(0, BLAMED))
     const heaviest =
       shown.length === 0
         ? `Its heaviest processes couldn't be read from ${e.source}_load.`
@@ -216,6 +223,16 @@ const ring = (alarm: Alarm, id: string, machine: string, e: StoredEvent, v: numb
     )
   })
 
+/** Every alarm, and the ids of those open on `machine`. */
+const alarmsRead = defineRead("core/alarms/alarms", (db, machine: string) => ({
+  alarms: alarmsOf(db),
+  open: new Set(
+    openSurprises(db)
+      .filter((s) => s.id.startsWith(PREFIX) && s.id.endsWith(`:${machine}`))
+      .map((s) => s.id),
+  ),
+}))
+
 /** A reading against every alarm: each past its line rings, once; each open one that's over ends. */
 const read = (e: StoredEvent) =>
   Effect.gen(function* reading() {
@@ -224,14 +241,7 @@ const read = (e: StoredEvent) =>
     if (typeof machine !== "string" || machine === "") {
       return
     }
-    const { alarms, open } = yield* brain.read((db) => ({
-      alarms: alarmsOf(db),
-      open: new Set(
-        openSurprises(db)
-          .filter((s) => s.id.startsWith(PREFIX) && s.id.endsWith(`:${machine}`))
-          .map((s) => s.id),
-      ),
-    }))
+    const { alarms, open } = yield* brain.read(alarmsRead, machine)
     const live = new Set<string>()
     for (const alarm of alarms) {
       const id = `${PREFIX}${alarm.name}:${machine}`
@@ -253,13 +263,17 @@ const read = (e: StoredEvent) =>
     }
   })
 
+/** The brain's head: where the readings to watch start. */
+const headRead = defineRead(
+  "core/alarms/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+
 export const alarmsWorker = Layer.effectDiscard(
   Effect.gen(function* alarming() {
     const brain = yield* Brain
-    const head = yield* brain.read(
-      (db) =>
-        db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
-    )
+    const head = yield* brain.read(headRead)
     yield* Effect.forkScoped(
       brain.changes(head).pipe(
         Stream.filter((e) => e.type.endsWith(".vitals")),

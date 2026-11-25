@@ -109,7 +109,9 @@ impl Chosen {
 /// Files still being kept (their bytes written beside the outbox off the main thread), by id:
 /// what reads one waits until it's in.
 fn keeping() -> &'static Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>> {
-    static K: OnceLock<Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>> = OnceLock::new();
+    base::kept! {
+        static K: OnceLock<Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>> = OnceLock::new();
+    }
     K.get_or_init(Default::default)
 }
 

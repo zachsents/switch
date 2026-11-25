@@ -11,6 +11,7 @@ import {
   BYPASS,
   Bypass,
   bypassOf,
+  defineRead,
   EventId,
   hashOf,
   HOME,
@@ -77,6 +78,15 @@ import { DismissSurprise, isTrouble, raise, TROUBLE_STAYS } from "./surprise.ts"
 const headSeq = (db: Database) =>
   db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
 
+const headRead = defineRead("autonomy/app/head", headSeq)
+
+const spaceForRead = defineRead(
+  "autonomy/app/space-for",
+  (db, given: string | undefined, asker: string | null) => spaceFor(db, given, asker),
+)
+
+const itemRead = defineRead("autonomy/app/item", (db, id: string) => getItem(db, id))
+
 const SPACE = "space:"
 const spaceOfThread = (thread: ThreadId) =>
   thread.startsWith(SPACE) ? SpaceId.make(thread.slice(SPACE.length)) : null
@@ -90,7 +100,7 @@ const spaceId = (given: string | undefined) =>
   Effect.gen(function* resolving() {
     const brain = yield* Brain
     const caller = yield* Caller
-    return yield* brain.read((db) => spaceFor(db, given, caller.space))
+    return yield* brain.read(spaceForRead, given, caller.space)
   })
 
 const DURATION = /^(?<n>\d+(?:\.\d+)?)\s*(?<unit>m|min|h|d|w)$/u
@@ -145,6 +155,133 @@ const when = (ms: number) =>
       hour: "numeric",
       minute: "2-digit",
     })
+
+/** What the expectation check reads beside the wait: their open items, what was said, their rules. */
+const waitContextRead = defineRead(
+  "autonomy/app/wait-context",
+  (db, space: SpaceId, what: string) => ({
+    open:
+      items(db, { status: "open" })
+        .map((i) => `${i.id}: ${i.title} (${i.space})`)
+        .join("; ") || "none",
+    said: lastSaid(db, space),
+    preferences: rulesAt(db, [space], what),
+  }),
+)
+
+/** What an id a wait names is: an expectation, an item, or neither. */
+const waitTargetRead = defineRead("autonomy/app/wait-target", (db, id: string | undefined) => {
+  if (id === undefined) {
+    return null
+  }
+  if (getExpectation(db, id)) {
+    return "expectation"
+  }
+  return items(db).some((i) => i.id === id) ? "item" : null
+})
+
+const modelOfThreadRead = defineRead("autonomy/app/model-of-thread", (db, thread: ThreadId) =>
+  modelOfThread(db, thread),
+)
+
+const modelOfTurnRead = defineRead("autonomy/app/model-of-turn", (db, turn: string | null) =>
+  modelOfTurn(db, turn),
+)
+
+const machineNamesRead = defineRead("autonomy/app/machine-names", (db) =>
+  machines(db).map((m) => m.machine),
+)
+
+/**
+ * The first row an item's `resolve_when` finds now, as JSON, or why it can't run: a query error
+ * stays a message here, as it crosses back from the reader.
+ */
+const resolveFindsRead = defineRead(
+  "autonomy/app/resolve-finds",
+  (
+    db,
+    check: string,
+    zone: string,
+  ): { readonly row: string | null } | { readonly error: string } => {
+    try {
+      const [row] = run(db, prepare(check, zone), Date.now(), zone).rows
+      return { row: row === undefined ? null : JSON.stringify(row) }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+  },
+)
+
+/** What an item's gate reads: the open items, this space's expectations, the item it revises, rules. */
+const proposeRead = defineRead(
+  "autonomy/app/propose",
+  (db, space: SpaceId, id: string | undefined, asked: string) => ({
+    open: items(db, { status: "open" }),
+    expected: openExpectations(db, [space]),
+    given: id === undefined ? null : getItem(db, id),
+    preferences: rulesAt(db, [space], asked),
+  }),
+)
+
+const saidFromRead = defineRead("autonomy/app/said-from", (db, quote: string, space: SpaceId) =>
+  saidFrom(db, quote, space),
+)
+
+const placeOfRead = defineRead("autonomy/app/place-of", (db, thread: string) => placeOf(db, thread))
+
+const unheardTaskRead = defineRead("autonomy/app/unheard-task", (db, thread: string) =>
+  unheardTask(db, thread),
+)
+
+const saidLatelyRead = defineRead("autonomy/app/said-lately", (db, space: SpaceId, since: number) =>
+  saidLately(db, space, since),
+)
+
+const theirsInRead = defineRead("autonomy/app/theirs-in", (db, turn: string) => theirsIn(db, turn))
+
+const sensedInRead = defineRead("autonomy/app/sensed-in", (db, turn: string) => sensedIn(db, turn))
+
+/** What a reply's gate reads beside it: how its turn started, the queue, what the turn looked up. */
+const sayContextRead = defineRead(
+  "autonomy/app/say-context",
+  (
+    db,
+    at: {
+      readonly own: boolean
+      readonly sensed: boolean
+      readonly thread: string
+      readonly turn: string | null
+      readonly space: SpaceId
+      readonly text: string
+    },
+  ) => ({
+    context: [
+      at.own
+        ? `This turn started itself${at.sensed ? ": the senses woke it, and" : ":"} none of the user's words are in it.`
+        : lastAskIn(db, at.thread),
+      `Their open items: ${
+        items(db, { status: "open" })
+          .map((i) => `${i.title} (${i.space})`)
+          .join("; ") || "none"
+      }`,
+      `Open expectations: ${
+        openExpectations(db, [at.space])
+          .map((x) => x.what)
+          .join("; ") || "none"
+      }`,
+      `What this turn looked up:\n${(at.turn === null ? [] : lookedUp(db, at.turn)).join("\n") || "nothing"}`,
+    ]
+      .filter((x) => x !== "")
+      .join("\n\n"),
+    preferences: rulesAt(db, [at.space], at.text),
+  }),
+)
+
+const dialsRead = defineRead("autonomy/app/dials", (db) => dialsNow(db))
+
+const spaceNamedRead = defineRead("autonomy/app/space-named", (db, name: string) =>
+  spaceNamed(db, name),
+)
 
 const ExpectInput = Schema.Struct({
   space: SpaceId,
@@ -224,18 +361,15 @@ const judgeWait = (
     ]
       .filter((l) => l !== "")
       .join("\n")
-    const read = yield* brain.read((db) => ({
+    const lately = yield* brain.read(waitContextRead, at.space, input.what)
+    const read = {
       context: [
         `It's now ${when(Date.now())}.`,
-        `Their open items: ${
-          items(db, { status: "open" })
-            .map((i) => `${i.id}: ${i.title} (${i.space})`)
-            .join("; ") || "none"
-        }`,
-        `Said here lately:\n${lastSaid(db, at.space) || "nothing"}`,
+        `Their open items: ${lately.open}`,
+        `Said here lately:\n${lately.said || "nothing"}`,
       ].join("\n\n"),
-      preferences: rulesAt(db, [at.space], input.what),
-    }))
+      preferences: lately.preferences,
+    }
     return yield* gate("expect", {
       key: at.key,
       space: at.space,
@@ -259,8 +393,7 @@ const judgeWait = (
 const hangsOn = (input: ExpectInput, after: number) =>
   Effect.gen(function* hanging() {
     const brain = yield* Brain
-    const asked =
-      input.item === undefined ? null : yield* brain.read((db) => getItem(db, input.item ?? ""))
+    const asked = input.item === undefined ? null : yield* brain.read(itemRead, input.item)
     if (input.item !== undefined && asked?.status !== "open") {
       return yield* new Rejected({
         reason: `${input.item} isn't open in their queue: give an open item's id`,
@@ -336,7 +469,7 @@ Setting the same \`what\` again, or giving one's \`id\` (as listed), moves it; \
       if (warning !== null) {
         return { warning }
       }
-      const after = yield* brain.read(headSeq)
+      const after = yield* brain.read(headRead)
       const { asked, watch } = yield* hangsOn(input, after)
       // A check is said back as it stands.
       const checked =
@@ -396,16 +529,8 @@ const wait = tool(
     Effect.gen(function* waiting() {
       const brain = yield* Brain
       const started = Date.now()
-      const after = yield* brain.read(headSeq)
-      const target = yield* brain.read((db) => {
-        if (input.id === undefined) {
-          return null
-        }
-        if (getExpectation(db, input.id)) {
-          return "expectation"
-        }
-        return items(db).some((i) => i.id === input.id) ? "item" : null
-      })
+      const after = yield* brain.read(headRead)
+      const target = yield* brain.read(waitTargetRead, input.id)
       let q: Query
       if (input.query !== undefined) {
         const wrong = unconditioned(input.query)
@@ -755,7 +880,7 @@ const markRevising = (id: string | undefined) =>
       return yield* new Rejected({ reason: "Give the open item's id" })
     }
     const brain = yield* Brain
-    const was = yield* brain.read((db) => getItem(db, id))
+    const was = yield* brain.read(itemRead, id)
     if (was?.status !== "open") {
       return yield* new Rejected({
         reason: was ? `${id} is ${was.status} already` : `No item ${id}`,
@@ -782,7 +907,7 @@ const dropsTheirs = (id: string, { drafts }: ItemInput) =>
     }
     const copies = yield* DraftCopies
     yield* copies.sync(id)
-    const now = yield* (yield* Brain).read((db) => getItem(db, id))
+    const now = yield* (yield* Brain).read(itemRead, id)
     const gone = drafts.flatMap((d) => {
       const e = now?.edits[d.name]
       const lines = e ? lost(e, d.text) : []
@@ -803,7 +928,7 @@ const asksForCode = (asked: string) =>
 const modelField = (thread: ThreadId | null, was?: ModelTag) =>
   Effect.gen(function* reading() {
     const brain = yield* Brain
-    const model = thread === null ? null : yield* brain.read((db) => modelOfThread(db, thread))
+    const model = thread === null ? null : yield* brain.read(modelOfThreadRead, thread)
     const by = model ?? was
     return by === undefined ? {} : { model: by }
   })
@@ -817,10 +942,7 @@ const codeRefusal = (asked: string) =>
 /** A check runs on a Mac Switch knows, until it succeeds (core's item-checks.ts). */
 const checkRuns = (check: ItemInput["check"]) =>
   Effect.gen(function* checking() {
-    const known =
-      check?.machine === undefined
-        ? []
-        : yield* (yield* Brain).read((db) => machines(db).map((m) => m.machine))
+    const known = check?.machine === undefined ? [] : yield* (yield* Brain).read(machineNamesRead)
     if (check?.run.trim() === "") {
       yield* Effect.fail(new Error("check.run has to be a command"))
     }
@@ -853,13 +975,7 @@ const propose = (raw: typeof itemInput.Type) =>
     const check = input.resolve_when
     if (check !== undefined) {
       const zone = Temporal.Now.timeZoneId()
-      const found = yield* brain.read((db) => {
-        try {
-          return { row: run(db, prepare(check, zone), Date.now(), zone).rows[0] ?? null }
-        } catch (error) {
-          return { error: error instanceof Error ? error.message : String(error) }
-        }
-      })
+      const found = yield* brain.read(resolveFindsRead, check, zone)
       if ("error" in found) {
         return yield* Effect.fail(
           new Error(`resolve_when has to be a query that runs: ${found.error}`),
@@ -868,18 +984,18 @@ const propose = (raw: typeof itemInput.Type) =>
       if (found.row !== null) {
         return yield* Effect.fail(
           new Error(
-            `resolve_when already finds ${JSON.stringify(found.row)}, so the item would close at once: it should find something only once they've done it`,
+            `resolve_when already finds ${found.row}, so the item would close at once: it should find something only once they've done it`,
           ),
         )
       }
     }
     yield* checkRuns(input.check)
-    const { open, expected, given, preferences } = yield* brain.read((db) => ({
-      open: items(db, { status: "open" }),
-      expected: openExpectations(db, [space]),
-      given: input.id === undefined ? null : getItem(db, input.id),
-      preferences: rulesAt(db, [space], asked),
-    }))
+    const { open, expected, given, preferences } = yield* brain.read(
+      proposeRead,
+      space,
+      input.id,
+      asked,
+    )
     if (input.id !== undefined && given?.status !== "open") {
       return yield* Effect.fail(
         new Error(given ? `${input.id} is ${given.status} already` : `No item ${input.id}`),
@@ -1179,9 +1295,7 @@ const wakeRuleTool = tool(
         kept = rung
       }
       const said =
-        input.quote === undefined
-          ? null
-          : yield* brain.read((db) => saidFrom(db, input.quote ?? "", space))
+        input.quote === undefined ? null : yield* brain.read(saidFromRead, input.quote, space)
       yield* Effect.orDie(
         brain.ingest([
           {
@@ -1292,46 +1406,26 @@ const sayTool = tool(
       if (thread === null) {
         return yield* new Rejected({ reason: "say works from a turn" })
       }
-      const at = yield* brain.read((db) => placeOf(db, thread))
+      const at = yield* brain.read(placeOfRead, thread)
       const space = yield* spaceId(at.space)
-      if (yield* brain.read((db) => unheardTask(db, thread))) {
+      if (yield* brain.read(unheardTaskRead, thread)) {
         return yield* new Rejected({
           reason:
             "In a task, say answers the user's words to it, and none have reached it: what's for them goes in your report, or an item when it needs their hands.",
         })
       }
       const now = Date.now()
-      const lately = yield* brain.read((db) => saidLately(db, space, now - REPEAT_MS))
+      const lately = yield* brain.read(saidLatelyRead, space, now - REPEAT_MS)
       const again = lately.find((m) => repeats(text, m.text))
       if (again !== undefined) {
         return { said: false, why: dropped(now - again.time, again.text) }
       }
       // A turn the agent started itself (none of the user's words in it) is also asked whether what
       // it says is filler (gate.ts FILLER); one the senses woke, whether it's news they need now.
-      const own = at.turn === null || (yield* brain.read((db) => theirsIn(db, at.turn ?? ""))) === 0
-      const sensed = at.turn !== null && (yield* brain.read((db) => sensedIn(db, at.turn ?? "")))
+      const own = at.turn === null || (yield* brain.read(theirsInRead, at.turn)) === 0
+      const sensed = at.turn !== null && (yield* brain.read(sensedInRead, at.turn))
       const verdict = yield* brain
-        .read((db) => ({
-          context: [
-            own
-              ? `This turn started itself${sensed ? ": the senses woke it, and" : ":"} none of the user's words are in it.`
-              : lastAskIn(db, thread),
-            `Their open items: ${
-              items(db, { status: "open" })
-                .map((i) => `${i.title} (${i.space})`)
-                .join("; ") || "none"
-            }`,
-            `Open expectations: ${
-              openExpectations(db, [space])
-                .map((x) => x.what)
-                .join("; ") || "none"
-            }`,
-            `What this turn looked up:\n${(at.turn === null ? [] : lookedUp(db, at.turn)).join("\n") || "nothing"}`,
-          ]
-            .filter((x) => x !== "")
-            .join("\n\n"),
-          preferences: rulesAt(db, [space], text),
-        }))
+        .read(sayContextRead, { own, sensed, thread, turn: at.turn, space, text })
         .pipe(
           Effect.flatMap((read) =>
             gate("reply", {
@@ -1369,7 +1463,7 @@ const sayTool = tool(
         ),
       )
       const inline = yield* localFiles(blobs, text)
-      const model = yield* brain.read((db) => modelOfTurn(db, at.turn))
+      const model = yield* brain.read(modelOfTurnRead, at.turn)
       const all = [...attachments, ...inline.attachments]
       const receipt = yield* brain.dispatch({
         id: crypto.randomUUID(),
@@ -1423,7 +1517,7 @@ const settingTool = tool(
     Effect.gen(function* setting() {
       const brain = yield* Brain
       if (input.key === undefined || input.value === undefined) {
-        return { dials: yield* brain.read(dialsNow) }
+        return { dials: yield* brain.read(dialsRead) }
       }
       const space = yield* spaceId(input.space)
       return yield* adjust({
@@ -1447,7 +1541,7 @@ const coverTool = tool(
   (input) =>
     Effect.gen(function* covering() {
       const brain = yield* Brain
-      const space = yield* brain.read((db) => spaceNamed(db, input.space))
+      const space = yield* brain.read(spaceNamedRead, input.space)
       if (space === null || space === HOME) {
         return yield* new Rejected({ reason: `No space ${input.space}` })
       }

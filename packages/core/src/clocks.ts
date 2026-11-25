@@ -6,15 +6,18 @@
 // waiting until then.
 import type { Database } from "bun:sqlite"
 import { settledClocks, stillGoing, TaskDropped, ThreadSettled, TurnEnded } from "@switch/agent"
-import { Brain, CLOCK, EventId, react, ReactToMessage, ThreadId } from "@switch/brain"
+import { Brain, defineRead, CLOCK, EventId, react, ReactToMessage, ThreadId } from "@switch/brain"
 import type { StoredEvent } from "@switch/brain"
 import { Effect, Layer, Stream } from "effect"
 import { isJson } from "switch-ext-kit"
 
+/** The clocks whose work is over. */
+const settledRead = defineRead("core/clocks/settled", settledClocks)
+
 /** Swaps each settled clock: `like` when its work is done, none when it failed. */
 export const settleClocks = Effect.gen(function* settling() {
   const brain = yield* Brain
-  for (const c of yield* brain.read(settledClocks)) {
+  for (const c of yield* brain.read(settledRead)) {
     yield* brain
       .dispatch({
         id: `clock:${String(c.seq)}:${crypto.randomUUID()}`,
@@ -71,17 +74,20 @@ const settledTurn = (db: Database, thread: ThreadId) => {
   return t?.status === "done" && t.turn !== null && !stillGoing(db, thread) ? t.turn : null
 }
 
+/** The thread `e` closed the last watch or script of, with the turn that settled it, or null. */
+const settledWorkRead = defineRead("core/clocks/settled-work", (db, e: StoredEvent) => {
+  const thread = threadOf(db, e)
+  const turn = thread === null ? null : settledTurn(db, thread)
+  return thread === null || turn === null ? null : { thread, turn }
+})
+
 const settleWork = react(
   "work-settled",
   (e) => CLOSING.has(e.type),
   (e) =>
     Effect.gen(function* settling() {
       const brain = yield* Brain
-      const settled = yield* brain.read((db) => {
-        const thread = threadOf(db, e)
-        const turn = thread === null ? null : settledTurn(db, thread)
-        return thread === null || turn === null ? null : { thread, turn }
-      })
+      const settled = yield* brain.read(settledWorkRead, e)
       if (settled !== null) {
         yield* brain.ingest([
           {
@@ -95,13 +101,17 @@ const settleWork = react(
     }),
 )
 
+/** The brain's head: where the ends to watch start. */
+const headRead = defineRead(
+  "core/clocks/head",
+  (db) =>
+    db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
+)
+
 export const clocksWorker = Layer.effectDiscard(
   Effect.gen(function* clocking() {
     const brain = yield* Brain
-    const head = yield* brain.read(
-      (db) =>
-        db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0,
-    )
+    const head = yield* brain.read(headRead)
     yield* settleClocks
     yield* Effect.forkScoped(settleWork)
     yield* Effect.forkScoped(

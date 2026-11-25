@@ -11,6 +11,7 @@ import {
   allSpaces,
   Blobs,
   Brain,
+  defineRead,
   EFFORTS,
   EventId,
   HOME,
@@ -61,6 +62,11 @@ const unreadFrom = (db: Database) => {
 
 const headOf = (db: Database) =>
   db.query<{ seq: number | null }, []>("SELECT max(seq) AS seq FROM events").get()?.seq ?? 0
+
+/** Where the chat reactor starts the first time: before the first unread message, else the head. */
+const seedRead = defineRead("core/chat/seed", (db) => unreadFrom(db) ?? headOf(db))
+/** Where it starts again after a restart, when a message is still unread. */
+const rewindRead = defineRead("core/chat/rewind", unreadFrom)
 
 /** Whether the thread's turn under way started before `seq`: a Stop read again after a restart ends no later turn. */
 const runningBefore = (db: Database, thread: ThreadId, seq: number) => {
@@ -115,6 +121,68 @@ export const repliesLine = (db: Database, refs: readonly ReplyRef[], item: strin
     .join("\n\n")
 }
 
+// ——— The reads (reads.ts), run in a reader thread ———
+
+/** Whether an event of this id is in the log. */
+const eventHeldRead = defineRead(
+  "core/chat/event-held",
+  (db, id: string) => db.query("SELECT 1 FROM events WHERE id = ?").get(id) !== null,
+)
+
+/** Every space. */
+const spacesRead = defineRead("core/chat/spaces", (db) => allSpaces(db))
+
+/** What the pre-read knows of where a message was posted. */
+const situationRead = defineRead("core/chat/situation", (db, space: SpaceId) =>
+  situation(db, space),
+)
+
+/** A thread's record, else null. */
+const threadRead = defineRead("core/chat/thread", (db, thread: ThreadId) => getThread(db, thread))
+
+/** The user's rules in a space for these words, and the effort a turn takes by default. */
+const userEffortRead = defineRead("core/chat/user-effort", (db, space: SpaceId, words: string) => {
+  const fallback = dialOf(db, "effort.default")
+  return {
+    rules: rulesAt(db, [space], words),
+    fallback: EFFORTS.find((x) => x === fallback) ?? "medium",
+  }
+})
+
+/** The space a message is in, else null. */
+const messageSpaceRead = defineRead(
+  "core/chat/message-space",
+  (db, seq: number) =>
+    db.query<{ space: SpaceId }, [number]>("SELECT space FROM messages WHERE seq = ?").get(seq)
+      ?.space ?? null,
+)
+
+/** A message's source and words, else null. */
+const messageRead = defineRead(
+  "core/chat/message",
+  (db, seq: number) =>
+    db
+      .query<{ source: string; text: string }, [number]>(
+        "SELECT source, text FROM messages WHERE seq = ?",
+      )
+      .get(seq) ?? null,
+)
+
+/** Whether the thread's turn under way started before `seq`. */
+const runningBeforeRead = defineRead(
+  "core/chat/running-before",
+  (db, thread: ThreadId, seq: number) => runningBefore(db, thread, seq),
+)
+
+/** What a message replies to, as the agent reads it. */
+const repliesLineRead = defineRead(
+  "core/chat/replies-line",
+  (db, refs: readonly ReplyRef[], item: string | undefined) => repliesLine(db, refs, item),
+)
+
+/** The log's head. */
+const headRead = defineRead("core/chat/head", (db) => headOf(db))
+
 /** A turn no host could take: it waits in the record, and they're told (sessions.ts `wait`). */
 const waits = <A>(effect: Effect.Effect<A, NoHost | Rejected>) =>
   Effect.asVoid(Effect.catchTag(effect, "NoHost", () => Effect.void))
@@ -152,15 +220,13 @@ const chat = Effect.gen(function* chatting() {
     note: string,
     decided: { readonly effort: Effort; readonly cost: number },
   ) {
-    const done = yield* brain.read(
-      (db) => db.query("SELECT 1 FROM events WHERE id = ?").get(`read:${e.id}`) !== null,
-    )
+    const done = yield* brain.read(eventHeldRead, `read:${e.id}`)
     if (done) {
       return
     }
-    const spaces = yield* brain.read(allSpaces)
+    const spaces = yield* brain.read(spacesRead)
     const nameOf = (id: string) => spaces.find((s) => s.id === id)?.name ?? id
-    const r = yield* preRead(text, note, yield* brain.read((db) => situation(db, space)))
+    const r = yield* preRead(text, note, yield* brain.read(situationRead, space))
     const others = [...new Set(r.parts.map((p) => p.space))].filter((s) => s !== space)
     // The parts it sends elsewhere aren't mentions: triage gives those.
     yield* brain.ingest([
@@ -195,8 +261,7 @@ const chat = Effect.gen(function* chatting() {
         ? `The parts of it about ${others.map(nameOf).join(", ")} went to those spaces. Answer only what's about ${where}.`
         : "",
     ].filter((n) => n !== "")
-    const running =
-      (yield* brain.read((db) => getThread(db, threadOf(space))))?.status === "running"
+    const running = (yield* brain.read(threadRead, threadOf(space)))?.status === "running"
     if (notes.length > 0 && (running || fixed)) {
       yield* waits(
         sessions.wake(threadOf(space), notes.join("\n"), "owed", `chat:${String(e.seq)}:read`),
@@ -214,20 +279,14 @@ const chat = Effect.gen(function* chatting() {
     /** The user's replies to each of what it replies to, when it has them. */
     replies: readonly string[],
   ) {
-    const name = (yield* brain.read(allSpaces)).find((s) => s.id === space)?.name ?? space
+    const name = (yield* brain.read(spacesRead)).find((s) => s.id === space)?.name ?? space
     // The process starts while the effort is decided.
     yield* Effect.forkDetach(
       Effect.ignore(sessions.warm(threadOf(space), { title: name }), { log: "Warn" }),
     )
     // Their words: each reply to what it replies to, then what they said in general.
     const words = [...replies, text].filter((s) => s.trim() !== "").join("\n\n")
-    const user = yield* brain.read((db) => {
-      const fallback = dialOf(db, "effort.default")
-      return {
-        rules: rulesAt(db, [space], words),
-        fallback: EFFORTS.find((x) => x === fallback) ?? "medium",
-      }
-    })
+    const user = yield* brain.read(userEffortRead, space, words)
     const decided = yield* effortOf(words, user)
     const files = yield* attached(blobs, attachments)
     // Replies each under what they answer come first, the general words after them.
@@ -259,14 +318,8 @@ const chat = Effect.gen(function* chatting() {
     from: string,
     text: string,
   ) {
-    const name = (yield* brain.read(allSpaces)).find((s) => s.id === space)?.name ?? space
-    const user = yield* brain.read((db) => {
-      const fallback = dialOf(db, "effort.default")
-      return {
-        rules: rulesAt(db, [space], text),
-        fallback: EFFORTS.find((x) => x === fallback) ?? "medium",
-      }
-    })
+    const name = (yield* brain.read(spacesRead)).find((s) => s.id === space)?.name ?? space
+    const user = yield* brain.read(userEffortRead, space, text)
     const decided = yield* effortOf(text, user)
     yield* waits(
       sessions.send(threadOf(space), peerLine(from, text), {
@@ -284,15 +337,11 @@ const chat = Effect.gen(function* chatting() {
     text: string,
     was: string,
   ) {
-    const space = yield* brain.read(
-      (db) =>
-        db.query<{ space: SpaceId }, [number]>("SELECT space FROM messages WHERE seq = ?").get(seq)
-          ?.space ?? null,
-    )
+    const space = yield* brain.read(messageSpaceRead, seq)
     if (space === null) {
       return
     }
-    if (yield* brain.read((db) => runningBefore(db, threadOf(space), e.seq))) {
+    if (yield* brain.read(runningBeforeRead, threadOf(space), e.seq)) {
       yield* sessions.interrupt(threadOf(space))
     }
     yield* waits(
@@ -315,18 +364,11 @@ Answer this instead; what you said to the old words is gone from their chat.`,
     if (r === null || r.reaction === null || e.source === "agent") {
       return
     }
-    const said = yield* brain.read(
-      (db) =>
-        db
-          .query<{ source: string; text: string }, [number]>(
-            "SELECT source, text FROM messages WHERE seq = ?",
-          )
-          .get(r.seq) ?? null,
-    )
+    const said = yield* brain.read(messageRead, r.seq)
     if (said === null || whoOf(said.source) !== "user") {
       return
     }
-    const name = (yield* brain.read(allSpaces)).find((s) => s.id === r.space)?.name ?? r.space
+    const name = (yield* brain.read(spacesRead)).find((s) => s.id === r.space)?.name ?? r.space
     yield* waits(
       sessions.send(
         threadOf(r.space),
@@ -350,20 +392,18 @@ Answer this instead; what you said to the old words is gone from their chat.`,
       return Option.match(decodePosted(e.payload), {
         onNone: () => Effect.void,
         onSome: (p) =>
-          Effect.flatMap(
-            brain.read((db) => repliesLine(db, p.replyTo ?? [], p.item)),
-            (replying) =>
-              handle(
-                e,
-                p.space,
-                p.text,
-                dictatedNote(p.text, p.dictated),
-                p.attachments ?? [],
-                replying,
-                (p.replyTo ?? []).flatMap((r) =>
-                  (r.reply ?? "").trim() === "" ? [] : [(r.reply ?? "").trim()],
-                ),
+          Effect.flatMap(brain.read(repliesLineRead, p.replyTo ?? [], p.item), (replying) =>
+            handle(
+              e,
+              p.space,
+              p.text,
+              dictatedNote(p.text, p.dictated),
+              p.attachments ?? [],
+              replying,
+              (p.replyTo ?? []).flatMap((r) =>
+                (r.reply ?? "").trim() === "" ? [] : [(r.reply ?? "").trim()],
               ),
+            ),
           ),
       })
     }
@@ -385,10 +425,8 @@ Answer this instead; what you said to the old words is gone from their chat.`,
         // It waits for the turn to end: other spaces' messages shouldn't. Read again after a
         // restart, it stops only the turn it was meant for.
         onSome: (p) =>
-          Effect.flatMap(
-            brain.read((db) => runningBefore(db, p.thread, e.seq)),
-            (stops) =>
-              stops ? Effect.asVoid(Effect.forkDetach(sessions.interrupt(p.thread))) : Effect.void,
+          Effect.flatMap(brain.read(runningBeforeRead, p.thread, e.seq), (stops) =>
+            stops ? Effect.asVoid(Effect.forkDetach(sessions.interrupt(p.thread))) : Effect.void,
           ),
       })
     }
@@ -416,7 +454,7 @@ Answer this instead; what you said to the old words is gone from their chat.`,
       e.type === ThreadStopped.type ||
       e.type === MessageEdited.type,
     on,
-    { fresh: canary, seed: (db) => unreadFrom(db) ?? headOf(db), rewind: unreadFrom },
+    { fresh: canary, seed: seedRead, rewind: rewindRead },
   )
 })
 
@@ -434,7 +472,7 @@ const triage = Effect.gen(function* triaging() {
   const { canary } = yield* CoreConfig
   const { from } = t
   const read = canary || from === undefined ? null : yield* from
-  const seq = read ?? (yield* brain.read(headOf))
+  const seq = read ?? (yield* brain.read(headRead))
   const wakeAll = (wakes: readonly Wake[]) =>
     Effect.forEach(
       new Set(wakes.map((w) => w.thread)),

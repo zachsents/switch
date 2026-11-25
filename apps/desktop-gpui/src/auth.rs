@@ -6,7 +6,9 @@
 //! asks with `POST /pair`, shows the code for the user to approve on another desktop (or with
 //! `switch approve` on the core's machine), and polls. One the core stops taking (revoked, said again
 //! and again) is dropped and paired again (`forget`, as net.rs dials). Tokens go only in headers, never in an
-//! address or a log.
+//! address or a log. Each asks as this Mac (`device`): pairing it again replaces its last credential.
+//! A build that isn't the live app mints a throwaway, which lapses in a day and is revoked when it quits
+//! (`release`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,6 +26,8 @@ const SERVICE: &str = "Switchboard";
 /// How many times running the core must say no before a token's dropped: a core starting up (a
 /// redeploy) may say it once.
 const REFUSALS: usize = 3;
+/// A test copy's credential lapses this long after it's minted, in ms.
+const TRIAL_MS: u64 = 24 * 3_600_000;
 
 #[derive(Clone)]
 pub struct Auth {
@@ -195,13 +199,32 @@ async fn post(http: &reqwest::Client, url: String, body: Value) -> Option<Value>
     http.post(url).json(&body).send().await.ok()?.json().await.ok()
 }
 
-fn asking() -> Value {
-    json!({ "name": computer_name(), "kind": "device", "scopes": ["client", "admin"] })
+/// This Mac, by an id of its own that every build on it shares: a digest of its hardware's UUID.
+fn device() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let out = run("/usr/sbin/ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"])?;
+    let line = out.lines().find(|l| l.contains("\"IOPlatformUUID\""))?;
+    let uuid = line.rsplit('"').nth(1).filter(|u| !u.is_empty())?;
+    let digest = Sha256::digest(format!("switch-device:{uuid}").as_bytes());
+    Some(digest.iter().take(16).map(|b| format!("{b:02x}")).collect())
 }
 
-/// A credential straight from the core on its own machine.
+fn asking() -> Value {
+    let mut asked = json!({ "name": computer_name(), "kind": "device", "scopes": ["client", "admin"] });
+    if let Some(d) = device() {
+        asked["device"] = json!(d);
+    }
+    asked
+}
+
+/// A credential straight from the core on its own machine: a throwaway for a build that isn't the
+/// live app.
 async fn mint(http: &reqwest::Client, core: &str) -> Option<String> {
-    let minted = post(http, format!("{core}/auth/mint"), asking()).await?;
+    let mut asked = asking();
+    if !crate::cutover::is_live() {
+        asked["lapses"] = json!(TRIAL_MS);
+    }
+    let minted = post(http, format!("{core}/auth/mint"), asked).await?;
     Some(gs(&minted, "token")).filter(|t| !t.is_empty())
 }
 
@@ -260,6 +283,19 @@ pub async fn credential(http: &reqwest::Client, core: &str, show: impl Fn(String
     };
     secret::set(core, &token);
     token
+}
+
+/// A test copy, quitting, revokes the throwaway it minted (`DELETE /auth/self`) and drops it. The
+/// live app and a quiet copy keep theirs, and so does a copy paired with a core elsewhere.
+pub fn release(net: &crate::net::Net) {
+    if crate::cutover::is_live() || crate::outbox::quiet() {
+        return;
+    }
+    let Some(a) = net.auth().filter(|a| loopback(&a.core)) else { return };
+    let http = net.client();
+    let revoked = net.rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), http.delete(format!("{}/auth/self", a.core)).bearer_auth(&a.token).send()).await });
+    log::info!("credential: {}", if matches!(revoked, Ok(Ok(ref r)) if r.status().is_success()) { "revoked on quit" } else { "not revoked on quit" });
+    secret::drop(&a.core);
 }
 
 /// Drops the credential for `core`: the core no longer takes it (net.rs then finds or pairs another).

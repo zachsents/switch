@@ -2,7 +2,7 @@
 // memory that says the same thing. Oldest first, a few at a time, then the core fields rebuilt.
 // One an earlier distill dropped is taken again. Ones superseded or dismissed in Switchboard aren't.
 import { buildCores, remember } from "@switch/autonomy"
-import { Brain, EventId, SpaceId } from "@switch/brain"
+import { Brain, defineRead, EventId, SpaceId } from "@switch/brain"
 import { Cause, Effect, Exit } from "effect"
 
 import { MemoryImported, MigrateDistilled } from "./events.ts"
@@ -39,20 +39,32 @@ export interface Distilled {
   readonly cores: readonly { readonly scope: string; readonly tokens: number }[]
 }
 
+/** Staged memories not yet kept, merged or superseded, oldest first: `limit` of them. */
+const stagedRead = defineRead("migrate/distill/staged", (db, limit: number) =>
+  db
+    .query<Staged, [string, string, string, number]>(
+      `SELECT seq, payload FROM events WHERE type = ?1 AND seq NOT IN
+         (SELECT json_extract(payload, '$.seq') FROM events WHERE type = ?2
+            AND (json_extract(payload, '$.kept') IS NOT NULL OR json_extract(payload, '$.why') = ?3))
+       ORDER BY time LIMIT ?4`,
+    )
+    .all(MemoryImported.type, MigrateDistilled.type, SUPERSEDED, limit),
+)
+
+/** The core fields, each scope's size. */
+const coresRead = defineRead("migrate/distill/cores", (db) =>
+  db
+    .query<{ scope: string; tokens: number }, []>(
+      "SELECT scope, tokens FROM memory_cores ORDER BY scope",
+    )
+    .all(),
+)
+
 /** `cores`: rebuild the core fields after, which reads every rule: once, at the end. */
 export const distill = (limit: number, concurrency: number, rebuild: boolean) =>
   Effect.gen(function* distilling() {
     const brain = yield* Brain
-    const staged = yield* brain.read((db) =>
-      db
-        .query<Staged, [string, string, string, number]>(
-          `SELECT seq, payload FROM events WHERE type = ?1 AND seq NOT IN
-             (SELECT json_extract(payload, '$.seq') FROM events WHERE type = ?2
-                AND (json_extract(payload, '$.kept') IS NOT NULL OR json_extract(payload, '$.why') = ?3))
-           ORDER BY time LIMIT ?4`,
-        )
-        .all(MemoryImported.type, MigrateDistilled.type, SUPERSEDED, limit),
-    )
+    const staged = yield* brain.read(stagedRead, limit)
     const counts = { kept: 0, merged: 0, skipped: 0 }
     const errors: string[] = []
     const take = (s: Staged) =>
@@ -105,12 +117,6 @@ export const distill = (limit: number, concurrency: number, rebuild: boolean) =>
     if (rebuild) {
       yield* noted(buildCores, "cores: ")
     }
-    const cores = yield* brain.read((db) =>
-      db
-        .query<{ scope: string; tokens: number }, []>(
-          "SELECT scope, tokens FROM memory_cores ORDER BY scope",
-        )
-        .all(),
-    )
+    const cores = yield* brain.read(coresRead)
     return { taken: staged.length, ...counts, errors, cores } satisfies Distilled
   })

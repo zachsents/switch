@@ -303,9 +303,8 @@ struct Pending: Identifiable, Hashable {
   let id: String
   let space: String
   let text: String
+  /// Its files: up already, or drawn from their bytes here while they go up.
   var attachments: [Attachment] = []
-  /// The names of its files still going up.
-  var going: [String] = []
   let time: Double
   var failed = false
   var landed: Int?
@@ -317,8 +316,9 @@ extension Pending {
     guard e.name == "message.post", let space = e.view?["space"].string else { return nil }
     let files = e.files ?? []
     self.init(
-      id: e.id, space: space, text: e.payload["text"].str, attachments: files.compactMap(\.attachment),
-      going: files.filter { $0.blob == nil }.map(\.name), time: e.time ?? 0, failed: e.rejected != nil)
+      id: e.id, space: space, text: e.payload["text"].str,
+      attachments: files.map { f in f.attachment ?? Attachment(blob: "", name: f.name, type: f.type, size: f.size, local: Blobs.sending(f)) },
+      time: e.time ?? 0, failed: e.rejected != nil)
   }
 }
 

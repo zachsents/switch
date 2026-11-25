@@ -1,7 +1,7 @@
 // The old queue is a read model, like memories and watches: copying its records as observations
 // preserves words but loses the user's pending work. Carry open items once; a local answer wins.
 import type { SpaceId } from "@switch/brain"
-import { Blobs, Brain, EventId, hashOf, ItemId } from "@switch/brain"
+import { Blobs, Brain, defineRead, EventId, hashOf, ItemId } from "@switch/brain"
 import { ItemClosed, ItemOpened } from "@switch/autonomy"
 import { Effect, Option, Schema } from "effect"
 
@@ -44,6 +44,20 @@ const copyAttachments = (attachments: NonNullable<typeof ItemOpened.payload.Type
     }
   })
 
+/** The items carried before, by id, and their status now. */
+const knownRead = defineRead(
+  "migrate/items/known",
+  (db) =>
+    new Map(
+      db
+        .query<{ id: string; status: string }, []>(
+          "SELECT id, status FROM action_items WHERE id LIKE 'sb:item:%'",
+        )
+        .all()
+        .map((r) => [r.id, r.status]),
+    ),
+)
+
 export const carryItems = (
   works: ReadonlyMap<string, Work>,
   spaceOfWs: (workspace: string) => SpaceId,
@@ -52,17 +66,7 @@ export const carryItems = (
     const sb = yield* Switchboard
     const brain = yield* Brain
     const rows = yield* sb.query("asks")
-    const known = yield* brain.read(
-      (db) =>
-        new Map(
-          db
-            .query<{ id: string; status: string }, []>(
-              "SELECT id, status FROM action_items WHERE id LIKE 'sb:item:%'",
-            )
-            .all()
-            .map((r) => [r.id, r.status]),
-        ),
-    )
+    const known = yield* brain.read(knownRead)
     let changed = 0
     for (const row of rows) {
       const id = ItemId.make(`sb:item:${str(row.id)}`)
