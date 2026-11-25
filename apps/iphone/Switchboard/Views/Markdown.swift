@@ -18,14 +18,15 @@ struct Markdown: View {
   }
 
   var body: some View {
-    let blocks = Markdown.blocks(text)
+    let (words, formulas) = Math.tokened(text)
+    let blocks = Markdown.blocks(words, formulas)
     let texts = WordMark.texts(
       blocks.map { b in
         switch b.kind {
         case .text(let words), .item(_, let words): Markdown.attributed(words)
         default: nil
         }
-      }, marks)
+      }, marks, formulas: formulas)
     Group {
       if blocks.count == 1, case .text = blocks[0].kind, let only = texts[0] {
         only
@@ -46,6 +47,8 @@ struct Markdown: View {
                 Text(words).font(SIS.data(12)).frame(maxWidth: .infinity, alignment: .leading)
               case .image(let alt, let link):
                 ReplyImage(alt: alt, link: link).padding(.vertical, 4)
+              case .math(let tex):
+                MathBlock(tex: tex)
               }
             }
             .padding(.top, block.gap ? 10 : 2)
@@ -63,12 +66,13 @@ struct Markdown: View {
 
   /// Its blocks: runs of lines, and each list item on its own, with whether a blank line came before it.
   struct Block {
-    enum Kind { case text(String), item(depth: Int, String), code(String), image(alt: String, link: String) }
+    enum Kind { case text(String), item(depth: Int, String), code(String), image(alt: String, link: String), math(String) }
     let kind: Kind
     let gap: Bool
   }
 
-  static func blocks(_ text: String) -> [Block] {
+  /// `formulas`: what `Math.tokened` held out; a `$$` one alone on its line is a block of its own.
+  static func blocks(_ text: String, _ formulas: [Math.Formula] = []) -> [Block] {
     var blocks: [Block] = []
     var run: [String] = []
     var gap = false
@@ -96,6 +100,12 @@ struct Markdown: View {
       if line.trimmingCharacters(in: .whitespaces).isEmpty {
         flush()
         gap = !blocks.isEmpty
+        continue
+      }
+      if let formula = Math.alone(line, formulas) {
+        flush()
+        blocks.append(Block(kind: .math(formula.tex), gap: gap))
+        gap = false
         continue
       }
       // An image (`![alt](/blobs/…)` or a web one) is a block of its own, the words round it on either side.

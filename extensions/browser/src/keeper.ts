@@ -146,16 +146,20 @@ export const list = async (args: Json): Promise<Outline[]> => {
   return Array.isArray(r.items) ? r.items.map(outlineOf) : []
 }
 
-/** One item, or null if the vault has none by that name. */
+/**
+ * One item by id, name or title (as the vault's own get finds it), or null if it has none. Looked
+ * up in the list, not by get: a name that isn't the vault's (a username for the browser's saved
+ * passwords) is an answer here, not a failed call against the vault.
+ */
 export const item = async (name: string): Promise<Outline | null> => {
-  try {
-    return outlineOf(await call("get", { item: name }))
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("The vault has no item")) {
-      return null
-    }
-    throw error
-  }
+  const key = name.trim()
+  const all = await list({})
+  return (
+    all.find((i) => i.id === key) ??
+    all.find((i) => i.name === key.toLowerCase()) ??
+    all.find((i) => i.title.toLowerCase() === key.toLowerCase()) ??
+    null
+  )
 }
 
 export const save = async (args: Json): Promise<Outline> => {

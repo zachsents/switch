@@ -20,7 +20,7 @@ const PRIVATE = {
   "Cache-Control": "no-cache",
 }
 /** A document or a surface runs nothing but its outline's own script. */
-const STATIC_POLICY = `default-src 'none'; script-src '${SPY_HASH}'; img-src 'self' https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+const STATIC_POLICY = `default-src 'none'; script-src '${SPY_HASH}'; img-src 'self' https: data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
 /** The agent's HTML, an article or a blank page, runs its own scripts, in an origin of its own, reaching nothing. */
 const PAGE_POLICY =
   "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' https: data: blob:; font-src data:; media-src 'self' https: data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"

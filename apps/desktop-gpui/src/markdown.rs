@@ -8,9 +8,9 @@
 //! opens the words' pictures full screen at it, `viewer.rs`), `details` that open and shut. A link to another space's exchange
 //! (`switch://space/…`) is a chip that opens that space; a page here (`switchboard://…`) opens in
 //! this window; a link to a bare id becomes one to that record; any other link opens in the
-//! browser. Math and mermaid stay their text, as Streamdown 2 leaves them without its math and
-//! mermaid plugins, which `markdown.tsx` doesn't pass. Every run of words selects as a page's
-//! (select.rs). A message is read once (`Doc::of`) and drawn from that each frame.
+//! browser. Math (`$…$` in the words, `$$…$$` on its own) is drawn as it is on every surface
+//! (math.rs); mermaid stays its text. Every run of words selects as a page's (select.rs), a
+//! formula copied as its TeX. A message is read once (`Doc::of`) and drawn from that each frame.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -98,6 +98,8 @@ enum Alignment {
 #[derive(Clone, Debug, Default)]
 pub struct Doc {
     blocks: Vec<Block>,
+    /// Its formulas, each a character in the words standing in for it (`math::tokened`).
+    formulas: Vec<crate::math::Formula>,
 }
 
 #[derive(Clone, Default)]
@@ -522,9 +524,11 @@ impl Reader {
 
 impl Doc {
     pub fn of(text: &str) -> Self {
-        // Unfinished Markdown closed, in every message, as Streamdown's `parseIncompleteMarkdown`
-        // (its remend, over the whole text).
-        let text = &crate::remend::remend(text);
+        // Its math held out first, so the Markdown leaves its TeX be; then unfinished Markdown
+        // closed, in every message, as Streamdown's `parseIncompleteMarkdown` (its remend, over the
+        // whole text).
+        let (text, formulas) = crate::math::tokened(text);
+        let text = &crate::remend::remend(&text);
         let mut options = pulldown_cmark::Options::empty();
         options.insert(pulldown_cmark::Options::ENABLE_TABLES);
         options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
@@ -552,7 +556,7 @@ impl Doc {
                 b => b,
             })
             .collect();
-        Doc { blocks }
+        Doc { blocks, formulas }
     }
 }
 
@@ -703,6 +707,8 @@ pub struct Ctx {
     pub cell: bool,
     /// The words' pictures, in order, full screen from the one clicked (`render` fills them).
     pub pictures: Rc<Vec<crate::viewer::Item>>,
+    /// The words' formulas (`render` fills them).
+    pub formulas: Rc<Vec<crate::math::Formula>>,
 }
 
 /// Every picture in `list`, in order, however deep.
@@ -776,7 +782,12 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
     let key = (cx.order, *n);
     *n += 1;
     let id = SharedString::from(format!("{}.w{}", cx.id, key.1));
-    let text = SelText::new(id, key, &cx.sel, SharedString::from(w.text.clone()), Some(runs));
+    let math: Vec<_> = w.text.char_indices().filter_map(|(i, c)| crate::math::formula_of(c, &cx.formulas).map(|f| (i, f.clone(), color))).collect();
+    let text = if math.is_empty() {
+        SelText::new(id, key, &cx.sel, SharedString::from(w.text.clone()), Some(runs))
+    } else {
+        SelText::new(id, key, &cx.sel, SharedString::from(w.text.clone()), Some(runs.clone())).math(math, Some(runs))
+    };
     if links.is_empty() {
         return text.into_any_element();
     }
@@ -819,6 +830,10 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
             let first = i == 0;
             let last = i + 1 == list.len();
             match b {
+                Block::Para(w) | Block::Plain(w) if crate::math::alone(&w.text, &cx.formulas).is_some() => {
+                    let shown = math_block(w, n, cx, l, color, window, app);
+                    inset(gap(div(), 8.)).child(shown).into_any_element()
+                }
                 Block::Para(w) if cx.cell => div().px(u(8.)).py(u(4.)).child(words(w, n, cx, l, false, color)).into_any_element(),
                 Block::Heading(w, more) if cx.cell => {
                     let more = blocks(more, n, cx, l, color, window, app);
@@ -988,6 +1003,35 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
         .collect()
 }
 
+/// A `$$` formula on its own (`w` is its stand-in alone): centered, a size up from the words as
+/// KaTeX draws it, scrolled sideways when it's wider than the column; its TeX when it can't be
+/// drawn.
+fn math_block(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, window: &mut Window, app: &mut App) -> AnyElement {
+    let Some(formula) = crate::math::alone(&w.text, &cx.formulas) else { return words(w, n, cx, l, false, color) };
+    let size = f32::from(u(14.).to_pixels(window.rem_size())) * crate::math::INLINE_SCALE;
+    let Some(d) = crate::math::draw(&formula.tex, true, size, color, window.scale_factor(), app) else {
+        let mut shown = Inline::default();
+        shown.push(&formula.written(), &Style { mono: true, ..Style::default() });
+        return words(&shown, n, cx, l, false, color);
+    };
+    let id = format!("{}.math{}", cx.id, *n);
+    *n += 1;
+    let h = scroll_of(id.clone(), window, app);
+    div()
+        .id(SharedString::from(id))
+        .map(|d| crate::follow::across(d, &h))
+        .on_scroll(crate::app::sideways(Some(h.clone())))
+        .child(
+            div()
+                .flex()
+                .justify_center()
+                .min_w(gpui::relative(1.))
+                .py(u(4.))
+                .child(img(gpui::ImageSource::Render(d.image.clone())).flex_none().w(px(d.width)).h(px(d.height + d.depth))),
+        )
+        .into_any_element()
+}
+
 /// A sideways scroller's place, kept with its element from frame to frame.
 fn scroll_of(id: String, window: &mut Window, app: &mut App) -> gpui::ScrollHandle {
     window.use_keyed_state(gpui::ElementId::Name(id.into()), app, |_, _| gpui::ScrollHandle::new()).read(app).clone()
@@ -1067,7 +1111,7 @@ fn name_of(src: &str) -> String {
 pub fn render(doc: &Doc, cx: &Ctx, l: &Look, window: &mut Window, app: &mut App) -> gpui::Div {
     let mut pictures = vec![];
     pictures_in(&doc.blocks, &mut pictures);
-    let cx = &Ctx { pictures: Rc::new(pictures), ..cx.clone() };
+    let cx = &Ctx { pictures: Rc::new(pictures), formulas: Rc::new(doc.formulas.clone()), ..cx.clone() };
     // A bubble's words come after what it replies to.
     let mut n = crate::select::WORDS;
     let color = cx.ink.unwrap_or(l.ink);

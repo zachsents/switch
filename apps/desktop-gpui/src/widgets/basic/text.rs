@@ -56,7 +56,7 @@ pub fn text(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEleme
     }
     let doc = doc.read(cx).1.clone();
     let drawn = crate::kit::selecting(key.clone(), window, cx, move |sel, window, cx| {
-        let m = crate::markdown::Ctx { id: key, order: 0, sel: sel.clone(), on_link: crate::chat::on_link(), on_picture: crate::chat::on_picture(), ink: None, cell: true, pictures: Default::default() };
+        let m = crate::markdown::Ctx { id: key, order: 0, sel: sel.clone(), on_link: crate::chat::on_link(), on_picture: crate::chat::on_picture(), ink: None, cell: true, pictures: Default::default(), formulas: Default::default() };
         crate::markdown::render(&doc, &m, &l, window, cx).into_any_element()
     });
     share(div().flex().flex_col().min_w_0().text_size(u(13.)).line_height(u(16.)).text_color(l.ink).child(drawn), c, ctx).into_any_element()

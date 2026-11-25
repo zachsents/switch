@@ -14,29 +14,30 @@ struct BasicText: View {
   @Environment(\.widgetColumn) private var column
 
   var body: some View {
-    let blocks = TextBlocks.read(node.string(for: "text") ?? "")
+    let (words, formulas) = Math.tokened(node.string(for: "text") ?? "")
+    let blocks = TextBlocks.read(words)
     let caption = node.string(for: "variant") == "caption"
     // A caption is an empty state's words, which a space's widget column never paints (desktop's
     // widget-cell.tsx); headings alone aren't something to show.
     if !blocks.isEmpty, !(caption && column) {
-      drawn(blocks, caption: caption)
+      drawn(blocks, formulas, caption: caption)
         .preference(key: ShowsSomething.self, value: !caption && blocks.contains { !$0.isHeading })
         .accessibilityIdentifier("a2ui-\(node.id)")
         // What a live region round it announces when it changes.
-        .a2uiAccessibleText(TextBlocks.plain(blocks))
+        .a2uiAccessibleText(Math.plain(TextBlocks.plain(blocks), formulas))
         .a2uiAccessibilityElement(for: node, children: .combine)
     }
   }
 
-  @ViewBuilder private func drawn(_ blocks: [TextBlocks.Block], caption: Bool) -> some View {
+  @ViewBuilder private func drawn(_ blocks: [TextBlocks.Block], _ formulas: [Math.Formula], caption: Bool) -> some View {
     let ink = caption ? SIS.ink3 : SIS.ink
     switch laid {
     case .key:
-      Text(TextBlocks.inline(blocks.compactMap(\.written).joined(separator: " "))).lineLimit(1)
+      Math.text(TextBlocks.inline(blocks.compactMap(\.written).joined(separator: " ")), formulas).lineLimit(1)
     case .across:
       VStack(alignment: lineUp, spacing: 2) {
         ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-          TextBlockView(block: block, ink: ink)
+          TextBlockView(block: block, formulas: formulas, ink: ink)
         }
       }
       .multilineTextAlignment(textAlignment(lineUp))
@@ -45,7 +46,7 @@ struct BasicText: View {
         ForEach(Array(TextBlocks.runs(blocks).enumerated()), id: \.offset) { _, run in
           VStack(alignment: lineUp, spacing: SIS.gap) {
             ForEach(Array(run.enumerated()), id: \.offset) { _, block in
-              TextBlockView(block: block, ink: ink)
+              TextBlockView(block: block, formulas: formulas, ink: ink)
             }
           }
           .multilineTextAlignment(textAlignment(lineUp))
@@ -59,26 +60,31 @@ struct BasicText: View {
 /// One of a Text's blocks, in the body face (a heading in the heading size, semibold).
 private struct TextBlockView: View {
   let block: TextBlocks.Block
+  let formulas: [Math.Formula]
   let ink: Color
 
   var body: some View {
     switch block {
     case .heading(let words):
-      Text(TextBlocks.inline(words))
+      Math.text(TextBlocks.inline(words), formulas, size: SIS.Size.heading)
         .font(SIS.text(SIS.Size.heading, weight: .semibold))
         .foregroundStyle(SIS.ink)
         .accessibilityAddTraits(.isHeader)
     case .words(let words):
-      Text(TextBlocks.inline(words)).font(SIS.text(SIS.Size.body)).foregroundStyle(ink)
+      if let formula = Math.alone(words, formulas) {
+        MathBlock(tex: formula.tex, size: SIS.Size.body).foregroundStyle(ink)
+      } else {
+        Math.text(TextBlocks.inline(words), formulas, size: SIS.Size.body).font(SIS.text(SIS.Size.body)).foregroundStyle(ink)
+      }
     case .item(let marker, let words):
       HStack(alignment: .firstTextBaseline, spacing: SIS.gap) {
         Text(marker).font(SIS.text(SIS.Size.body, weight: marker == "•" ? .bold : .regular)).foregroundStyle(SIS.ink2)
-        Text(TextBlocks.inline(words)).font(SIS.text(SIS.Size.body)).foregroundStyle(ink)
+        Math.text(TextBlocks.inline(words), formulas, size: SIS.Size.body).font(SIS.text(SIS.Size.body)).foregroundStyle(ink)
       }
     case .quote(let words):
       HStack(spacing: SIS.gap + 2) {
         Rectangle().fill(SIS.rule).frame(width: SIS.rail)
-        Text(TextBlocks.inline(words)).font(SIS.text(SIS.Size.body)).foregroundStyle(SIS.ink2)
+        Math.text(TextBlocks.inline(words), formulas, size: SIS.Size.body).font(SIS.text(SIS.Size.body)).foregroundStyle(SIS.ink2)
       }
       .fixedSize(horizontal: false, vertical: true)
     case .code(let code):

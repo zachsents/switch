@@ -1,0 +1,86 @@
+[
+  { "in": "That's $215 total", "out": [["text", "That's $215 total"]] },
+  { "in": "costs $5 and $10", "out": [["text", "costs $5 and $10"]] },
+  { "in": "$x^2$", "out": [["inline", "x^2"]] },
+  {
+    "in": "Euler: $e^{i\\pi}+1=0$.",
+    "out": [
+      ["text", "Euler: "],
+      ["inline", "e^{i\\pi}+1=0"],
+      ["text", "."]
+    ]
+  },
+  { "in": "$ x$", "out": [["text", "$ x$"]] },
+  { "in": "$x $", "out": [["text", "$x $"]] },
+  { "in": "$x$5", "out": [["text", "$x$5"]] },
+  {
+    "in": "Both $a$ and $b$",
+    "out": [
+      ["text", "Both "],
+      ["inline", "a"],
+      ["text", " and "],
+      ["inline", "b"]
+    ]
+  },
+  {
+    "in": "price $5, formula $y=mx+b$",
+    "out": [
+      ["text", "price $5, formula "],
+      ["inline", "y=mx+b"]
+    ]
+  },
+  { "in": "$$\\int_0^1 x\\,dx$$", "out": [["display", "\\int_0^1 x\\,dx"]] },
+  {
+    "in": "a\n$$\nx^2\n$$\nb",
+    "out": [
+      ["text", "a\n"],
+      ["display", "x^2"],
+      ["text", "\nb"]
+    ]
+  },
+  {
+    "in": "$$x$$ and $$",
+    "out": [
+      ["display", "x"],
+      ["text", " and $$"]
+    ]
+  },
+  { "in": "$$ $$", "out": [["text", "$$ $$"]] },
+  { "in": "unclosed $$x^2", "out": [["text", "unclosed $$x^2"]] },
+  {
+    "in": "`$x$` and $y$",
+    "out": [
+      ["text", "`$x$` and "],
+      ["inline", "y"]
+    ]
+  },
+  {
+    "in": "``code $x$`` $z$",
+    "out": [
+      ["text", "``code $x$`` "],
+      ["inline", "z"]
+    ]
+  },
+  { "in": "```\n$x$\n```", "out": [["text", "```\n$x$\n```"]] },
+  {
+    "in": "~~~\n$$x$$\n~~~\n$y$",
+    "out": [
+      ["text", "~~~\n$$x$$\n~~~\n"],
+      ["inline", "y"]
+    ]
+  },
+  { "in": "\\$5 and \\$x\\$", "out": [["text", "\\$5 and \\$x\\$"]] },
+  { "in": "$a\\$b$", "out": [["inline", "a\\$b"]] },
+  { "in": "$a\n\nb$", "out": [["text", "$a\n\nb$"]] },
+  { "in": "$a\nb$", "out": [["inline", "a\nb"]] },
+  { "in": "Total: $1,234.56", "out": [["text", "Total: $1,234.56"]] },
+  { "in": "from $20,000 to $30,000", "out": [["text", "from $20,000 to $30,000"]] },
+  {
+    "in": "the $\\alpha$-helix",
+    "out": [
+      ["text", "the "],
+      ["inline", "\\alpha"],
+      ["text", "-helix"]
+    ]
+  }
+]

@@ -8,6 +8,7 @@
 import { googleEvent, said } from "./events.ts"
 import type { datedOf } from "./events.ts"
 import { blankNonMarkup } from "../page.ts"
+import { mathCss, withMath } from "../math/html.ts"
 import type { PageBody } from "./records.ts"
 import { SURFACE_CSS, surfaceHtml } from "./surface-html.ts"
 
@@ -97,7 +98,7 @@ const contents = (outline: string) =>
  * `outline`, the page's sections, sits beside it on a wide screen.
  */
 export const shell = (title: string, main: string, outline = "") =>
-  `<!doctype html>\n<html lang="en"><head>${HEAD}<base target="_blank"><title>${escape(title)}</title><style>${STYLE}${CALENDAR_STYLE}${SURFACE_CSS}</style></head><body>${outline === "" ? "" : outlineNav(outline)}<main>${inPage(main)}</main>${outline === "" ? "" : `<script>${SPY}</script>`}</body></html>\n`
+  `<!doctype html>\n<html lang="en"><head>${HEAD}<base target="_blank"><title>${escape(title)}</title><style>${STYLE}${CALENDAR_STYLE}${SURFACE_CSS}${main.includes('class="katex') ? mathCss() : ""}</style></head><body>${outline === "" ? "" : outlineNav(outline)}<main>${inPage(main)}</main>${outline === "" ? "" : `<script>${SPY}</script>`}</body></html>\n`
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" }
 const HEADING =
@@ -183,9 +184,8 @@ const SAFE_HREF = /^(?:https?:|mailto:|tel:|#|\/p\/)/iu
  * read from, or null to leave it out).
  */
 export const markdownHtml = (text: string, image: (src: string) => string | null) =>
-  Bun.markdown
-    .html(text, MARKDOWN)
-    .replaceAll(/<a href="(?<href>[^"]*)"/gu, (whole, href: string) =>
+  withMath(text, (markdown) => Bun.markdown.html(markdown, MARKDOWN))
+    .html.replaceAll(/<a href="(?<href>[^"]*)"/gu, (whole, href: string) =>
       SAFE_HREF.test(href) ? whole : "<a",
     )
     .replaceAll(/<img src="(?<src>[^"]*)"(?<rest>[^>]*)>/gu, (_, src: string, rest: string) => {

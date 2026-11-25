@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Schema } from "effect"
 
+import { withMath } from "../math/html.ts"
 import { MARKDOWN } from "./render.ts"
 
 /** Public DNS, asked over HTTPS. */
@@ -139,10 +140,9 @@ export const lineWords = (line: string) => {
   }
   return [
     wordsOf(
-      Bun.markdown.html(
-        trimmed.replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/u, ""),
-        MARKDOWN,
-      ),
+      withMath(trimmed.replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/u, ""), (markdown) =>
+        Bun.markdown.html(markdown, MARKDOWN),
+      ).html,
     ),
   ]
 }

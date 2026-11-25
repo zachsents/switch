@@ -2,6 +2,7 @@
 // from its components and data model. Inputs draw as their label and value, Tabs as every tab in
 // turn, a Modal as its content, charts as inline SVG. A part this doesn't know draws nothing.
 import { SWITCH_CATALOG } from "switch-ext-kit"
+import { withMath } from "../math/html.ts"
 
 type Props = Readonly<Record<string, unknown>>
 
@@ -327,9 +328,10 @@ const decodeEntities = (s: string) =>
 
 /** Markdown as HTML: no HTML of its own, links only safe ones, pictures through `media`. */
 const markdownHtml = (text: string, media: (url: string) => string | null) =>
-  Bun.markdown
-    .html(text, { noHtmlBlocks: true, noHtmlSpans: true, autolinks: true })
-    .replaceAll(/<a href="(?<href>[^"]*)"/gu, (_, href: string) => {
+  withMath(text, (markdown) =>
+    Bun.markdown.html(markdown, { noHtmlBlocks: true, noHtmlSpans: true, autolinks: true }),
+  )
+    .html.replaceAll(/<a href="(?<href>[^"]*)"/gu, (_, href: string) => {
       const safe = safeHref(decodeEntities(href))
       return safe === null ? "<a" : `<a href="${esc(safe)}" rel="noreferrer"`
     })

@@ -20,8 +20,9 @@ struct WordMark: Hashable {
   }
 
   /// `blocks`' texts with each mark's words tagged for `Renderer`, found as desktop finds them:
-  /// spaces aside, across blocks. A block that's nil isn't words.
-  static func texts(_ blocks: [AttributedString?], _ marks: [WordMark]) -> [Text?] {
+  /// spaces aside, across blocks. A block that's nil isn't words. Their formulas' stand-ins
+  /// (`Math.tokened`) are drawn as the formulas.
+  static func texts(_ blocks: [AttributedString?], _ marks: [WordMark], formulas: [Math.Formula] = []) -> [Text?] {
     // Every block's characters, and the run of all that aren't spaces, by block and offset.
     let chars = blocks.map { $0.map { Array($0.characters) } ?? [] }
     var solid: [(block: Int, at: Int)] = []
@@ -47,7 +48,7 @@ struct WordMark: Hashable {
     }
     return blocks.enumerated().map { b, attributed in
       guard let attributed else { return nil }
-      guard tags[b].contains(where: { $0 != nil }) else { return Text(attributed) }
+      guard tags[b].contains(where: { $0 != nil }) else { return Math.text(attributed, formulas) }
       // Runs of the same tag, each its own Text so the renderer sees it.
       var out = Text("")
       var i = 0
@@ -57,7 +58,7 @@ struct WordMark: Hashable {
         while j < tags[b].count, tags[b][j] == tags[b][i] { j += 1 }
         let lo = cs.index(cs.startIndex, offsetBy: i)
         let hi = cs.index(cs.startIndex, offsetBy: j)
-        var piece = Text(AttributedString(attributed[lo..<hi]))
+        var piece = Math.text(AttributedString(attributed[lo..<hi]), formulas)
         if let tag = tags[b][i] { piece = piece.customAttribute(tag) }
         out = Text("\(out)\(piece)")
         i = j

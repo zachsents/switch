@@ -45,9 +45,11 @@ Run: `sh scripts/bundle.sh && open "build/Switch GPUI.app"`.
   click with the copy cursor, as there.
 - Raw HTML in a reply is read as the desktop's Streamdown reads it: rehype-sanitize's GitHub schema
   (ammonia, with `tel:`, `switchboard:` and `switch:` besides), so an unknown tag like `<printer>`
-  in prose goes and its words stay, as there. Math (`$…$`) and mermaid fences stay text and code,
-  also as there: Streamdown 2.8 renders them only through its `math` and `mermaid` plugins, and
-  `markdown.tsx` passes none.
+  in prose goes and its words stay, as there. Mermaid fences stay code, also as there. Math is
+  drawn, past the Electrobun app (which leaves it text): `$…$` in the words and `$$…$$` on its own,
+  found as pages and the iPhone find it (`math.rs`, against packages/gateway/src/math/cases.json),
+  laid out by RaTeX and drawn through gpui's SVG renderer in the words' ink; a formula in the
+  words stands on their baseline over narrow no-break spaces as wide as it, and copies as its TeX.
 
 - Keys (audit round 2): a key typed outside a field goes to the box only as one printable character
   (Enter, Tab and a focused button's Space are the button's, pressed on the key's release as

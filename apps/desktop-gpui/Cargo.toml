@@ -51,6 +51,12 @@ objc2-core-media = { version = "0.3", default-features = false, features = ["std
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 raw-window-handle = "0.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# Math (src/math.rs): RaTeX lays TeX out as KaTeX does and outlines its glyphs into SVG, its KaTeX
+# fonts built in.
+ratex-parser = { version = "=0.1.16", default-features = false }
+ratex-layout = { version = "=0.1.16", default-features = false }
+ratex-types = "=0.1.16"
+ratex-svg = { version = "=0.1.16", default-features = false, features = ["embed-fonts"] }
 regex-lite = "0.1"
 fancy-regex = "0.14"
 html5ever = "0.35"

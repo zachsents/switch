@@ -76,6 +76,7 @@ impl Render for Reading {
             cell: false,
             ink: None,
             pictures: Default::default(),
+            formulas: Default::default(),
         };
         let words = markdown::render(&self.doc, &ctx, &l, window, cx);
         let sel = self.sel.clone();

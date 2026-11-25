@@ -35,6 +35,7 @@ mod links;
 mod local;
 mod look;
 mod markdown;
+mod math;
 mod marks;
 mod menu;
 mod media;

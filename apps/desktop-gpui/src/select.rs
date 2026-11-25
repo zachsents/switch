@@ -33,6 +33,8 @@ pub struct Pos {
 
 struct Run {
     text: SharedString,
+    /// Where its formulas stand (`math.rs`), and their TeX as written, which a copy takes.
+    math: Vec<(Range<usize>, String)>,
     layout: TextLayout,
     bounds: Bounds<Pixels>,
     /// The frame it was last laid out in.
@@ -128,7 +130,7 @@ impl Sel {
         for (key, run) in s.runs.range(from.key..=to.key) {
             let start = if *key == from.key { from.at } else { 0 };
             let end = if *key == to.key { to.at } else { run.text.len() };
-            let words = run.text.get(start.min(run.text.len())..end.min(run.text.len())).unwrap_or("");
+            let words = copied(run, start.min(run.text.len())..end.min(run.text.len()));
             if let Some(l) = last {
                 out.push_str(if l.0 != key.0 || s.apart.contains(key) {
                     "\n\n"
@@ -138,7 +140,7 @@ impl Sel {
                     "\n"
                 });
             }
-            out.push_str(words);
+            out.push_str(&words);
             last = Some(*key);
         }
         out
@@ -226,12 +228,12 @@ impl Sel {
     }
 
     /// Notes where a run was laid out; answers whether its clamp changed.
-    fn put(&self, key: Key, text: SharedString, layout: TextLayout, bounds: Bounds<Pixels>) -> bool {
+    fn put(&self, key: Key, text: SharedString, math: Vec<(Range<usize>, String)>, layout: TextLayout, bounds: Bounds<Pixels>) -> bool {
         let clamped = layout.text() != text.as_ref();
         let mut s = self.0.borrow_mut();
         let frame = s.frame;
         let was = s.runs.get(&key).map(|r| r.clamped);
-        s.runs.insert(key, Run { text, layout, bounds, drawn: frame, clamped });
+        s.runs.insert(key, Run { text, math, layout, bounds, drawn: frame, clamped });
         was.is_some_and(|w| w != clamped) || (was.is_none() && clamped)
     }
 
@@ -329,6 +331,11 @@ pub struct SelText {
     sel: Sel,
     text: StyledText,
     words: SharedString,
+    runs: Option<Vec<TextRun>>,
+    /// Formulas in the words (`math.rs`): where each one's stand-in is, and its ink.
+    math: Vec<(usize, crate::math::Formula, Hsla)>,
+    /// Laid out (`request_layout`): where each formula stands in the words drawn, and its drawing.
+    drawn: Vec<Drawn>,
     links: Vec<Range<usize>>,
     on_link: Option<Rc<dyn Fn(usize, &mut Window, &mut App)>>,
     /// The cursor over all of it: the hand over words a click opens, the copy cursor over a code
@@ -338,6 +345,21 @@ pub struct SelText {
     /// link the pointer's on.
     copies: Vec<bool>,
     hover: Option<gpui::Hsla>,
+    /// Each formula's place and TeX, for a copy.
+    copy: Vec<(Range<usize>, String)>,
+}
+
+/// What a formula's room is made of: U+202F, a narrow space no line breaks at.
+const ROOM: char = '\u{202F}';
+
+/// A formula in a run, laid out: where its room is in the words, how wide that is, the words'
+/// ascent and descent there (to find their baseline), and its drawing.
+struct Drawn {
+    range: Range<usize>,
+    room: f32,
+    ascent: f32,
+    descent: f32,
+    drawing: Rc<crate::math::Drawn>,
 }
 
 impl SelText {
@@ -347,7 +369,87 @@ impl SelText {
         if let Some(r) = runs {
             text = text.with_runs(r);
         }
-        SelText { id: id.into(), key, sel: sel.clone(), text, words, links: vec![], on_link: None, all: None, copies: vec![], hover: None }
+        SelText { id: id.into(), key, sel: sel.clone(), text, words, runs: None, math: vec![], drawn: vec![], links: vec![], on_link: None, all: None, copies: vec![], hover: None, copy: vec![] }
+    }
+
+    /// The formulas whose stand-ins are in the words (`math::tokened`), at their byte offsets, each
+    /// drawn in its ink in its place. Its runs are what `new` was given.
+    pub fn math(mut self, math: Vec<(usize, crate::math::Formula, Hsla)>, runs: Option<Vec<TextRun>>) -> Self {
+        self.math = math;
+        self.runs = runs;
+        self
+    }
+
+    /// Each formula's stand-in made room enough for it: narrow spaces that don't break, as many as
+    /// its drawing is wide, the runs and links round it moved on. A formula that can't be drawn
+    /// shows as its TeX.
+    fn lay_math(&mut self, window: &mut Window, cx: &mut App) {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let scale = window.scale_factor();
+        let old = self.words.clone();
+        let runs = self.runs.clone().unwrap_or_else(|| vec![style.to_run(old.len())]);
+        // The run each byte is in.
+        let run_at = |at: usize| {
+            let mut end = 0;
+            for r in &runs {
+                end += r.len;
+                if at < end {
+                    return r.clone();
+                }
+            }
+            runs.last().cloned().unwrap_or_else(|| style.to_run(0))
+        };
+        let mut words = String::with_capacity(old.len());
+        // Where in the old words each stand-in was, and how much longer the words grew there.
+        let mut grown: Vec<(usize, isize)> = vec![];
+        let mut drawn = vec![];
+        let mut copy = vec![];
+        let mut last = 0;
+        for (at, formula, ink) in &self.math {
+            let at = *at;
+            if at < last {
+                continue;
+            }
+            let Some(c) = old.get(at..).and_then(|r| r.chars().next()) else { continue };
+            words.push_str(&old[last..at]);
+            let run = run_at(at);
+            let size = f32::from(font_size) * crate::math::INLINE_SCALE;
+            let start = words.len();
+            match crate::math::draw(&formula.tex, false, size, *ink, scale, cx) {
+                Some(d) => {
+                    let probe = TextRun { len: ROOM.len_utf8(), ..run.clone() };
+                    let unit = window.text_system().layout_line(ROOM.encode_utf8(&mut [0; 4]), font_size, &[probe], None);
+                    let w = f32::from(unit.width).max(0.5);
+                    let n = (d.width / w).ceil().max(1.) as usize;
+                    for _ in 0..n {
+                        words.push(ROOM);
+                    }
+                    drawn.push(Drawn { range: start..words.len(), room: w * n as f32, ascent: f32::from(unit.ascent), descent: f32::from(unit.descent), drawing: d });
+                }
+                None => words.push_str(&formula.written()),
+            }
+            copy.push((start..words.len(), formula.written()));
+            grown.push((at, (words.len() - start) as isize - c.len_utf8() as isize));
+            last = at + c.len_utf8();
+        }
+        words.push_str(&old[last..]);
+        let moved = |x: usize| (x as isize + grown.iter().filter(|(at, _)| *at < x).map(|(_, d)| d).sum::<isize>()) as usize;
+        let mut new_runs = Vec::with_capacity(runs.len());
+        let mut at = 0;
+        for r in &runs {
+            let (a, b) = (moved(at), moved(at + r.len));
+            new_runs.push(TextRun { len: b - a, ..r.clone() });
+            at += r.len;
+        }
+        for l in &mut self.links {
+            *l = moved(l.start)..moved(l.end);
+        }
+        let words = SharedString::from(words);
+        self.text = StyledText::new(words.clone()).with_runs(new_runs);
+        self.words = words;
+        self.drawn = drawn;
+        self.copy = copy;
     }
 
     /// The hand over it all: words a click opens.
@@ -390,12 +492,16 @@ impl Element for SelText {
     }
 
     fn request_layout(&mut self, _: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+        if !self.math.is_empty() {
+            self.lay_math(window, cx);
+            self.math.clear();
+        }
         self.text.request_layout(None, inspector, window, cx)
     }
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, state: &mut (), window: &mut Window, cx: &mut App) -> Hitbox {
         self.text.prepaint(None, inspector, bounds, state, window, cx);
-        if self.sel.put(self.key, self.words.clone(), self.text.layout().clone(), bounds) {
+        if self.sel.put(self.key, self.words.clone(), self.copy.clone(), self.text.layout().clone(), bounds) {
             window.refresh();
         }
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
@@ -478,6 +584,15 @@ impl Element for SelText {
             });
         }
         self.text.paint(None, inspector, bounds, state, &mut (), window, cx);
+        // Each formula over its room, on the words' baseline.
+        let line = layout.line_height();
+        for d in &self.drawn {
+            let Some(p) = layout.position_for_index(d.range.start) else { continue };
+            let baseline = p.y + (line - gpui::px(d.ascent + d.descent)) / 2. + gpui::px(d.ascent);
+            let at = point(p.x + gpui::px((d.room - d.drawing.width) / 2.), baseline - gpui::px(d.drawing.height));
+            let b = Bounds::new(at, gpui::size(gpui::px(d.drawing.width), gpui::px(d.drawing.height + d.drawing.depth)));
+            let _ = window.paint_image(b, b, gpui::Corners::default(), d.drawing.image.clone(), 0, false);
+        }
     }
 }
 
@@ -532,6 +647,24 @@ pub fn drag_anywhere(
     .top_0()
     .left_0()
     .size_full()
+}
+
+/// A run's words in `part`, a formula touched by it as its TeX.
+fn copied(run: &Run, part: Range<usize>) -> String {
+    let mut out = String::new();
+    let mut at = part.start;
+    for (range, written) in &run.math {
+        if range.end <= at || range.start >= part.end {
+            continue;
+        }
+        out.push_str(run.text.get(at..range.start.max(at)).unwrap_or(""));
+        out.push_str(written);
+        at = range.end;
+    }
+    if at < part.end {
+        out.push_str(run.text.get(at..part.end).unwrap_or(""));
+    }
+    out
 }
 
 /// The rectangles a range of a laid out run covers, line by line.

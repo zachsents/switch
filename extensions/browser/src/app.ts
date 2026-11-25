@@ -434,12 +434,13 @@ const previewTool = tool(
   "preview",
   {
     description:
-      "A web page's picture, taken in a headless browser apart from the user's windows and kept as a blob: { image, url, title, takenAt }. `url` the page; `every` how often it's taken again while asked for (5m, 30m, 60m; 30m by default); `width` the viewport's (320 to 1920, 1280 by default), 16:10. One older than `every` comes back as it is while a new one is taken. The preview widget shows it, opening the page on a click: place it with this input.",
+      "A web page's picture, taken in a headless browser apart from the user's windows and kept as a blob: { image, url, title, takenAt }. `url` the page; `every` how often it's taken again while asked for (5m, 30m, 60m; 30m by default); `width` the viewport's (320 to 1920, 1280 by default), 16:10; `signed_in` true to take it in the user's own browser on this Mac instead, signed in as they are there (a background tab of its own, closed once it's taken, never brought to the front), for a page behind a sign-in. One older than `every` comes back as it is while a new one is taken. The preview widget shows it, opening the page on a click: place it with this input.",
     readOnly: true,
     input: Schema.Struct({
       url: Schema.String,
       every: optionalString,
       width: optionalNumber,
+      signed_in: optionalBoolean,
     }),
   },
   (input) =>
