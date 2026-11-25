@@ -9,7 +9,7 @@ use gpui::{
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
     Window, div, prelude::*, px,
 };
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 
 use crate::brain::{HOME, Link};
 use crate::derive::above;
@@ -67,10 +67,9 @@ pub struct RenameField {
 
 impl RenameField {
     pub fn new(id: String, name: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let input = cx.new(|cx| {
             Input::new(
-                InputOptions::default().default_value(name).field_style(TextFieldStyle { text_color: Some(l.ink), caret_color: Some(l.ink), ..Default::default() }),
+                InputOptions::default().default_value(name).field_style(crate::kit::field_style()),
                 window,
                 cx,
             )
@@ -97,6 +96,7 @@ impl Focusable for RenameField {
 
 impl Render for RenameField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let l = Look::get(cx);
         if !self.focused {
             self.focused = true;
             let handle = self.input.read(cx).focus_handle(cx);
@@ -127,7 +127,7 @@ impl Render for RenameField {
                 }
                 _ => {}
             }))
-            .child(Input::root(&self.input, cx).aria_label("Name").w_full().min_w_0())
+            .child(Input::root(&self.input, cx).text_color(l.ink).aria_label("Name").w_full().min_w_0())
     }
 }
 

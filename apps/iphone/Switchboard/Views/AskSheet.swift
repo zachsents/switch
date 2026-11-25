@@ -88,6 +88,7 @@ struct AskCard: View {
   private static let saveAfter = 800.0
 
   @Environment(\.scenePhase) private var phase
+  @Environment(\.openURL) private var openURL
 
   @State private var drafts: [String] = []
   /// What this card has kept of each draft, so its own edits coming back aren't news.
@@ -210,14 +211,17 @@ struct AskCard: View {
       if let a = item.assist {
         Button(a.label) { run { try await phone.assist(a) } }.buttonStyle(KeyStyle())
       }
-      switch item.kind {
+      ForEach(item.links, id: \.self) { l in
+        Button("\(l.label) ↗") { openURL(l.url) }.buttonStyle(KeyStyle(go: item.owner))
+      }
+      switch item.owner ? nil : item.kind {
       case .approval:
         Button("Approve") { approve() }.buttonStyle(KeyStyle(go: true))
         Button("Decline") { hold("Declined", "item.answer", ["approved": false]) }
           .buttonStyle(KeyStyle())
       case .task:
         Button("Done") { hold("Done", "item.close", ["status": "done"]) }.buttonStyle(KeyStyle(go: true))
-      case .question, .sealed:
+      case .question, .sealed, nil:
         EmptyView()
       }
       Spacer(minLength: 0)

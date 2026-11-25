@@ -3,8 +3,10 @@
 // rest are for the user's devices and other extensions, which only ever get ciphertext: called
 // through the core (`/widgets/secrets/<tool>`), never offered to the agent.
 import { Effect, Queue, Schema } from "effect"
-import { AppEvents, defineApp, defineEvent, tool } from "switch-ext-kit"
+import { AppEvents, Asks, defineApp, defineEvent, Progress, tool } from "switch-ext-kit"
 
+import * as approvals from "./approvals.ts"
+import type { Gate } from "./approvals.ts"
 import { answer, AnswerInput, approval, ask, AskInput } from "./asks.ts"
 import { ALL_SOURCES, preview, taken } from "./legacy.ts"
 import { KINDS } from "./model.ts"
@@ -84,6 +86,40 @@ export const announce = Effect.gen(function* announcing() {
   }
 })
 
+/** How long a use of a locked item waits for the user's passkey within one call. */
+const WAIT_MS = 4 * 60_000
+
+/** Waiting for approvals from the tool call running now: its asks, and its progress. */
+const gateOf = Effect.gen(function* gating() {
+  const asks = yield* Asks
+  const progress = yield* Progress
+  const gate: Gate = {
+    open: async (a) => {
+      const opened = await Effect.runPromise(
+        asks.open({
+          title: a.title,
+          body: a.body,
+          kind: "approval",
+          completion: "owner",
+          passkey: "passkey",
+          answerTo: "answer",
+          notify: true,
+          ...(a.space !== "" && { space: a.space }),
+        }),
+      )
+      return opened.id
+    },
+    close: async (id, status) => {
+      await Effect.runPromise(Effect.ignore(asks.close(id, status)))
+    },
+    progress: async (message) => {
+      await Effect.runPromise(progress(message))
+    },
+    waitMs: WAIT_MS,
+  }
+  return gate
+})
+
 /** A write: after every one before it. */
 const w = <A>(f: () => Promise<A>) => task(async () => await ops.serial(f))
 
@@ -124,10 +160,20 @@ export const secretsApp = (v: Vault) => {
   const saveTool = tool(
     "save",
     {
-      description: `Makes an item or changes one (item: its name or id). Plain parts only: title, name (lowercase, how it's referred to), kind (${KINDS.join(", ")}), username, urls (where a login is filled and the only hosts an API key is sent to), tags, folder ("Work/Clients"), spaces (the only spaces it's used from; none: all), favorite, fields [{id, label?, type?, value}] that aren't concealed, restore (out of the trash). A concealed value never comes from you: generate {field?, style?: random | apple | pin, length?, digits?, symbols?} makes one (a new password, kept; the old one stays in its history), from_file {field, path} reads one from a file on the vault's Mac, and ask asks the user. Returns the item's outline.`,
+      description: `Makes an item or changes one (item: its name or id). Plain parts only: title, name (lowercase, how it's referred to), kind (${KINDS.join(", ")}), username, urls (where a login is filled and the only hosts an API key is sent to), tags, folder ("Work/Clients"), spaces (the only spaces it's used from; none: all), favorite, fields [{id, label?, type?, value}] that aren't concealed, restore (out of the trash), requires_approval (true: every use waits for the user's passkey approval; false takes that off, once they approve it the same way). A concealed value never comes from you: generate {field?, style?: random | apple | pin, length?, digits?, symbols?} makes one (a new password, kept; the old one stays in its history), from_file {field, path} reads one from a file on the vault's Mac, and ask asks the user. Returns the item's outline.`,
       input: ops.SaveInput,
     },
-    (input) => w(async () => await ops.save(v, input, "agent")),
+    (input) =>
+      Effect.gen(function* saving() {
+        if (input.requires_approval === false && input.item !== undefined) {
+          const gate = yield* gateOf
+          const { item } = input
+          yield* task(async () => {
+            await ops.unlockItem(v, item, gate, "agent", "")
+          })
+        }
+        return yield* w(async () => await ops.save(v, input, "agent"))
+      }),
   )
 
   const deleteTool = tool(
@@ -153,11 +199,15 @@ export const secretsApp = (v: Vault) => {
   const runTool = tool(
     "run",
     {
-      description: `Runs a command on the vault's Mac with secrets in it by reference, never seen by you: env {"API_TOKEN": "openai"} (a reference: an item's name for its main secret, or name.field like card/main.number or github.totp for the code now; or a template with {{ref}} in it), files [{name, content}] made for the run in $SECRETS_FILES (0600, removed after), and stdin, both templates. command is a shell line or an argv; never a secret in it. Output comes back with every vault value hidden. why says what it's for (kept in the audit); space is the one you're working in.`,
+      description: `Runs a command on the vault's Mac with secrets in it by reference, never seen by you: env {"API_TOKEN": "openai"} (a reference: an item's name for its main secret, or name.field like card/main.number or github.totp for the code now; or a template with {{ref}} in it), files [{name, content}] made for the run in $SECRETS_FILES (0600, removed after), and stdin, both templates. command is a shell line or an argv; never a secret in it. Output comes back with every vault value hidden. why says what it's for (kept in the audit); space is the one you're working in. An item that requires approval waits for the user's passkey (a few minutes); if they haven't approved by then, it says which item to wait on: make the same call again once it's approved.`,
       input: ops.RunInput,
       speaks: true,
     },
-    (input) => task(async () => await ops.run(v, input)),
+    (input) =>
+      Effect.gen(function* running() {
+        const gate = yield* gateOf
+        return yield* task(async () => await ops.run(v, input, gate))
+      }),
   )
 
   const httpTool = tool(
@@ -167,7 +217,11 @@ export const secretsApp = (v: Vault) => {
       input: ops.HttpInput,
       speaks: true,
     },
-    (input) => task(async () => await ops.http(v, input)),
+    (input) =>
+      Effect.gen(function* sending() {
+        const gate = yield* gateOf
+        return yield* task(async () => await ops.http(v, input, gate))
+      }),
   )
 
   const writeFileTool = tool(
@@ -177,7 +231,11 @@ export const secretsApp = (v: Vault) => {
         "Writes a file on the vault's Mac from a template with {{ref}} secrets in it (an .npmrc, a config), mode 0600 unless given. It stays: say why.",
       input: ops.WriteFileInput,
     },
-    (input) => task(async () => await ops.writeFile(v, input)),
+    (input) =>
+      Effect.gen(function* writing() {
+        const gate = yield* gateOf
+        return yield* task(async () => await ops.writeFile(v, input, gate))
+      }),
   )
 
   const importTool = tool(
@@ -469,7 +527,50 @@ export const secretsApp = (v: Vault) => {
       appOnly: true,
       input: ops.ReleaseInput,
     },
-    (input) => task(async () => await ops.release(v, input)),
+    (input) =>
+      Effect.gen(function* releasing() {
+        const gate = yield* gateOf
+        return yield* task(async () => await ops.release(v, input, gate))
+      }),
+  )
+
+  const passkeyTool = tool(
+    "passkey",
+    {
+      description:
+        "The core relays a passkey approval's page: its WebAuthn options, then what the authenticator answered, which this checks before the use it approves goes ahead.",
+      appOnly: true,
+      input: Schema.Struct({
+        item: Schema.String,
+        step: Schema.Literals(["options", "verify"]),
+        origin: Schema.String,
+        rp: Schema.String,
+        credential: opt(Schema.Unknown),
+        window: opt(Schema.Boolean),
+      }),
+    },
+    (input) =>
+      Effect.gen(function* approving() {
+        if (input.step === "options") {
+          return yield* sync(() => approvals.options(v, input.item, input.rp))
+        }
+        const done = yield* task(
+          async () =>
+            await approvals.verify(
+              v,
+              input.item,
+              input.credential,
+              input.window === true,
+              input.origin,
+              input.rp,
+            ),
+        )
+        if (done.ok) {
+          const asks = yield* Asks
+          yield* Effect.ignore(asks.close(input.item, "done"))
+        }
+        return done
+      }),
   )
 
   const depositTool = tool(
@@ -490,26 +591,33 @@ export const secretsApp = (v: Vault) => {
       input: AnswerInput,
     },
     (input) =>
-      answer(v, input, async (device, extension) => {
-        await ops.serial(async () => {
-          const d = device === undefined ? null : store.device(v, device)
-          if (d && d.status === "pending") {
-            await store.approveDevice(v, d)
-          }
-          const s = extension === undefined ? null : store.extension(v, extension)
-          if (s && s.status === "pending") {
-            store.putExtension(v, { ...s, status: "active", approved: Date.now() })
-          }
-          ops.touched(v)
-        })
-      }),
+      approvals.isApproval(v, input.item)
+        ? sync(() => {
+            if (input.status === "dismissed") {
+              approvals.dismissed(v, input.item)
+            }
+            return { ok: true }
+          })
+        : answer(v, input, async (device, extension) => {
+            await ops.serial(async () => {
+              const d = device === undefined ? null : store.device(v, device)
+              if (d && d.status === "pending") {
+                await store.approveDevice(v, d)
+              }
+              const s = extension === undefined ? null : store.extension(v, extension)
+              if (s && s.status === "pending") {
+                store.putExtension(v, { ...s, status: "active", approved: Date.now() })
+              }
+              ops.touched(v)
+            })
+          }),
   )
 
   return defineApp({
     name: APP,
     version: "1",
     instructions:
-      "The user's vault of passwords, keys, cards and notes. You never see a secret's value: list and get show what's kept; run, http and write_file put secrets into a command, a request or a file by reference (an item's name, or name.field); the browser's sign_in and fill_secret fill them into pages; ask asks the user for one through a sealed card; save makes items and generates passwords. Every use is checked against the user's grants and kept in the audit.",
+      "The user's vault of passwords, keys, cards and notes. You never see a secret's value: list and get show what's kept; run, http and write_file put secrets into a command, a request or a file by reference (an item's name, or name.field); the browser's sign_in and fill_secret fill them into pages; ask asks the user for one through a sealed card; save makes items and generates passwords. Every use is checked against the user's grants and kept in the audit. An item marked requires_approval is used only once the user approves that use with their passkey, from an approval in their queue.",
     tools: [
       listTool,
       getTool,
@@ -536,6 +644,7 @@ export const secretsApp = (v: Vault) => {
       approveExtensionTool,
       revokeExtensionTool,
       releaseTool,
+      passkeyTool,
       depositTool,
       answerTool,
     ],

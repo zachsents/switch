@@ -15,16 +15,12 @@ use gpui::{
 use serde_json::{Value, json};
 use ui_sdk::components::date_input::{DateInputSegmentType, HourCycle, TextFieldAlign, TimeInput, TimeInputOptions};
 use ui_sdk::components::date_picker::{CalendarValue, DatePicker, DatePickerContentProps, DatePickerOptions, DatePickerValue};
-use ui_sdk::components::input::{Input, InputOptions, TextFieldKind, TextFieldStyle, Textarea, TextareaOptions};
+use ui_sdk::components::input::{Input, InputOptions, TextFieldKind, Textarea, TextareaOptions};
 
 use crate::kit::{self, Btn};
 use crate::look::{Look, u};
 use crate::widgets::basic::{check_mark, data, held, line2_b, problems, share};
 use crate::widgets::render::Ctx;
-
-fn style(l: &Look) -> TextFieldStyle {
-    TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }
-}
 
 /// A field's words, the model's shown at once when it changes, what's typed written back.
 pub struct Field {
@@ -55,7 +51,6 @@ fn field(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<Field> {
-    let l = ctx.look;
     let (start, placeholder) = (value.to_string(), placeholder.to_string());
     let state = ctx.state(c, tag, window, cx, move |window, cx: &mut Context<Field>| {
         let f = on_type.clone();
@@ -65,7 +60,7 @@ fn field(
                     .default_value(start.clone())
                     .placeholder(placeholder.clone())
                     .kind(kind)
-                    .field_style(style(&l))
+                    .field_style(kit::field_style())
                     .on_value_change(move |v, _, window, cx| f(v.to_string(), window, cx));
                 (Some(cx.new(|cx| Input::new(opts, window, cx))), None)
             }
@@ -74,7 +69,7 @@ fn field(
                     .default_value(start.clone())
                     .placeholder(placeholder.clone())
                     .rows(3)
-                    .field_style(style(&l))
+                    .field_style(kit::field_style())
                     .on_value_change(move |v, _, window, cx| f(v.to_string(), window, cx));
                 (None, Some(cx.new(|cx| Textarea::new(opts, window, cx))))
             }
@@ -101,12 +96,12 @@ fn field(
     state
 }
 
-fn field_part(f: &Entity<Field>, label: &str, cx: &App) -> AnyElement {
+fn field_part(f: &Entity<Field>, label: &str, l: &Look, cx: &App) -> AnyElement {
     let s = f.read(cx);
     let label = SharedString::from(label.to_string());
     match (&s.one, &s.many) {
-        (Some(i), _) => Input::root(i, cx).when(!label.is_empty(), |d| d.aria_label(label.clone())).flex_1().min_w_0().h(u(24.)).text_size(u(13.)).line_height(u(16.)).into_any_element(),
-        (_, Some(t)) => Textarea::root(t, cx).when(!label.is_empty(), |d| d.aria_label(label.clone())).w_full().min_w_0().text_size(u(13.)).line_height(u(16.)).into_any_element(),
+        (Some(i), _) => Input::root(i, cx).text_color(l.ink).when(!label.is_empty(), |d| d.aria_label(label.clone())).flex_1().min_w_0().h(u(24.)).text_size(u(13.)).line_height(u(16.)).into_any_element(),
+        (_, Some(t)) => Textarea::root(t, cx).text_color(l.ink).when(!label.is_empty(), |d| d.aria_label(label.clone())).w_full().min_w_0().text_size(u(13.)).line_height(u(16.)).into_any_element(),
         _ => div().into_any_element(),
     }
 }
@@ -137,7 +132,7 @@ pub fn text_field(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> An
     });
     let f = field(c, ctx, "text", &value, kind, &placeholder, on_type, window, cx);
     let focus = f.clone();
-    let part = field_part(&f, &label, cx);
+    let part = field_part(&f, &label, &ctx.look, cx);
     let line = div()
         .id(ctx.id(c, "line"))
         .flex()
@@ -353,7 +348,7 @@ pub fn choice_picker(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) ->
     };
     share(div().flex().flex_col(), c, ctx)
         .when(!label.is_empty(), |d| d.child(div().flex().h(u(24.)).items_center().px(u(8.)).text_size(u(13.)).text_color(l.ink2).child(label)))
-        .children(find.map(|f| line2_b(div().flex().h(u(24.)).items_center().px(u(8.)), &l).child(field_part(&f, "Find", cx))))
+        .children(find.map(|f| line2_b(div().flex().h(u(24.)).items_center().px(u(8.)), &l).child(field_part(&f, "Find", &l, cx))))
         .children(choices)
         .children(problems(c, ctx))
         .into_any_element()
@@ -650,9 +645,9 @@ pub fn date_time(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
     let value = value.as_str().unwrap_or_default().to_string();
     let (min, max) = (ctx.scope.text(c, "min"), ctx.scope.text(c, "max"));
     let label = ctx.scope.words(c, "label");
-    let field = TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() };
+    let field = kit::field_style();
     let segment = move |kind: DateInputSegmentType| {
-        let s = TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), ..Default::default() }
+        let s = kit::field_style()
             .text_align(TextFieldAlign::Center)
             .caret_color(gpui::transparent_black())
             .selection_color(gpui::transparent_black());
@@ -766,6 +761,7 @@ pub fn date_time(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
         let opened = state.read(cx).opened.clone();
         fields.push(
             DatePicker::root(p, cx)
+                .text_color(l.ink)
                 .child(div().capture_any_mouse_up(move |e, window, cx| {
                     if e.button != gpui::MouseButton::Left {
                         return;
@@ -790,6 +786,7 @@ pub fn date_time(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
         let t2 = t.clone();
         fields.push(
             root.flex()
+                .text_color(l.ink)
                 .items_center()
                 .h(u(24.))
                 .children(segments.iter().map(|seg| {

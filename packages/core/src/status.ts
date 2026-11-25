@@ -15,6 +15,7 @@ import { BASIC_CATALOG, defineApp, SWITCH_CATALOG, tool } from "switch-ext-kit"
 import { Effect } from "effect"
 
 import { CoreConfig } from "./config.ts"
+import { CatalogUpdated, profilesState } from "./profiles.ts"
 import { RELEASE } from "./release.ts"
 import { Runtime } from "./runtime.ts"
 import type { MachineView } from "./runtime.ts"
@@ -29,6 +30,8 @@ const HIGH_MEMORY_PCT = 80
 const STALL_SHOWN_MS = 2 * HOUR
 /** What's wrong, said beside a part's name: its first clause, the whole on hover. */
 const GIST = 60
+/** An account's name, beside its figures. */
+const NAME = 26
 /** The nightly backup missed once and a bit. */
 const BACKUP_LATE_MS = 30 * HOUR
 /** An iPhone build is the minute it was made since the epoch (scripts/ios.sh): one past 2020's.
@@ -177,7 +180,34 @@ const said = (s: Surprise, name: string) => {
 
 const markOf = (s: Surprise): Mark => (s.kind === "stopped" ? "stop" : "warn")
 
-const accountLine = (a: Account, now: number): Line | null => {
+/** A name longer than a line holds, cut in its middle: an email keeps its start and its domain. */
+const middle = (text: string, max = NAME) => {
+  if (text.length <= max) {
+    return text
+  }
+  const head = Math.ceil((max - 1) / 2)
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`
+}
+
+/** Each login's email as the catalog has it, by its id and the ids found the same account. */
+const emailsOf = (db: Database) => {
+  const emails = new Map<string, string>()
+  for (const a of profilesState(db).accounts) {
+    if (a.email !== undefined && a.email !== null && a.email !== "") {
+      for (const host of [a.host, ...(a.same ?? [])]) {
+        emails.set(host, a.email)
+      }
+    }
+  }
+  return emails
+}
+
+const accountLine = (
+  a: Account,
+  email: string | undefined,
+  shared: boolean,
+  now: number,
+): Line | null => {
   const limited = a.limitedUntil > now
   const down = !a.up && !limited ? "Down" : undefined
   const fails = a.problem === "" ? down : a.problem
@@ -186,7 +216,9 @@ const accountLine = (a: Account, now: number): Line | null => {
   }
   const [provider = a.host, ...rest] = a.host.split("-")
   const name = `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`
-  const label = a.host.includes(":") ? a.host : [name, ...rest].join(" ")
+  // By the email its login reports (with its provider when another's login has it too), else its id.
+  const id = a.host.includes(":") ? a.host : [name, ...rest].join(" ")
+  const label = email === undefined ? id : middle(shared ? `${name} ${email}` : email)
   const windows = a.windows.map((w) => {
     const span = w.name.replace("five_hour", "5h").replace("seven_day", "7d")
     return `${span} ${Math.round(w.used * 100)}%`
@@ -376,7 +408,17 @@ export const statusOf = (
     )
   })
 
-  const accounts = allAccounts(db).flatMap((a) => accountLine(a, now) ?? [])
+  const emails = emailsOf(db)
+  const listed = allAccounts(db)
+  const accounts = listed.flatMap((a) => {
+    const email = emails.get(a.host)
+    const shared =
+      email !== undefined &&
+      listed.some(
+        (b) => b.host !== a.host && b.provider !== a.provider && emails.get(b.host) === email,
+      )
+    return accountLine(a, email, shared, now) ?? []
+  })
 
   // What's wrong that no part owns. A promise or a watch of the agent's (`broken:`) is its own
   // work, not a part of Switch, and isn't here.
@@ -418,6 +460,7 @@ const REFRESH = [
   "surprise.dismissed",
   "account.state",
   "account.removed",
+  CatalogUpdated.type,
   "core.stalled",
   "client.reported",
   "iphone.reported",

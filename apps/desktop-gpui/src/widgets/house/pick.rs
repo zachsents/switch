@@ -12,7 +12,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::*, px, relative, rgb,
 };
 use serde_json::{Map, Value};
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 
 use crate::kit::{self, Btn};
 use crate::look::{Look, MONO, u};
@@ -125,7 +125,6 @@ pub fn pick(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEleme
                 })
                 .collect();
             let hex_start = custom.as_ref().and_then(|g| values.get(&g.key).filter(|v| !g.choices.contains(v)).cloned()).unwrap_or_default();
-            let lk = Look::get(cx);
             let hex = custom.as_ref().map(|g| {
                 // What's typed is the custom group's value, as RRGGBB: no "#", no spaces, capitals.
                 let (state, key) = (state.clone(), g.key.clone());
@@ -148,7 +147,7 @@ pub fn pick(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEleme
                                     me.update(cx, |h, cx| h.set_value(value, Default::default(), window, cx));
                                 }
                             })
-                            .field_style(TextFieldStyle { text_color: Some(lk.ink), placeholder_color: Some(lk.ink3), caret_color: Some(lk.ink), ..Default::default() }),
+                            .field_style(kit::field_style()),
                         window,
                         cx,
                     )
@@ -331,7 +330,7 @@ fn choices(c: &Value, ctx: &Ctx, groups: &[Group], custom: Option<Group>, call: 
                         .gap(u(8.))
                         .cursor_text()
                         .when(is_hex(&t) && !g.choices.contains(&t), |d| d.child(swatch(&t, 12., false, &l)))
-                        .child(Input::root(h, cx).aria_label("Hex").flex_1().min_w_0().h_full().font_family(MONO).text_size(u(11.))),
+                        .child(Input::root(h, cx).text_color(l.ink).aria_label("Hex").flex_1().min_w_0().h_full().font_family(MONO).text_size(u(11.))),
                 )
             }
             _ => d.child(div().flex_1()),

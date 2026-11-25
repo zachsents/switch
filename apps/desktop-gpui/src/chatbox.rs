@@ -19,7 +19,7 @@ use gpui::{
     Styled, WeakEntity, Window, div, img, prelude::*, px,
 };
 use serde_json::{Value, json};
-use ui_sdk::components::input::{TextFieldStyle, Textarea, TextareaOptions, TextareaSubmitShortcut};
+use ui_sdk::components::input::{Textarea, TextareaOptions, TextareaSubmitShortcut};
 use ui_sdk::kernel::ChangeOptions;
 
 use crate::attached::{FileKind, kind_of};
@@ -137,10 +137,6 @@ pub fn focus_box_of(space: &str, window: &mut Window, cx: &mut App) {
     }
 }
 
-fn field_style(l: &Look) -> TextFieldStyle {
-    TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }
-}
-
 /// Dictated stretches as a draft keeps them.
 fn spans_json(spans: &[Span]) -> Option<Value> {
     (!spans.is_empty()).then(|| Value::Array(spans.iter().map(|s| json!({ "start": s.start, "end": s.end })).collect()))
@@ -154,7 +150,6 @@ fn spans_of(v: Option<&Value>) -> Vec<Span> {
 
 impl ChatBox {
     pub fn new(opts: BoxOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let weak = cx.entity().downgrade();
         let input = {
             let (change, submit) = (weak.clone(), weak.clone());
@@ -164,7 +159,7 @@ impl ChatBox {
                         .rows(1)
                         .auto_resize(true)
                         .submit_shortcut(TextareaSubmitShortcut::Enter)
-                        .field_style(field_style(&l))
+                        .field_style(kit::field_style())
                         .on_value_change(move |value, _, window, cx| {
                             let value = value.to_string();
                             change.update(cx, |b, cx| b.changed(value, window, cx)).ok();
@@ -540,7 +535,6 @@ impl ChatBox {
         let now = replying::replying_to(&space, cx);
         let same = now.len() == self.replies.len() && now.iter().zip(&self.replies).all(|(a, (b, _))| a.same(b));
         if !same {
-            let l = Look::get(cx);
             let mut next = vec![];
             for r in &now {
                 let field = match self.replies.iter().find(|(b, _)| b.same(r)) {
@@ -557,7 +551,7 @@ impl ChatBox {
                                     .default_value(reply)
                                     .placeholder("Reply…")
                                     .submit_shortcut(TextareaSubmitShortcut::Enter)
-                                    .field_style(field_style(&l))
+                                    .field_style(kit::field_style())
                                     .on_value_change(move |v, _, _, cx| {
                                         let now = replying::replying_to(&s, cx);
                                         if let Some(at) = now.iter().position(|x| x.same(&which)) {

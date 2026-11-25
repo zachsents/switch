@@ -49,7 +49,7 @@ impl Render for WidgetColumn {
         let mut feed_before = false;
         for w in self.placed(cx) {
             let key = w.key();
-            host.update(cx, |h, cx| h.want(&key, Source { app: w.app.clone(), name: w.name.clone(), input: w.input.clone() }, cx));
+            host.update(cx, |h, cx| h.want(&key, Source::placed(&w), cx));
             let Some(surface) = host.read(cx).surface(&key) else {
                 // One still loading isn't an empty one: it holds the column's room, drawing nothing.
                 cells.push(div().w_full().when(shown > 0, |d| d.border_t(px(l.w_section)).border_color(l.line_section)).when(shown > 0 && feed_before, |d| d.pt(px(16.))).into_any_element());

@@ -99,7 +99,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
                 cx.stop_propagation();
             }
         })
-        .child(div().flex_1().min_w_0().h_full().flex().items_center().pl(u(8.)).font_family(MONO).text_size(u(11.)).line_height(u(14.)).text_color(l.ink).child(Input::root(&source, cx).aria_label("Git URL").w_full()))
+        .child(div().flex_1().min_w_0().h_full().flex().items_center().pl(u(8.)).font_family(MONO).text_size(u(11.)).line_height(u(14.)).text_color(l.ink).child(Input::root(&source, cx).text_color(l.ink).aria_label("Git URL").w_full()))
         .child(
             kit::press(kit::button("extension-add", Btn::Go, can && !installing, &l), can && !installing, move |_, _, cx| submit(cx))
                 .when(installing, |d| d.child(kit::spin(Beat::step(cx), &l)))

@@ -186,6 +186,13 @@ export interface AskInput {
   readonly answerTo?: string
   /** A sealed ask's one-time key (`sealedKey().key`) and what the secret is for. */
   readonly sealed?: { readonly key: string; readonly use: string }
+  /**
+   * Approved only with the user's passkey: one of its own tools (best `appOnly`) the core calls with
+   * `{ item, step: "options", origin, rp }`, answering `{ mode: "create" | "get", challenge, … }`
+   * for the page its link opens, then `{ item, step: "verify", origin, rp, credential, window }`
+   * with what the authenticator answered, answering `{ ok, said? }`. It verifies and closes the item.
+   */
+  readonly passkey?: string
 }
 
 export interface AsksShape {

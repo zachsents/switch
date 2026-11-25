@@ -245,7 +245,7 @@ fn profile_form(profile: &NamedProfile, creating: bool, view: &ModelsView, editi
                                 cx.stop_propagation();
                             }
                         })
-                        .child(Input::root(&name_field, cx).aria_label("Profile name").w_full()),
+                        .child(Input::root(&name_field, cx).text_color(l.ink).aria_label("Profile name").w_full()),
                 ),
             )
             .into_any_element(),

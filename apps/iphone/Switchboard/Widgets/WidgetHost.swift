@@ -37,9 +37,11 @@ final class WidgetHost {
   @ObservationIgnored private weak var brain: Brain?
   @ObservationIgnored private var loading: Set<String> = []
   @ObservationIgnored private var due: Set<String> = []
-  /// Where each surface's messages come from, when it isn't `widgets/<key>`: a chat line's, a
-  /// placement's called with its input.
+  /// Where each surface's messages come from: a placement's by its id (the core calls its widget's
+  /// tool with that placement's own input), a chat line's by its input.
   @ObservationIgnored private var paths: [String: String] = [:]
+  /// The input each placement's surface was last loaded for: a new one is its data again.
+  @ObservationIgnored private var inputs: [String: String] = [:]
   /// The widget each placement's surface is of, by its key: what it refreshes on is its widget's.
   @ObservationIgnored private var placed: [String: String] = [:]
 
@@ -71,13 +73,15 @@ final class WidgetHost {
   /// the brain is, offered or not (desktop's widgets/host.ts `MADE`).
   static let made = "brain"
 
-  /// A placement's surface, under its id, its widget's tool called with its input; a new input is
-  /// its data again.
+  /// A placement's surface, under its id, asked for by its id so its widget's tool is called with
+  /// its own input; a new input is its data again.
   func surface(_ p: Placement) -> SurfaceViewModel? {
     _ = version
-    let input = p.input.flatMap { $0.text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) }
-    let path = "widgets/\(p.widget)" + (input.map { "?input=\($0)" } ?? "")
-    let changed = paths[p.key] != nil && paths[p.key] != path
+    let id = p.key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? p.key
+    let path = "widgets/\(p.widget)?placement=\(id)"
+    let input = p.input?.text ?? ""
+    let changed = inputs[p.key] != nil && inputs[p.key] != input
+    inputs[p.key] = input
     placed[p.key] = p.widget
     if let s = processor.surfaceGroupModel.surfacesMap[p.key] {
       if changed { Task { await load(p.key, from: path) } }
@@ -94,8 +98,10 @@ final class WidgetHost {
     let key = "\(shown.key)#\(seq)"
     if let s = processor.surfaceGroupModel.surfacesMap[key] { return s }
     if shown.app == Self.made || offered[shown.key] != nil {
-      let input = shown.input.flatMap { $0.text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) }
-      Task { await load(key, from: "widgets/\(shown.key)" + (input.map { "?input=\($0)" } ?? "")) }
+      // A line's own input, none an empty one: never a placement's.
+      let text = shown.input.map(\.text) ?? "{}"
+      let input = text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+      Task { await load(key, from: "widgets/\(shown.key)?input=\(input)") }
     }
     return nil
   }
@@ -133,7 +139,7 @@ final class WidgetHost {
     if let path { paths[key] = path }
     guard loading.insert(key).inserted else { return }
     defer { loading.remove(key) }
-    guard let raw = await get(paths[key] ?? "widgets/\(key)") else { return }
+    guard let path = paths[key], let raw = await get(path) else { return }
     let fresh = processor.surfaceGroupModel.surfacesMap[key] == nil
     for message in raw.array {
       var m = message.object

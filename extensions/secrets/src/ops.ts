@@ -8,6 +8,8 @@ import path from "node:path"
 
 import { Schema } from "effect"
 
+import { approved, isLocked, lock, lockedIds, unlock } from "./approvals.ts"
+import type { Gate } from "./approvals.ts"
 import { codeOf, openFrom, openItem, sealTo, statement, verify } from "./crypto.ts"
 import {
   CONCEALED,
@@ -223,9 +225,14 @@ export const list = (v: Vault, l: Listing) => {
       (l.url === undefined || urlAllowed(i.urls, l.url))
     )
   })
+  const locked = lockedIds(v)
   return items
     .toSorted((a, b) => (used.get(b.id) ?? b.updated) - (used.get(a.id) ?? a.updated))
-    .map((i) => ({ ...outline(i), ...(used.has(i.id) && { used: used.get(i.id) }) }))
+    .map((i) => ({
+      ...outline(i),
+      ...(locked.has(i.id) && { requires_approval: true }),
+      ...(used.has(i.id) && { used: used.get(i.id) }),
+    }))
 }
 
 export const get = async (v: Vault, ref: string) => {
@@ -233,6 +240,7 @@ export const get = async (v: Vault, ref: string) => {
   const old = await store.historyItems(v, item.id)
   return {
     ...outline(item),
+    ...(isLocked(v, item.id) && { requires_approval: true }),
     history: old.length,
     uses: store.audit(v, item.id, 10).map((e) => ({
       at: e.at,
@@ -282,6 +290,8 @@ export const SaveInput = Schema.Struct({
     }),
   ),
   restore: Schema.optionalKey(Schema.Boolean),
+  /** Every use waits for the user's passkey (true); taking it off is approved the same way. */
+  requires_approval: Schema.optionalKey(Schema.Boolean),
 })
 export type SaveInput = typeof SaveInput.Type
 
@@ -374,8 +384,33 @@ export const save = async (v: Vault, input: SaveInput, who: string) => {
     updated: t,
   }
   await write(v, item)
+  if (input.requires_approval === true) {
+    lock(v, item.id, who)
+  }
   note(v, { item: item.id, use: "save", who, why: made })
-  return { saved: outline(item), ...(made !== "" && { did: made }) }
+  return {
+    saved: { ...outline(item), ...(isLocked(v, item.id) && { requires_approval: true }) },
+    ...(made !== "" && { did: made }),
+  }
+}
+
+/** Takes an item's lock off, once the user approves that with their passkey. */
+export const unlockItem = async (v: Vault, ref: string, gate: Gate, who: string, space: string) => {
+  const item = find(v, ref)
+  if (!isLocked(v, item.id)) {
+    return
+  }
+  await approved(v, gate, {
+    items: [item],
+    who,
+    space,
+    digest: digestOf({ unlock: item.id }),
+    what: "unlock",
+    title: `Stop asking before ${item.title} is used?`,
+    body: "",
+  })
+  unlock(v, item.id)
+  note(v, { item: item.id, use: "save", who, why: "lock taken off" })
 }
 
 export const trash = async (v: Vault, ref: string, who: string) => {
@@ -407,7 +442,7 @@ const activeExtension = (v: Vault, name: string) => {
   return s
 }
 
-export const release = async (v: Vault, input: typeof ReleaseInput.Type) => {
+export const release = async (v: Vault, input: typeof ReleaseInput.Type, gate: Gate) => {
   const s = activeExtension(v, input.extension)
   const named = input.ref === undefined ? null : resolve(v, input.ref)
   const item = named?.item ?? find(v, input.item ?? "")
@@ -432,6 +467,23 @@ export const release = async (v: Vault, input: typeof ReleaseInput.Type) => {
     )
   }
   const wanted = input.fields ?? [named?.field.id ?? mainField(item)?.id ?? ""]
+  try {
+    const { why: _, ...asked } = input
+    await cleared(
+      v,
+      gate,
+      [item],
+      { who, space: input.space ?? "" },
+      {
+        kind: use,
+        target: target || use,
+        why: input.why ?? "",
+        digest: digestOf({ release: { ...asked, fields: wanted } }),
+      },
+    )
+  } catch (error) {
+    refuse(error instanceof Error ? error.message : String(error))
+  }
   const values: Record<string, string> = {}
   for (const id of wanted) {
     const f = item.fields.find((x) => x.id === id)
@@ -522,20 +574,56 @@ export const registerExtension = async (v: Vault, name: string, key: string) => 
 
 const agentCaller = (space: string | undefined): Caller => ({ who: "agent", space: space ?? "" })
 
-/** The values some references name, after the grants allow each this use. */
+/** What a request is, as a digest: the same request asked again is the one approved. */
+export const digestOf = (parts: unknown) =>
+  new Bun.CryptoHasher("sha256").update(JSON.stringify(parts)).digest("hex")
+
+const USE_WORDS: Record<UseKind, string> = {
+  env: "In the environment of",
+  file: "In a file for",
+  http: "Sent to",
+  fill: "Filled into",
+}
+
+/** A use of a locked item, once the user has approved it with their passkey; at once otherwise. */
+const cleared = async (
+  v: Vault,
+  gate: Gate,
+  items: readonly Item[],
+  caller: Caller,
+  use: { kind: UseKind; target: string; why: string; digest: string },
+) => {
+  const locked = [...new Map(items.map((i) => [i.id, i])).values()].filter((i) => isLocked(v, i.id))
+  if (locked.length === 0) {
+    return
+  }
+  const by = caller.who === "agent" ? "" : `${caller.who.replace(/^extension:/u, "")}: `
+  await approved(v, gate, {
+    items: locked,
+    who: caller.who,
+    space: caller.space,
+    digest: use.digest,
+    what: "use",
+    title: `Use ${locked.map((i) => i.title).join(", ")}?`,
+    body: [use.why, `${by}${USE_WORDS[use.kind]} ${use.target}`].filter(Boolean).join("\n"),
+  })
+}
+
+/** The values some references name, after the grants allow each this use and the user approves a locked one's. */
 const values = async (
   v: Vault,
+  gate: Gate,
   refs: readonly { ref: string; use: UseKind }[],
   caller: Caller,
   why: string,
   target: string,
+  digest: string,
   check?: (item: Item) => string | null,
 ) => {
   const out = new Map<string, string>()
   const grants = store.grants(v)
-  for (const { ref, use } of refs) {
-    const { item, field } = resolve(v, ref)
-    const reason = refusal(grants, item, caller, use) ?? check?.(item) ?? null
+  const named = refs.map(({ ref, use }) => ({ ref, use, ...resolve(v, ref) }))
+  const record = (item: Item, field: Field, use: UseKind, reason: string | null) => {
     store.record(v, {
       item: item.id,
       name: item.name,
@@ -548,9 +636,33 @@ const values = async (
       ok: reason === null,
       reason: reason ?? "",
     })
+  }
+  for (const { item, field, use } of named) {
+    const reason = refusal(grants, item, caller, use) ?? check?.(item) ?? null
     if (reason !== null) {
+      record(item, field, use, reason)
       throw new Error(reason)
     }
+  }
+  const [first] = named
+  if (first) {
+    try {
+      await cleared(
+        v,
+        gate,
+        named.map((n) => n.item),
+        caller,
+        { kind: first.use, target, why, digest },
+      )
+    } catch (error) {
+      for (const { item, field, use } of named) {
+        record(item, field, use, error instanceof Error ? error.message : String(error))
+      }
+      throw error
+    }
+  }
+  for (const { ref, item, field, use } of named) {
+    record(item, field, use, null)
     out.set(ref, await valueOf(field))
   }
   return out
@@ -576,7 +688,7 @@ const capped = (text: string) =>
 
 const envRef = (value: string) => (value.includes("{{") ? refsIn([value]) : [value.trim()])
 
-export const run = async (v: Vault, input: typeof RunInput.Type) => {
+export const run = async (v: Vault, input: typeof RunInput.Type, gate: Gate) => {
   const argv =
     typeof input.command === "string" ? ["/bin/sh", "-c", input.command] : [...input.command]
   if (refsIn(argv).length > 0) {
@@ -597,7 +709,16 @@ export const run = async (v: Vault, input: typeof RunInput.Type) => {
     ...refsIn([input.stdin ?? ""]).map((ref) => ({ ref, use: "env" as const })),
   ]
   const target = (argv[0] === "/bin/sh" ? (argv[2] ?? "") : argv.join(" ")).split(/\s+/u)[0] ?? ""
-  const got = await values(v, refs, agentCaller(input.space), input.why, path.basename(target))
+  const { why: _, timeout: __, ...asked } = input
+  const got = await values(
+    v,
+    gate,
+    refs,
+    agentCaller(input.space),
+    input.why,
+    path.basename(target),
+    digestOf({ run: asked }),
+  )
   const folder = files.length > 0 ? mkdtempSync(path.join(tmpdir(), "secrets-")) : ""
   try {
     for (const f of files) {
@@ -648,7 +769,7 @@ export const HttpInput = Schema.Struct({
   space: Schema.optionalKey(Schema.String),
 })
 
-export const http = async (v: Vault, input: typeof HttpInput.Type) => {
+export const http = async (v: Vault, input: typeof HttpInput.Type, gate: Gate) => {
   const headers = input.headers ?? {}
   const refs = refsIn([input.url, ...Object.values(headers), input.body ?? ""]).map((ref) => ({
     ref,
@@ -663,10 +784,19 @@ export const http = async (v: Vault, input: typeof HttpInput.Type) => {
   if (hostOf(input.url.split("{{")[0] ?? "") !== host) {
     throw new Error("A secret can't be part of the host")
   }
-  const got = await values(v, refs, agentCaller(input.space), input.why, host, (item) =>
-    urlAllowed(item.urls, literal)
-      ? null
-      : `${item.name} is sent only to ${item.urls.length === 0 ? "the hosts in its urls, and it has none: add one with save" : item.urls.map((u) => hostOf(u.url)).join(", ")}`,
+  const { why: _, ...asked } = input
+  const got = await values(
+    v,
+    gate,
+    refs,
+    agentCaller(input.space),
+    input.why,
+    host,
+    digestOf({ http: asked }),
+    (item) =>
+      urlAllowed(item.urls, literal)
+        ? null
+        : `${item.name} is sent only to ${item.urls.length === 0 ? "the hosts in its urls, and it has none: add one with save" : item.urls.map((u) => hostOf(u.url)).join(", ")}`,
   )
   const response = await fetch(fill(input.url, got), {
     method: input.method ?? "GET",
@@ -692,17 +822,20 @@ export const WriteFileInput = Schema.Struct({
   space: Schema.optionalKey(Schema.String),
 })
 
-export const writeFile = async (v: Vault, input: typeof WriteFileInput.Type) => {
+export const writeFile = async (v: Vault, input: typeof WriteFileInput.Type, gate: Gate) => {
   const file = expand(input.path)
   if (!path.isAbsolute(file)) {
     throw new Error("Give the file's whole path (or ~/…)")
   }
+  const { why: _, ...asked } = input
   const got = await values(
     v,
+    gate,
     refsIn([input.content]).map((ref) => ({ ref, use: "file" as const })),
     agentCaller(input.space),
     input.why,
     input.path,
+    digestOf({ file: asked }),
   )
   await Bun.write(file, fill(input.content, got), { mode: input.mode ?? 0o600 })
   return { wrote: input.path, references: [...got.keys()] }

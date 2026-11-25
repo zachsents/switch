@@ -193,7 +193,7 @@ pub struct Writing {
 /// An Entry's field and its call, made once.
 fn writing(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Entity<Writing> {
     let placeholder = ctx.scope.text(c, "placeholder");
-    let first = entry_options(&placeholder, false, &ctx.look);
+    let first = entry_options(&placeholder, false);
     ctx.state(c, "entry", window, cx, move |window, cx| Writing {
         input: cx.new(|cx| ui_sdk::components::input::Input::new(first, window, cx)),
         calling: cx.new(|_| Calling::default()),
@@ -202,9 +202,8 @@ fn writing(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Entity<Wr
     })
 }
 
-fn entry_options(placeholder: &str, off: bool, l: &crate::look::Look) -> ui_sdk::components::input::InputOptions {
-    use ui_sdk::components::input::{InputOptions, TextFieldStyle};
-    InputOptions::default().placeholder(placeholder.to_string()).disabled(off).field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() })
+fn entry_options(placeholder: &str, off: bool) -> ui_sdk::components::input::InputOptions {
+    ui_sdk::components::input::InputOptions::default().placeholder(placeholder.to_string()).disabled(off).field_style(crate::kit::field_style())
 }
 
 pub fn entry(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -213,7 +212,7 @@ pub fn entry(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyElem
     let placeholder = ctx.scope.text(c, "placeholder");
     let options = {
         let p = placeholder.clone();
-        move |off: bool| entry_options(&p, off, &l)
+        move |off: bool| entry_options(&p, off)
     };
     let state = writing(c, ctx, window, cx);
     let (input, calling) = {
@@ -269,7 +268,7 @@ pub fn entry(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyElem
                 submit(window, cx);
             }
         })
-        .child(Input::root(&input, cx).aria_label(placeholder.clone()).h_full().flex_1().min_w_0().pl(u(8.)).text_size(u(13.)).when(pending, |d| d.opacity(0.4)))
+        .child(Input::root(&input, cx).text_color(l.ink).aria_label(placeholder.clone()).h_full().flex_1().min_w_0().pl(u(8.)).text_size(u(13.)).when(pending, |d| d.opacity(0.4)))
         .children(error.map(|e| div().min_w_0().flex_shrink(1.).truncate().text_size(u(12.)).text_color(l.red).child(e)))
         .into_any_element()
 }

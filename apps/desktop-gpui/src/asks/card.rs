@@ -16,7 +16,7 @@ use gpui::{
     AnyElement, App, AppContext, Context, Focusable, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, Task, Window, div, prelude::*, px,
 };
-use ui_sdk::components::input::{Input, InputOptions, Textarea, TextareaOptions, TextareaSubmitShortcut, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions, Textarea, TextareaOptions, TextareaSubmitShortcut};
 use ui_sdk::kernel::ChangeOptions;
 use ui_sdk::native::TextFieldKind;
 
@@ -24,7 +24,7 @@ use crate::asks::{files, portal::Portal};
 use crate::mutations::{CloseAs, Done, ItemAnswer};
 use crate::outbox;
 use crate::items::{ActionItem, Kind, ending_of};
-use crate::kit::{Btn, button};
+use crate::kit::{self, Btn, button};
 use crate::look::{Look, u};
 use crate::markdown::{self, Doc};
 use crate::marks;
@@ -109,7 +109,7 @@ pub struct AskCard {
 }
 
 /// The reply's field: Enter sends; read-only while it's going.
-fn reply_options(weak: gpui::WeakEntity<AskCard>, l: &Look, read_only: bool) -> TextareaOptions {
+fn reply_options(weak: gpui::WeakEntity<AskCard>, read_only: bool) -> TextareaOptions {
     let w2 = weak.clone();
     TextareaOptions::default()
         .placeholder("Reply…")
@@ -117,7 +117,7 @@ fn reply_options(weak: gpui::WeakEntity<AskCard>, l: &Look, read_only: bool) -> 
         .auto_resize(true)
         .read_only(read_only)
         .submit_shortcut(TextareaSubmitShortcut::Enter)
-        .field_style(field_style(l))
+        .field_style(kit::field_style())
         .on_value_change(move |_, _, _, cx| {
             w2.update(cx, |_, cx| cx.notify()).ok();
         })
@@ -128,16 +128,16 @@ fn reply_options(weak: gpui::WeakEntity<AskCard>, l: &Look, read_only: bool) -> 
 }
 
 /// The typed answer: Enter answers.
-fn answer_options(weak: gpui::WeakEntity<AskCard>, l: &Look) -> TextareaOptions {
-    TextareaOptions::default().placeholder("Answer…").rows(1).auto_resize(true).submit_shortcut(TextareaSubmitShortcut::Enter).field_style(field_style(l)).on_submit(move |value, _, _, cx| {
+fn answer_options(weak: gpui::WeakEntity<AskCard>) -> TextareaOptions {
+    TextareaOptions::default().placeholder("Answer…").rows(1).auto_resize(true).submit_shortcut(TextareaSubmitShortcut::Enter).field_style(kit::field_style()).on_submit(move |value, _, _, cx| {
         let text = value.trim().to_string();
         weak.update(cx, |this, cx| this.answer_text(text, cx)).ok();
     })
 }
 
 /// The sealed field: a password's, labelled with what it's for.
-fn sealed_options(weak: gpui::WeakEntity<AskCard>, l: &Look, usage: &str) -> InputOptions {
-    InputOptions::default().kind(TextFieldKind::Password).placeholder(usage.to_string()).field_style(field_style(l)).on_value_change(move |_, _, _, cx| {
+fn sealed_options(weak: gpui::WeakEntity<AskCard>, usage: &str) -> InputOptions {
+    InputOptions::default().kind(TextFieldKind::Password).placeholder(usage.to_string()).field_style(kit::field_style()).on_value_change(move |_, _, _, cx| {
         weak.update(cx, |_, cx| cx.notify()).ok();
     })
 }
@@ -149,12 +149,11 @@ fn safe(e: &str) -> String {
 }
 
 /// A draft's field, its edits kept as typed.
-fn draft_field(start: String, l: &Look, window: &mut Window, cx: &mut Context<AskCard>) -> Entity<Textarea> {
+fn draft_field(start: String, window: &mut Window, cx: &mut Context<AskCard>) -> Entity<Textarea> {
     let weak = cx.entity().downgrade();
-    let l = *l;
     cx.new(|cx| {
         Textarea::new(
-            TextareaOptions::default().default_value(start).rows(2).auto_resize(true).field_style(field_style(&l)).on_value_change(move |_, details, _, cx| {
+            TextareaOptions::default().default_value(start).rows(2).auto_resize(true).field_style(kit::field_style()).on_value_change(move |_, details, _, cx| {
                 // A value the card put in itself (the core's newer version) isn't typing.
                 if matches!(details.source, ui_sdk::kernel::ChangeSource::Programmatic) {
                     return;
@@ -165,10 +164,6 @@ fn draft_field(start: String, l: &Look, window: &mut Window, cx: &mut Context<As
             cx,
         )
     })
-}
-
-fn field_style(l: &Look) -> TextFieldStyle {
-    TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }
 }
 
 /// A field in a card: full width, on a hairline (ink3 while it has the keyboard), its whole box the
@@ -212,17 +207,16 @@ fn use_of(item: &ActionItem) -> String {
 
 impl AskCard {
     pub fn new(item: ActionItem, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let weak = cx.entity().downgrade();
-        let answer = cx.new(|cx| Textarea::new(answer_options(weak.clone(), &l), window, cx));
-        let reply = cx.new(|cx| Textarea::new(reply_options(weak.clone(), &l, false), window, cx));
+        let answer = cx.new(|cx| Textarea::new(answer_options(weak.clone()), window, cx));
+        let reply = cx.new(|cx| Textarea::new(reply_options(weak.clone(), false), window, cx));
         let usage = use_of(&item);
-        let sealed = cx.new(|cx| Input::new(sealed_options(weak.clone(), &l, &usage), window, cx));
+        let sealed = cx.new(|cx| Input::new(sealed_options(weak.clone(), &usage), window, cx));
         // The fields open on his newest version: kept here from before, else saved, else the agent's.
         let opening = model(cx).read(cx).kept_edit(&item.id);
         let shown: HashMap<String, String> = item.drafts.iter().map(|d| (d.name.clone(), item.shown_text(d))).collect();
         let mine: HashMap<String, String> = opening.as_ref().map(|(_, ds)| ds.clone()).unwrap_or_default();
-        let drafts = item.drafts.iter().map(|d| (d.name.clone(), draft_field(mine.get(&d.name).cloned().unwrap_or_else(|| item.shown_text(d)), &l, window, cx))).collect();
+        let drafts = item.drafts.iter().map(|d| (d.name.clone(), draft_field(mine.get(&d.name).cloned().unwrap_or_else(|| item.shown_text(d)), window, cx))).collect();
         // One kept from before may be on its way already, so new words go under a new id; a quiet copy
         // sends nothing, so it keeps the one.
         let pending_edit = if outbox::quiet() { opening.as_ref().map(|(id, _)| id.clone()) } else { None };
@@ -368,7 +362,6 @@ impl AskCard {
     /// The fields follow the drafts the item has now: one a revision adds is shown (his kept
     /// version, else the item's), one it drops goes. What Approve sends is always what's shown.
     fn sync_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let l = Look::get(cx);
         let mut next = Vec::with_capacity(self.item.drafts.len());
         for d in self.item.drafts.clone() {
             let field = match self.field(&d.name) {
@@ -376,7 +369,7 @@ impl AskCard {
                 None => {
                     let start = self.mine.get(&d.name).cloned().unwrap_or_else(|| self.item.shown_text(&d));
                     self.seen.insert(d.name.clone(), self.item.shown_text(&d));
-                    draft_field(start, &l, window, cx)
+                    draft_field(start, window, cx)
                 }
             };
             next.push((d.name.clone(), field));
@@ -673,7 +666,7 @@ impl AskCard {
                                 .child(div().flex_1().min_w_0().truncate().child(d.label.clone()))
                                 .when(edited, |h| h.child(div().flex_none().font_weight(FontWeight::MEDIUM).text_color(l.ink).child("Edited"))),
                         )
-                        .child(Textarea::root(field, cx).aria_label(d.label.clone()).w_full().min_h(u(56.)).max_h(px(296.)).px(u(14.)).py(u(8.)).text_size(u(14.)).line_height(u(20.)))
+                        .child(Textarea::root(field, cx).text_color(l.ink).aria_label(d.label.clone()).w_full().min_h(u(56.)).max_h(px(296.)).px(u(14.)).py(u(8.)).text_size(u(14.)).line_height(u(20.)))
                         .into_any_element(),
                 )
             })
@@ -776,7 +769,7 @@ impl AskCard {
             .flex()
             .items_end()
             .gap(u(8.))
-            .child(field_box("reply-box", focus, l, window, cx).flex_1().child(Textarea::root(&self.reply, cx).aria_label("Reply").w_full().max_h(u(FIELD_MOST))))
+            .child(field_box("reply-box", focus, l, window, cx).flex_1().child(Textarea::root(&self.reply, cx).text_color(l.ink).aria_label("Reply").w_full().max_h(u(FIELD_MOST))))
             .when_some(self.reply_going.error.clone(), |d, e| d.child(action_error(&e, l)))
             .child(key("reply-send", Btn::Key, ready, l, "Send").when(ready, |b| {
                 b.on_click(cx.listener(|this, _, window, cx| {
@@ -811,7 +804,7 @@ impl AskCard {
                                     this.send_sealed(window, cx);
                                 }
                             }))
-                            .child(Input::root(&self.sealed, cx).aria_label(usage).w_full()),
+                            .child(Input::root(&self.sealed, cx).text_color(l.ink).aria_label(usage).w_full()),
                     )
                     .child(key("sealed-send", Btn::Go, ready, l, "Send").when(ready, |b| b.on_click(cx.listener(|this, _, window, cx| this.send_sealed(window, cx))))),
             )
@@ -866,7 +859,7 @@ impl AskCard {
             col = col.children(self.drafts(l, window, cx)).child(self.keys(l, window, cx));
             if !self.item.owner_completes && self.item.kind == Kind::Question {
                 let focus = self.answer.read(cx).focus_handle(cx);
-                col = col.child(field_box("answer-box", focus, l, window, cx).child(Textarea::root(&self.answer, cx).aria_label("Answer").w_full().max_h(u(FIELD_MOST))));
+                col = col.child(field_box("answer-box", focus, l, window, cx).child(Textarea::root(&self.answer, cx).text_color(l.ink).aria_label("Answer").w_full().max_h(u(FIELD_MOST))));
             }
         }
         if self.replying {
@@ -879,8 +872,7 @@ impl AskCard {
 impl Render for AskCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.remount) {
-            let l = Look::get(cx);
-            let opts = answer_options(cx.entity().downgrade(), &l);
+            let opts = answer_options(cx.entity().downgrade());
             self.answer = cx.new(|cx| Textarea::new(opts, window, cx));
             let opening = model(cx).read(cx).kept_edit(&self.item.id);
             self.mine = opening.as_ref().map(|(_, ds)| ds.clone()).unwrap_or_default();
@@ -891,14 +883,13 @@ impl Render for AskCard {
             self.renew_reply = true;
         }
         if std::mem::take(&mut self.renew_reply) {
-            let opts = reply_options(cx.entity().downgrade(), &Look::get(cx), false);
+            let opts = reply_options(cx.entity().downgrade(), false);
             self.reply = cx.new(|cx| Textarea::new(opts, window, cx));
             self.reply_going = Going::default();
             self.reply_mode = None;
         }
         if let Some(ro) = self.reply_mode.take() {
-            let l = Look::get(cx);
-            let opts = reply_options(cx.entity().downgrade(), &l, ro);
+            let opts = reply_options(cx.entity().downgrade(), ro);
             self.reply.update(cx, |t, cx| t.set_options(opts, window, cx));
         }
         if std::mem::take(&mut self.reply_focus) {
@@ -917,7 +908,7 @@ impl Render for AskCard {
         // A revision's new use for the sealed field is its label and placeholder.
         let usage = use_of(&self.item);
         if usage != self.sealed_use {
-            let opts = sealed_options(cx.entity().downgrade(), &Look::get(cx), &usage);
+            let opts = sealed_options(cx.entity().downgrade(), &usage);
             self.sealed.update(cx, |t, cx| t.set_options(opts, window, cx));
             self.sealed_use = usage;
         }

@@ -33,7 +33,7 @@ import {
   spaceFor,
   WidgetInput,
 } from "@switch/brain"
-import type { Incoming } from "@switch/brain"
+import type { BrainShape, Incoming } from "@switch/brain"
 import { Models } from "@switch/models"
 import type { ModelError } from "@switch/models"
 import {
@@ -72,6 +72,7 @@ import {
 import type { App, AppEventsService, Need, Widget } from "switch-ext-kit"
 
 import { approvals } from "./approved.ts"
+import { Pages, passkeyLink } from "./pages/pages.ts"
 import {
   CALLS_FAILING,
   fails,
@@ -82,6 +83,7 @@ import {
 import type { Part } from "./failing.ts"
 import { pictureOf } from "./picture.ts"
 import { brainName, messagesOf, readView } from "./views.ts"
+import type { View } from "./views.ts"
 
 /** An app to connect to: how to reach it, fresh on each (re)connect. */
 export interface Plug {
@@ -260,6 +262,7 @@ const asksOpen = {
         notify: Schema.optionalKey(Schema.Boolean),
         answerTo: Schema.optionalKey(Schema.String),
         sealed: Schema.optionalKey(Schema.Struct({ key: Schema.String, use: Schema.String })),
+        passkey: Schema.optionalKey(Schema.String),
       }),
       id: Schema.optionalKey(Schema.String),
     }),
@@ -548,12 +551,13 @@ export class Gateway extends Context.Service<
     ) => Promise<CallToolResult>
     /**
      * A widget's A2UI messages, with its tool's result as the data model; null if none. Its tool
-     * is called with `input`, else its placement's.
+     * is called with `input`: a placement's own (widgetRoute reads it by the placement's id) or a
+     * chat line's.
      */
     readonly view: (
       app: string,
       name: string,
-      input?: typeof WidgetInput.Type,
+      input: typeof WidgetInput.Type,
     ) => Promise<readonly unknown[] | null>
     /** The Macs that read pictures for redaction (`redactions/pictures`), as they offered. */
     readonly pictureReaders: () => readonly PictureReader[]
@@ -580,6 +584,7 @@ export class Gateway extends Context.Service<
       Effect.gen(function* making() {
         const brain = yield* Brain
         const models = yield* Models
+        const pages = Option.getOrNull(yield* Effect.serviceOption(Pages))
         const connected = new Map<string, Offered>()
         const readers = new Map<string, PictureReader>()
         /** Apps whose session ended while they're still kept: what each offered, and since when. */
@@ -969,12 +974,19 @@ export class Gateway extends Context.Service<
                 }
                 // The space it names, else Home: an extension's call carries no asking work.
                 const there = await Effect.runPromise(brain.read((db) => spaceFor(db, space, null)))
+                // A passkey approval's one link: its ceremony's page, and only its own extension closes it.
                 const payload = {
                   ...ask,
                   id,
                   space: there,
                   decision: plug.name,
                   app: plug.name,
+                  ...(ask.passkey !== undefined &&
+                    pages !== null && {
+                      kind: "approval" as const,
+                      completion: "owner" as const,
+                      links: [{ label: "Approve", url: passkeyLink(pages, id) }],
+                    }),
                 }
                 await Effect.runPromise(
                   brain
@@ -1191,7 +1203,7 @@ export class Gateway extends Context.Service<
           widgets: () => [...listed()].flatMap(([app, c]) => c.widgets.map((w) => ({ ...w, app }))),
           needs: () => [...listed()].flatMap(([app, c]) => c.needs.map((n) => ({ ...n, app }))),
           able: () => able(listed()),
-          view: async (app, name, given) => {
+          view: async (app, name, input) => {
             const c = await reached(app)
             const w = c?.widgets.find((x) => x.name === name)
             if (!c || !w) {
@@ -1209,13 +1221,11 @@ export class Gateway extends Context.Service<
                   updateDataModel: {
                     surfaceId: surfaceOf(messages),
                     path: "/input",
-                    value: given ?? {},
+                    value: input,
                   },
                 },
               ]
             }
-            const input =
-              given ?? (await Effect.runPromise(brain.read((db) => placedInput(db, app, name))))
             const result = await runTool(c.client, { name: w.tool, arguments: input })
             const surfaceId = surfaceOf(messages)
             return [
@@ -1400,18 +1410,35 @@ export const widgetCall = (
 
 /**
  * Widgets for clients: `/widgets` lists them, `/widgets/<app>/<name>` is one's A2UI messages (its
- * tool called with `?input=<json>`, else with its placement's input), and a
+ * tool called with `?input=<json>`, else with the input of the placement `?placement=<id>`, each
+ * placement its own, else with its first placement's), and a
  * POST to `/widgets/<app>/<tool>` calls one of that app's tools for its widget (a swap, a camera
  * frame), its arguments the body; with `?as=picture`, its picture alone (picture.ts). A view the agent made is the brain app's widget of its name: the
  * list holds those placed in a space, so a client draws and names them as it does an app's.
  */
 export const widgetRoute = Effect.gen(function* routing() {
   const gateway = yield* Gateway
-  const calling = widgetCall(gateway.call)
   const brain = yield* Brain
   const blobs = yield* Blobs
-  const made = async (name: string) =>
-    await Effect.runPromise(readView(name).pipe(Effect.provideService(Blobs, blobs)))
+  return widgetRouter({
+    gateway,
+    brain,
+    made: async (name) =>
+      await Effect.runPromise(readView(name).pipe(Effect.provideService(Blobs, blobs))),
+  })
+})
+
+/** widgetRoute's handler, given what it reads: the extensions' widgets, the brain, the agent's views. */
+export const widgetRouter = ({
+  gateway,
+  brain,
+  made,
+}: {
+  readonly gateway: Pick<Gateway["Service"], "call" | "widgets" | "view">
+  readonly brain: Pick<BrainShape, "read">
+  readonly made: (name: string) => Promise<Option.Option<View>>
+}) => {
+  const calling = widgetCall(gateway.call)
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     const [, root, app, name] = url.pathname.split("/")
@@ -1454,13 +1481,17 @@ export const widgetRoute = Effect.gen(function* routing() {
         ? Response.json(messagesOf(view.value), { headers })
         : new Response("No such widget", { status: 404, headers })
     }
-    const input = decodeBody(url.searchParams.get("input") ?? "").pipe(Option.getOrUndefined)
-    const messages = await gateway.view(app, name ?? "", input).catch((): null => null)
+    const named = name ?? ""
+    const given = decodeBody(url.searchParams.get("input") ?? "").pipe(Option.getOrUndefined)
+    const placement = url.searchParams.get("placement") ?? undefined
+    const input =
+      given ?? (await Effect.runPromise(brain.read((db) => placedInput(db, app, named, placement))))
+    const messages = await gateway.view(app, named, input).catch((): null => null)
     return messages === null
       ? new Response("No such widget", { status: 404, headers })
       : Response.json(messages, { headers })
   }
-})
+}
 
 /**
  * Agent sessions attach to this route: `{ "type": "http", "url": "<url>?thread=<thread>" }` in

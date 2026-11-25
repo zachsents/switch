@@ -12,7 +12,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use serde_json::{Value, json};
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 use ui_sdk::kernel::ChangeOptions;
 
 use crate::brain::{Brain, HOME};
@@ -150,13 +150,12 @@ pub struct Palette {
 
 impl Palette {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let weak = cx.entity().downgrade();
         let input = cx.new(|cx| {
             Input::new(
                 InputOptions::default()
                     .placeholder("Find…")
-                    .field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() })
+                    .field_style(kit::field_style())
                     .on_value_change(move |_, _, _, cx| {
                         weak.update(cx, |this, cx| this.typed(cx)).ok();
                     }),
@@ -434,7 +433,7 @@ impl Palette {
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.on_key(e, window, cx)))
-                    .child(div().flex().h(u(44.)).items_center().px(u(12.)).border_b(px(l.w1)).border_color(l.line1).text_size(u(14.)).line_height(u(20.)).child(Input::root(&self.input, cx).aria_label("Find").w_full()))
+                    .child(div().flex().h(u(44.)).items_center().px(u(12.)).border_b(px(l.w1)).border_color(l.line1).text_size(u(14.)).line_height(u(20.)).child(Input::root(&self.input, cx).text_color(l.ink).aria_label("Find").w_full()))
                     .when_some(self.error.clone(), |d, e| {
                         d.child(kit::small(div()).flex().h(u(24.)).items_center().px(u(12.)).text_color(l.red).border_b(px(l.w2)).border_color(l.line2).child(e))
                     })

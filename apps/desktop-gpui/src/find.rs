@@ -10,7 +10,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use serde_json::{Value, json};
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 
 use crate::json::{list, n};
 use crate::kit;
@@ -54,13 +54,12 @@ pub fn target_turn(space: &str, cx: &App) -> Option<(u64, u64)> {
 
 impl FindBar {
     pub fn new(space: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let weak = cx.entity().downgrade();
         let input = cx.new(|cx| {
             Input::new(
                 InputOptions::default()
                     .placeholder("Find")
-                    .field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() })
+                    .field_style(kit::field_style())
                     .on_value_change(move |_, _, _, cx| {
                         weak.update(cx, |this, cx| this.typed(cx)).ok();
                     }),
@@ -182,7 +181,7 @@ impl Render for FindBar {
                 }
                 _ => {}
             }))
-            .child(div().flex_1().min_w_0().text_size(u(13.)).line_height(u(16.)).child(Input::root(&self.input, cx).aria_label("Find in chat").w_full()))
+            .child(div().flex_1().min_w_0().text_size(u(13.)).line_height(u(16.)).child(Input::root(&self.input, cx).text_color(l.ink).aria_label("Find in chat").w_full()))
             .when(asked && ready, |d| {
                 d.child(kit::caption(div()).flex_none().text_color(l.ink3).child(if count == 0 { "None".to_string() } else { format!("{}/{}", self.at.min(count - 1) + 1, count) }))
             })

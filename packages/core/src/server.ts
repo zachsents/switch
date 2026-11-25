@@ -117,6 +117,7 @@ import { eventsRoute, scriptsConfig, scriptsRetire } from "./scripts.ts"
 import { itemChecks } from "./item-checks.ts"
 import { takeInLayer } from "./take-in.ts"
 import { enrich } from "./outbound.ts"
+import { isPasskey, passkeyRoute } from "./passkey.ts"
 import { peerRoute } from "./peer.ts"
 import { portalPageRoute, portalRoute } from "./portal.ts"
 import { buildRoute } from "./release.ts"
@@ -502,13 +503,26 @@ const widgetsRoute = Layer.unwrap(
 )
 // Published pages, on the core's port for the private network, and alone on a port of their own
 // for a public proxy (not in a canary, which runs beside the live core).
+/** Pages, and the passkey ceremonies of items that need one (passkey.ts), which share their listener. */
+const publicFetch = Effect.gen(function* both() {
+  const pages = yield* pagesRoute
+  const passkey = yield* passkeyRoute
+  return async (request: Request) => await (isPasskey(request) ? passkey(request) : pages(request))
+})
 const publishedRoute = Layer.unwrap(
-  pagesRoute.pipe(Effect.map((fetch) => HttpRouter.add("GET", "/p/*", web(fetch)))),
+  publicFetch.pipe(
+    Effect.map((fetch) =>
+      Layer.mergeAll(
+        HttpRouter.add("GET", "/p/*", web(fetch)),
+        HttpRouter.add("POST", "/p/passkey/*", web(fetch)),
+      ),
+    ),
+  ),
 )
 const layerPagesListener = Layer.effectDiscard(
   Effect.gen(function* listening() {
     const c = yield* CoreConfig
-    const fetch = yield* pagesRoute
+    const fetch = yield* publicFetch
     if (c.pagesPort === null || c.canary) {
       return
     }

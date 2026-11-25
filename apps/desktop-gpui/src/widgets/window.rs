@@ -74,7 +74,7 @@ impl WidgetWindow {
         let l = Look::get(cx);
         let host = Host::entity(cx);
         let key = self.key.clone();
-        let source = Source { app: self.view.app.clone(), name: self.view.name.clone(), input: self.view.input.clone() };
+        let source = Source { app: self.view.app.clone(), name: self.view.name.clone(), input: Some(self.view.input.clone().unwrap_or_else(|| serde_json::json!({}))), placement: None };
         // A window's view isn't placed: it's shown whether its extension is listed or not.
         host.update(cx, |h, cx| h.want_any(&key, source, cx));
         let surface = host.read(cx).surface(&self.key);

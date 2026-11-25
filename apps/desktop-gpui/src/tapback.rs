@@ -13,7 +13,7 @@ use gpui::{
     ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
     point, prelude::*, px,
 };
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 use ui_sdk::kernel::ChangeOptions;
 
 use crate::brain::{Reactions, Reply};
@@ -194,12 +194,11 @@ pub struct ReactMenu {
 
 impl ReactMenu {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let l = Look::get(cx);
         let search = cx.new(|cx| {
             Input::new(
                 InputOptions::default()
                     .placeholder("Search…")
-                    .field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }),
+                    .field_style(kit::field_style()),
                 window,
                 cx,
             )
@@ -407,6 +406,7 @@ impl Render for ReactMenu {
                 .collect()
         };
         let field = Input::root(&self.search, cx)
+            .text_color(l.ink)
             .aria_label("Emoji")
             .h(px(28.))
             .w_full()

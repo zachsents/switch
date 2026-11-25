@@ -112,6 +112,10 @@ create table if not exists grants (id text primary key, subject text not null, s
 create table if not exists audit (id integer primary key autoincrement, at integer not null, item text not null, name text not null, field text not null, use text not null, who text not null, space text not null, why text not null, target text not null, ok integer not null, reason text not null);
 create index if not exists audit_item on audit (item, at);
 create table if not exists asks (id text primary key, blob text not null, created integer not null);
+create table if not exists locks (item text primary key, since integer not null, who text not null);
+create table if not exists passkeys (id text primary key, key text not null, alg integer not null, rp text not null, count integer not null, created integer not null);
+create table if not exists approvals (id text primary key, digest text not null, items text not null, who text not null, space text not null, what text not null, status text not null, challenge text not null default '', issued integer not null default 0, created integer not null, approved integer not null default 0, until integer not null default 0);
+create index if not exists approvals_digest on approvals (digest, status);
 `
 
 /** The vault as this process holds it: its file, its keys, and every item opened. */

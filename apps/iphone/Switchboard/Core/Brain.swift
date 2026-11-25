@@ -360,6 +360,12 @@ struct ActionItem: Identifiable, Hashable {
     }
   }
 
+  /// A page that helps, opened in Safari (a passkey approval's ceremony).
+  struct Link: Hashable {
+    let label: String
+    let url: URL
+  }
+
   /// A key that helps, calling an app's tool from here.
   struct Assist: Hashable {
     let label: String
@@ -377,6 +383,9 @@ struct ActionItem: Identifiable, Hashable {
   let drafts: [Draft]
   let files: [File]
   let assist: Assist?
+  let links: [Link]
+  /// Only the extension that raised it closes it: nothing to answer here.
+  let owner: Bool
   /// It carries a live view of a Mac's screen (PortalView.swift).
   let portal: Bool
   /// A sealed item's one-time key and what it's for.
@@ -410,6 +419,10 @@ struct ActionItem: Identifiable, Hashable {
     }
     let a = j["action"]
     assist = a.isNull ? nil : Assist(label: a["label"].str, app: a["app"].str, tool: a["tool"].str, args: a["args"])
+    links = j["links"].array.compactMap { l in
+      URL(string: l["url"].str).flatMap { $0.scheme == "https" || $0.scheme == "http" ? Link(label: l["label"].str, url: $0) : nil }
+    }
+    owner = j["completion"].str == "owner"
     portal = !j["portal"].isNull
     sealedKey = j["sealed"]["key"].string
     sealedUse = j["sealed"]["use"].str

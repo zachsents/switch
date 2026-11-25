@@ -48,3 +48,10 @@ export class Pages extends Context.Service<Pages, PagesShape>()("switch/Pages") 
       }
     })
 }
+
+/** An item's passkey ceremony, a token of its own: `<base>/p/passkey/<token>`. */
+export const passkeyToken = (pages: PagesShape, item: string): string =>
+  pages.tokenOf(`passkey:${item}`)
+
+export const passkeyLink = (pages: PagesShape, item: string): string =>
+  `${pages.base}/p/passkey/${passkeyToken(pages, item)}`

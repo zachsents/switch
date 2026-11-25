@@ -31,17 +31,39 @@ pub struct Offered {
     pub refresh: Vec<String>,
 }
 
-/// Where a surface's messages come from: a widget's tool, called with its input.
+/// Where a surface's messages come from: a widget's tool, called with its input. A placement's is
+/// asked for by the placement's id, so the core calls it with that placement's own input (its
+/// `input` here is what it last had, for telling a new one); a chat line's by its input.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
     pub app: String,
     pub name: String,
     pub input: Option<Value>,
+    /// The placement it draws, by id: the core calls its tool with that placement's input, never
+    /// the widget's first's.
+    pub placement: Option<String>,
 }
 
 impl Source {
+    /// A placed widget's: by its placement's id.
+    pub fn placed(w: &crate::items::Placed) -> Source {
+        Source { app: w.app.clone(), name: w.name.clone(), input: w.input.clone(), placement: Some(w.key()) }
+    }
+
+    /// Its widget's key, as `/widgets` lists what extensions offer.
     pub fn key(&self) -> String {
         format!("{}/{}", self.app, self.name)
+    }
+
+    /// The core's route for its messages: by placement, else by input, else its widget's alone.
+    pub fn route(&self) -> String {
+        let mut route = format!("/widgets/{}/{}", self.app, self.name);
+        if let Some(id) = &self.placement {
+            route.push_str(&format!("?placement={}", urlencode(id)));
+        } else if let Some(input) = &self.input {
+            route.push_str(&format!("?input={}", urlencode(&input.to_string())));
+        }
+        route
     }
 }
 
@@ -210,7 +232,7 @@ impl Host {
         for w in placed {
             let key = w.key();
             if self.offered.contains_key(&w.widget()) && !self.surfaces.contains_key(&key) && !self.loading.contains(&key) && !self.failed.contains_key(&key) {
-                self.sources.insert(key.clone(), Source { app: w.app.clone(), name: w.name.clone(), input: w.input.clone() });
+                self.sources.insert(key.clone(), Source::placed(&w));
                 self.load(key, cx);
             }
         }
@@ -236,11 +258,7 @@ impl Host {
             self.again.insert(key);
             return;
         }
-        let mut route = format!("/widgets/{}/{}", source.app, source.name);
-        if let Some(input) = source.input.as_ref().filter(|i| !i.is_null()) {
-            route.push_str(&format!("?input={}", urlencode(&input.to_string())));
-        }
-        let job = cx.global::<Net>().http("GET", route, None);
+        let job = cx.global::<Net>().http("GET", source.route(), None);
         cx.spawn(async move |this, cx| {
             let got = job.await.map_err(|_| "Can't reach the core".to_string()).and_then(|r| r);
             let messages = got.and_then(|a| {

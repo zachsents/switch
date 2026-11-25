@@ -12,6 +12,9 @@
 //   sessions (a browser tab held for a human check or a sign-in only the user can finish). The card
 //   shows it, and the user drives it from there; the app's `portal` tool opens each view, which the
 //   core relays and never keeps (core/portal.ts).
+// - An extension's approval can need the user's passkey (`passkey`): its link opens a page where
+//   Face ID or Touch ID signs the extension's challenge, which the extension verifies and closes
+//   (core/passkey.ts).
 // - sealed: the user types a secret into a sealed field. What they type is sealed on their device
 //   to the ask's one-time key (`sealed.key`) and goes straight to the raising extension's `answerTo`
 //   tool; the brain records only that it was answered (see core/asks.ts and switch-ext-kit's sealed.ts).
@@ -120,6 +123,12 @@ const itemFields = Schema.Struct({
   /** Its tool told of the answer: `{item, status, answer}`, or a sealed one's `{item, use, enc, ct}`. */
   answerTo: Schema.optionalKey(Schema.String),
   sealed: Schema.optionalKey(Sealed),
+  /**
+   * Approved only with the user's passkey: its extension's tool, by this name, gives the WebAuthn
+   * options and verifies the answer, which the core relays from `/p/passkey/<token>` (core's
+   * passkey.ts), the item's link.
+   */
+  passkey: Schema.optionalKey(Schema.String),
   portal: Schema.optionalKey(Portal),
   /**
    * Out of the user's queue while the agent reworks it: not shown, counted or answerable, until a
@@ -520,6 +529,13 @@ export const ReviseItem = defineCommand({
         delete revised.answerTo
       } else {
         revised.answerTo = s.existing.answerTo
+      }
+      // Its passkey link leads to its own ceremony, whoever revises it.
+      if (s.existing.passkey === undefined) {
+        delete revised.passkey
+      } else {
+        revised.passkey = s.existing.passkey
+        revised.links = s.existing.links ?? []
       }
     }
     return { events: [ItemRevised.make(revised)] }

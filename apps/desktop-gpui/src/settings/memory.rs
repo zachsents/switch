@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{AnyElement, App, ElementId, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px};
-use ui_sdk::components::input::{Input, Textarea, TextareaOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, Textarea, TextareaOptions};
 
 use crate::band::tip;
 use crate::brain::HOME;
@@ -114,7 +114,7 @@ fn rows(items: Vec<AnyElement>, l: &Look) -> impl IntoElement {
 
 fn editor(m: &MemoryRow, acts: &Acts, page: &gpui::Entity<Page>, window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
-    let style = TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() };
+    let style = kit::field_style();
     let line_field = kit::field(ElementId::Name(format!("memory-line-{}", m.id).into()), &m.description, "", window, cx);
     let body_start = m.body.clone();
     let body_field = window.use_keyed_state(ElementId::Name(format!("memory-body-{}", m.id).into()), cx, move |window, cx| Textarea::new(TextareaOptions::default().default_value(body_start).field_style(style), window, cx));
@@ -191,7 +191,7 @@ fn editor(m: &MemoryRow, acts: &Acts, page: &gpui::Entity<Page>, window: &mut Wi
                 .border_b(px(l.w2))
                 .border_color(l.line2)
                 .on_key_down(keys(id.clone(), page.clone(), Some(Box::new(enter))))
-                .child(Input::root(&line_field, cx).aria_label("Line").w_full()),
+                .child(Input::root(&line_field, cx).text_color(l.ink).aria_label("Line").w_full()),
         )
         .child(
             kit::read(div())
@@ -199,7 +199,7 @@ fn editor(m: &MemoryRow, acts: &Acts, page: &gpui::Entity<Page>, window: &mut Wi
                 .py(u(8.))
                 .text_color(l.ink)
                 .on_key_down(keys(id.clone(), page.clone(), None))
-                .child(Textarea::root(&body_field, cx).aria_label("Body").w_full().h(u(20. * lines))),
+                .child(Textarea::root(&body_field, cx).text_color(l.ink).aria_label("Body").w_full().h(u(20. * lines))),
         )
         .child(
             div()

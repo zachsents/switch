@@ -7,7 +7,7 @@
 
 use gpui::{AnyElement, App, Entity, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px};
 use serde_json::json;
-use ui_sdk::components::input::{Input, InputOptions, TextFieldKind, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions, TextFieldKind};
 use ui_sdk::kernel::ChangeOptions;
 
 use super::accounts::{Mark, Row, SUBSCRIPTIONS, Section, Standing, is_login_provider, launch_label, sections};
@@ -274,7 +274,7 @@ fn completion(account: &AccountView, flow: &AccountFlow, window: &mut Window, cx
     let completing = act::act(format!("account-complete-{key}"), window, cx);
     let input = window.use_keyed_state(eid(format!("account-code-{key}")), cx, |window, cx| {
         Input::new(
-            InputOptions::default().kind(TextFieldKind::Password).placeholder("Code").field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }),
+            InputOptions::default().kind(TextFieldKind::Password).placeholder("Code").field_style(kit::field_style()),
             window,
             cx,
         )
@@ -322,7 +322,7 @@ fn completion(account: &AccountView, flow: &AccountFlow, window: &mut Window, cx
                 .text_size(u(13.))
                 .line_height(u(16.))
                 .text_color(l.ink)
-                .child(Input::root(&input, cx).aria_label(format!("{} sign-in code", account.id)).w_full()),
+                .child(Input::root(&input, cx).text_color(l.ink).aria_label(format!("{} sign-in code", account.id)).w_full()),
         )
         .child(kit::press(kit::button(eid(format!("account-continue-{key}")), Btn::Go, !pending, &l), !pending, move |_, window, cx| submit(window, cx)).aria_label("Continue").child("Continue"))
         .when_some(error, |d, e| d.child(action_error(&e, &l)))
@@ -346,7 +346,7 @@ fn provider_models(key: &str, models: &[String], window: &mut Window, cx: &mut A
             .text_size(u(13.))
             .line_height(u(16.))
             .text_color(l.ink)
-            .child(Input::root(&f, cx).aria_label("Find a model").w_full())
+            .child(Input::root(&f, cx).text_color(l.ink).aria_label("Find a model").w_full())
     });
     let shown = models.iter().filter(|m| q.is_empty() || m.to_lowercase().contains(&q));
     div()

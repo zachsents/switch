@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div};
-use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
+use ui_sdk::components::input::{Input, InputOptions};
 
 use crate::kit::{self, Btn, W40};
 use crate::look::{Look, MONO, u};
@@ -76,7 +76,7 @@ fn color_field(dark: bool, name: &str, label: &str, value: &str, set: Set, outsi
             Input::new(
                 InputOptions::default()
                     .default_value(value)
-                    .field_style(TextFieldStyle { text_color: Some(l.ink), caret_color: Some(l.ink), ..Default::default() })
+                    .field_style(kit::field_style())
                     .on_value_change(move |v, _, _, cx| {
                         let v = v.trim().to_lowercase();
                         if hex_ok(&v) {
@@ -126,7 +126,7 @@ fn color_field(dark: bool, name: &str, label: &str, value: &str, set: Set, outsi
                 .font_family(MONO)
                 .text_size(u(11.))
                 .line_height(u(14.))
-                .child(Input::root(&input, cx).aria_label(label.to_string()).w_full()),
+                .child(Input::root(&input, cx).text_color(l.ink).aria_label(label.to_string()).w_full()),
         )
         .into_any_element()
 }

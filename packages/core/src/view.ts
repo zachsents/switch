@@ -32,6 +32,7 @@ import {
   prefs,
   on,
   partReactionsTo,
+  placements,
   reactionsTo,
   reads,
   repliesOf,
@@ -692,19 +693,9 @@ const closedActions = (db: Database) =>
         : []
     })
 
-const widgets = (db: Database) =>
-  db
-    .query<
-      { app: string; name: string; space: SpaceId; cols: number | null; rows: number | null },
-      []
-    >(
-      "SELECT app, name, space, cols, rows FROM widgets WHERE space IS NOT NULL ORDER BY space, position",
-    )
-    .all()
-    .map(({ cols, rows, ...w }) => ({
-      ...w,
-      ...(cols !== null && rows !== null && { size: { cols, rows } }),
-    }))
+/** Each placement, each space's in order: by its id, with its input and size, so a client draws a
+ * widget placed twice as two, each called with its own input. */
+const widgets = (db: Database) => placements(db).map(({ index: _, ...w }) => w)
 
 /** Each account as last logged, with its label: the email its login reports, as the catalog has it. */
 const labeledAccounts = (db: Database) => {

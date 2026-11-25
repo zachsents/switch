@@ -138,6 +138,21 @@ one that belongs to none, from any. The vault starts with `agent` and `extension
 use on `all`; the user narrows them in the apps (`grant { device, proof, op, grant }`, its
 statements `grant\0add\0<subject>\0<scope>\0<uses, comma-joined>` and `grant\0remove\0<id>`).
 
+## Approvals
+
+An item marked `requires_approval` (save's, kept in the `locks` table beside the sealed items, so a
+device's edit can't drop it) is used for nothing (`env`, `file`, `http`, an extension's `release`)
+until the user approves that use with their passkey. The call opens an approval in their queue
+(`passkey: "passkey"`, which the core links to `/p/passkey/<token>` on the pages' public address)
+and waits up to four minutes; past that it answers which item to wait on, and the same call again
+finds the approval once it's given. On the page Face ID or Touch ID signs a challenge this
+extension issued (`passkey { step: "options" | "verify" }`); it checks the signature, origin,
+relying party and user verification against the passkey it keeps (`src/passkeys.ts`) before the
+use goes ahead. An approval is for one request (its digest), used once within 15 minutes, or for
+every use of those items by that caller from that space for 15 minutes ("Approve 15 min"). The
+vault's first passkey is made at its first approval; after that only a passkey it has signs.
+Taking the lock off (`requires_approval: false`) is approved the same way.
+
 ## Audit
 
 Every use (`fill`, `env`, `file`, `http`, `reveal`, `copy`, `autofill`, `export`, `ask`, `save`,

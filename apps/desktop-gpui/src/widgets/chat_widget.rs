@@ -34,7 +34,9 @@ impl Render for ChatWidget {
         let source = Source {
             app: self.shown.app.clone(),
             name: self.shown.name.clone(),
-            input: (!self.shown.input.is_null()).then(|| self.shown.input.clone()),
+            // A line's own input, none an empty one: never a placement's.
+            input: Some(if self.shown.input.is_null() { serde_json::json!({}) } else { self.shown.input.clone() }),
+            placement: None,
         };
         let key = self.key.clone();
         host.update(cx, |h, cx| h.want(&key, source, cx));

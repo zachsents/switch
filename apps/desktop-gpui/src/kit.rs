@@ -615,17 +615,23 @@ pub fn select(id: impl Into<SharedString>, label: impl Into<SharedString>, optio
     el.into_any_element()
 }
 
+/// Every text field's colors: none of its own. Its words and caret take the ink its root is
+/// given where it's drawn (`.text_color(l.ink)`), its placeholder that ink dimmed, so they follow
+/// the theme as it changes: colors given when it's made would keep the theme it was made in.
+pub fn field_style() -> TextFieldStyle {
+    TextFieldStyle::default()
+}
+
 /// A text field: the box-less input the app uses everywhere (no border, the background's), its
 /// value read through the entity. `id` keys it to its place; `start` is its first value.
 pub fn field(id: impl Into<ElementId>, start: &str, placeholder: &str, window: &mut Window, cx: &mut App) -> Entity<Input> {
-    let l = Look::get(cx);
     let (start, placeholder) = (start.to_string(), placeholder.to_string());
     window.use_keyed_state(id, cx, move |window, cx| {
         Input::new(
             InputOptions::default()
                 .default_value(start)
                 .placeholder(placeholder)
-                .field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() }),
+                .field_style(field_style()),
             window,
             cx,
         )
@@ -771,7 +777,7 @@ pub fn pick(id: impl Into<SharedString>, label: impl Into<SharedString>, options
                         }
                         _ => {}
                     })
-                    .child(div().flex().h(u(36.)).items_center().px(u(8.)).border_b(px(l.w2)).border_color(l.line2).text_size(u(13.)).child(Input::root(&find, cx).aria_label("Find").w_full()))
+                    .child(div().flex().h(u(36.)).items_center().px(u(8.)).border_b(px(l.w2)).border_color(l.line2).text_size(u(13.)).child(Input::root(&find, cx).text_color(l.ink).aria_label("Find").w_full()))
                     .when(shown.is_empty(), |d| d.child(ui(div()).flex().h(u(24.)).items_center().px(u(8.)).text_color(l.ink2).child("Nothing")))
                     .when(!shown.is_empty(), |d| d.child(div().id(ElementId::Name(format!("{id}-rows").into())).max_h(u(360.)).overflow_y_scroll().track_scroll(&scroll).py(u(4.)).children(rows))),
             ),
