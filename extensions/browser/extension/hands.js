@@ -224,7 +224,10 @@ async function createTab(session, group) {
   return meta
 }
 
-/** When the person last pressed Cancel on Chrome's debugging bar: they want it to stop, so agents wait a while. */
+/**
+ * When the person last pressed Cancel on Chrome's debugging bar: they want it to stop, so agents wait
+ * a while, unless the person says to go on (`consent`).
+ */
 let canceledAt = 0
 const CANCEL_HOLDS_MS = 10 * 60_000
 
@@ -232,7 +235,7 @@ const CANCEL_HOLDS_MS = 10 * 60_000
 async function ensure(session, group) {
   if (Date.now() - canceledAt < CANCEL_HOLDS_MS)
     throw new Error(
-      "the person pressed Cancel on Chrome's debugging bar a few minutes ago, which stops your tabs: ask them before you drive this Chrome again",
+      "the person pressed Cancel on Chrome's debugging bar a few minutes ago, which stops your tabs: ask them before you drive this Chrome again, then call with person_asked (their words, and when)",
     )
   let meta = await liveSession(session)
   if (!meta) {
@@ -306,6 +309,13 @@ async function frontTab() {
 }
 
 const hands = {
+  /** The person said to go on driving this Chrome: a Cancel on the debugging bar holds no longer. */
+  async consent() {
+    const held = Date.now() - canceledAt < CANCEL_HOLDS_MS
+    canceledAt = 0
+    return { held }
+  },
+
   /** The session's tab, opened if needed: its id, address and title. */
   async open({ session, group }) {
     const meta = await ensure(session, group)

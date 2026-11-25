@@ -35,3 +35,7 @@ export const guard = (args: Readonly<Record<string, unknown>>): void => {
     throw new Error(refusal("drive its browser"))
   }
 }
+
+/** Whether the call carries the user's words asking for it: a Cancel on Chrome's debugging bar then holds no longer. */
+export const consented = (args: Readonly<Record<string, unknown>>): boolean =>
+  asked(args[PERSON_ASKED])
