@@ -126,7 +126,12 @@ const onTab = (args: Json, work: (tab: Tab) => Promise<Done>) =>
     guard(args)
     await chrome.reach()
     if (consented(args)) {
-      await chrome.call("consent", {}, 10_000)
+      // A Chrome Web Store copy older than these files has no consent yet: its hold runs out alone.
+      await chrome.call("consent", {}, 10_000).catch((error: unknown) => {
+        if (!(error instanceof Error && error.message === "the extension has no consent")) {
+          throw error
+        }
+      })
     }
     const name =
       typeof args.session === "string" && args.session !== "" ? args.session : DEFAULT_SESSION
