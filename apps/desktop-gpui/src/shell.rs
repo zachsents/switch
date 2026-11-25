@@ -1,5 +1,5 @@
 //! What the window holds open over its pages (the desktop's `app.tsx` state): ⌘K's palette, the
-//! chat ⌘F's bar is open on, the ⌘/ sheet, and the space whose name is in edit on the band.
+//! chat ⌘F's bar is open on, the ⇧⌘/ sheet, and the space whose name is in edit on the band.
 
 use gpui::{App, AppContext, Entity, Global};
 
@@ -15,7 +15,7 @@ pub struct Shell {
     pub find_focus: u64,
     /// ⌘F's current match, by seq.
     pub find_seq: Option<u64>,
-    /// ⌘/ is open.
+    /// ⇧⌘/ is open.
     pub shortcuts: bool,
     /// The space whose name is being edited on the band.
     pub renaming: Option<String>,

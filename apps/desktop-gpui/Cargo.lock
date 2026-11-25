@@ -1220,6 +1220,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1684,7 +1693,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2120,6 +2129,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gethostname"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+dependencies = [
+ "rustix",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "getopts"
 version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2211,6 +2230,23 @@ name = "glam"
 version = "0.34.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "627003914c6057c9c8f0832ee4f870b5a4f599d0cfa83f4072675114860cd0ff"
+
+[[package]]
+name = "global-hotkey"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96daa86bdc1413406daee362a835e52c430c2193e5a5c328d1e522be140d1764"
+dependencies = [
+ "crossbeam-channel",
+ "keyboard-types",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "once_cell",
+ "thiserror 2.0.21",
+ "windows-sys 0.59.0",
+ "x11rb",
+ "xkeysym",
+]
 
 [[package]]
 name = "glow"
@@ -3627,6 +3663,16 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid-simd",
+]
+
+[[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
 ]
 
 [[package]]
@@ -5370,7 +5416,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5886,7 +5932,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6599,6 +6645,7 @@ dependencies = [
  "fixed_decimal",
  "futures",
  "glam",
+ "global-hotkey",
  "gltf",
  "gpui",
  "gpui_platform",
@@ -6762,7 +6809,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7229,8 +7276,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "ui-sdk-accordion",
@@ -7310,8 +7357,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-accordion"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7323,8 +7370,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-autocomplete"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7341,8 +7388,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-avatar"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7352,8 +7399,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-button"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7364,8 +7411,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-calendar"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7379,8 +7426,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-canvas"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7392,8 +7439,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-carousel"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7409,8 +7456,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-checkbox"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7422,8 +7469,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-collapsible"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7435,8 +7482,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-color"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7445,8 +7492,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-color-picker"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "image",
@@ -7464,8 +7511,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-combobox"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7482,8 +7529,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-command"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7499,8 +7546,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-date"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "icu_calendar",
@@ -7521,8 +7568,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-date-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "icu_normalizer",
@@ -7539,8 +7586,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-date-picker"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7557,8 +7604,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-dialog"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7574,8 +7621,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-direct-manipulation"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7589,8 +7636,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-disclosure"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7600,8 +7647,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-drag-and-drop"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7614,8 +7661,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-drawer"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7628,8 +7675,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-field"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7640,8 +7687,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-file-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7655,8 +7702,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-focus"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7666,8 +7713,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-forms"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "accesskit",
  "fixed_decimal",
@@ -7681,8 +7728,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-gauge"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7693,8 +7740,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-hover-card"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7706,8 +7753,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-image"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7720,8 +7767,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-image-cropper"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "image",
@@ -7736,8 +7783,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7751,8 +7798,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-kernel"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "accesskit",
  "futures",
@@ -7763,8 +7810,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-label"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7774,8 +7821,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-listbox"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7790,8 +7837,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-lists"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7812,8 +7859,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-menu"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7831,8 +7878,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-meter"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7844,8 +7891,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-motion"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7854,8 +7901,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-native"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7867,8 +7914,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-navigation-menu"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7884,8 +7931,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-number"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "fixed_decimal",
  "gpui",
@@ -7906,8 +7953,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-number-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7924,8 +7971,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-otp-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "icu_normalizer",
@@ -7939,8 +7986,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-page"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -7957,8 +8004,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-pagination"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7968,8 +8015,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-password-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7982,8 +8029,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-platform"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -7993,8 +8040,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-popover"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8006,8 +8053,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-popups"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -8020,8 +8067,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-preferences"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "ui-sdk-kernel",
@@ -8030,8 +8077,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-progress"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8043,8 +8090,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-radio"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8056,8 +8103,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-rating"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8069,8 +8116,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-resizable"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8086,8 +8133,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-scroll-area"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8100,8 +8147,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-segmented-control"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8115,8 +8162,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-select"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8133,8 +8180,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-selection"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8146,8 +8193,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-separator"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8156,8 +8203,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-shortcuts"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8169,8 +8216,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-slider"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8185,8 +8232,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-storage"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "dirs",
  "gpui",
@@ -8196,8 +8243,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-switch"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8207,8 +8254,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-tabs"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8223,8 +8270,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-text"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "icu_casemap",
@@ -8240,8 +8287,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-timeline"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8252,8 +8299,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-toast"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8271,8 +8318,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-toggle"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8285,8 +8332,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-token-input"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8302,8 +8349,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-toolbar"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8316,8 +8363,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-tooltip"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8331,8 +8378,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-tree"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -8348,8 +8395,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-trigger-menu"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "futures",
  "gpui",
@@ -8366,8 +8413,8 @@ dependencies = [
 
 [[package]]
 name = "ui-sdk-waterfall"
-version = "0.2.0"
-source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.2.0#d0269dbb5dc1a19d9b552b4ff81900465dd3f16f"
+version = "0.3.0"
+source = "git+https://github.com/zachsents/ui-sdk-gpui?tag=v0.3.0#2f310a51127efa3aed835bfeb4f8eb6406b910d8"
 dependencies = [
  "gpui",
  "log",
@@ -9202,7 +9249,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9480,6 +9527,15 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
@@ -9647,6 +9703,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "x11rb"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
+dependencies = [
+ "gethostname",
+ "rustix",
+ "x11rb-protocol",
+]
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
 name = "x25519-dalek"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9667,6 +9740,12 @@ dependencies = [
  "quick-xml",
  "x11",
 ]
+
+[[package]]
+name = "xkeysym"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xml-rs"

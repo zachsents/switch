@@ -12,6 +12,11 @@ struct Offered: Hashable {
   /// The width over height it keeps, when its shape is wide or tall.
   let ratio: Double?
   var key: String { "\(app)/\(name)" }
+
+  /// Whether an event of `type` refreshes it: a type it names, or `*.<name>` any extension's.
+  func refreshes(on type: String) -> Bool {
+    refresh.contains { $0 == type || ($0.hasPrefix("*.") && type.hasSuffix($0.dropFirst())) }
+  }
 }
 
 /// The iPhone as a widget host (apps/desktop/src/mainview/widgets/host.ts): each placed widget's
@@ -214,7 +219,7 @@ final class WidgetHost {
     if e.type.hasPrefix("widget."), offered["\(e.payload["app"].str)/\(e.payload["name"].str)"] == nil {
       Task { await list() }
     }
-    for w in offered.values where w.refresh.contains(e.type) && processor.surfaceGroupModel.surfacesMap[w.key] != nil {
+    for w in offered.values where w.refreshes(on: e.type) && processor.surfaceGroupModel.surfacesMap[w.key] != nil {
       guard due.insert(w.key).inserted else { continue }
       let key = w.key
       Task {

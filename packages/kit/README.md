@@ -95,6 +95,8 @@ A widget is A2UI 1.0, drawn by every client in Switch's look, from two catalogs 
 ```
 
 A property can be bound to the widget's data (its tool's result): `series: { "@path": "/series" }`.
+The data comes again whenever an event its `refresh` names lands: a type, or `*.<name>` for any
+extension's `<extension>.<name>`.
 `McpApp` (`mcpApp`) is for drawing neither catalog can.
 
 ## UI copy

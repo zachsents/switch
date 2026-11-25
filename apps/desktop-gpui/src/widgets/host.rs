@@ -72,6 +72,11 @@ pub fn key_of(app: &str, name: &str) -> String {
     format!("{app}/{name}")
 }
 
+/// Whether an event of `kind` refreshes a widget: a type it names, or `*.<name>` any extension's.
+fn refreshes(refresh: &[String], kind: &str) -> bool {
+    refresh.iter().any(|r| r == kind || r.strip_prefix('*').is_some_and(|s| s.starts_with('.') && kind.ends_with(s)))
+}
+
 impl Host {
     pub fn init(cx: &mut App) {
         let host = cx.new(|cx| {
@@ -343,7 +348,7 @@ impl Host {
             let keys: Vec<String> = self
                 .sources
                 .iter()
-                .filter(|(k, src)| self.surfaces.contains_key(*k) && self.offered.get(&src.key()).is_some_and(|o| o.refresh.contains(&e.kind)))
+                .filter(|(k, src)| self.surfaces.contains_key(*k) && self.offered.get(&src.key()).is_some_and(|o| refreshes(&o.refresh, &e.kind)))
                 .map(|(k, _)| k.clone())
                 .collect();
             for k in keys {

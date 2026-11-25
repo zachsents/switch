@@ -3,8 +3,7 @@
 //! there. Right-click gives them as a native menu. A 3D file opens in Preview, a 3MF as an STL of its
 //! build, as Preview opens no 3MF.
 //!
-//! Views call `file` with what to do (a click's Open, a right-click's menu) and `pictures` for a
-//! gallery in Quick Look.
+//! Views call `file` with what to do (a click's Open, a right-click's menu).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -222,19 +221,4 @@ pub fn act(ask: FileAsk, cx: &mut App) -> Task<bool> {
             })
         }
     }
-}
-
-/// A gallery's pictures (where each is served, and its name) in Quick Look, in their order, at the
-/// one clicked.
-pub fn pictures(pictures: Vec<(String, String)>, at: usize, cx: &mut App) {
-    let net = cx.global::<Net>().clone();
-    let all: Vec<Fetch> = pictures.iter().map(|(url, name)| fetch_to(&net, url, name, cache())).collect();
-    cx.spawn(async move |_| {
-        let got: Result<Vec<PathBuf>, String> = futures::future::join_all(all).await.into_iter().collect();
-        match got.and_then(|files| quicklook::show(&files, at)) {
-            Ok(()) => {}
-            Err(e) => log::warn!("Pictures: {e}"),
-        }
-    })
-    .detach();
 }

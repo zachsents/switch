@@ -420,7 +420,7 @@ pub fn said(p: Said, sh: &Shared, l: &Look, window: &mut Window, cx: &mut App) -
     } else {
         // The agent's words as Markdown: its detail, or past a screen's worth, opens from More.
         let doc = p.doc.clone().unwrap_or_else(|| Rc::new(Doc::of(p.text)));
-        let ctx = Ctx { id: key.clone(), order: p.order, sel: sh.sel.clone(), on_link: sh.on_link.clone(), on_picture: sh.on_picture.clone(), ink: None, cell: false };
+        let ctx = Ctx { id: key.clone(), order: p.order, sel: sh.sel.clone(), on_link: sh.on_link.clone(), on_picture: sh.on_picture.clone(), ink: None, cell: false, pictures: Default::default() };
         let md = markdown::render(&doc, &ctx, l, window, cx);
         let max = l.z(24. * 20.);
         let clamped = sh.clamped.borrow().get(&key).copied().unwrap_or(false);
@@ -505,7 +505,11 @@ pub fn said(p: Said, sh: &Shared, l: &Look, window: &mut Window, cx: &mut App) -
         bubble = bubble.child(tapback::badges(r, right, p.ink, l));
     }
     // Three quarters of the column, less the room its time, model and buttons take beside it.
+    // In points, on the bubble too: a share of the column (`75%`, `max-w-full`) isn't resolved yet
+    // when Taffy takes a bubble's height, which it then takes at the column's whole width, and the
+    // next line overlaps a bubble whose code, table or list is wider than it.
     let room = if p.model.is_some() { 192. } else { 120. };
+    let most = p.width.map(|w| (w * 0.75).min(w - l.z(room)));
     div()
         .id(SharedString::from(format!("{key}.said")))
         .on_hover(hover(sh, &key, false))
@@ -513,14 +517,14 @@ pub fn said(p: Said, sh: &Shared, l: &Look, window: &mut Window, cx: &mut App) -
         .flex()
         .flex_col()
         .min_w_0()
-        .map(|d| match p.width {
-            Some(w) => d.max_w((w * 0.75).min(w - l.z(room))),
+        .map(|d| match most {
+            Some(m) => d.max_w(m),
             None => d.max_w(relative(0.75)),
         })
         .map(|d| if right { d.items_end().self_end() } else { d.items_start().self_start() })
         .when(reacted, |d| d.mt(u(14.)))
         .child(drawn_at(sh, &key, false))
-        .child(div().max_w_full().min_w_0().child(bubble))
+        .child(div().map(|d| match most { Some(m) => d.max_w(m), None => d.max_w_full() }).min_w_0().child(bubble))
         .when_some(p.time, |d, t| d.child(said_bar(t, p.model, whole_of(p.text, p.detail), right, &key, sh, l, window, cx)))
         .into_any_element()
 }

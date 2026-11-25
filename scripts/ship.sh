@@ -10,6 +10,7 @@
 #   ship.sh swap <sha> <label> [pause]  under brain.lock: turns paused, core stopped, brain backed
 #                                    up, <sha> live
 #   ship.sh settle                   under landings.lock: the landings the live release has dropped
+#   ship.sh compress                 deploy backups compressed, under tidy.lock
 #   ship.sh tidy                     after a deploy: backups compacted, old ones and old releases gone
 #   ship.sh app <sha>                the desktop app (apps/desktop-gpui), in its own lane
 #   ship.sh app-electrobun <sha>     the old Electrobun app (apps/desktop), for a rollback only
@@ -141,14 +142,12 @@ deploy_backups() {
   ls -1 "$S/backups" 2>/dev/null | sort -r | grep -E -- '-([0-9a-f]{40}|rollback-from-[0-9a-f]{40})\.db(\.zst)?$' || true
 }
 
-# After a deploy: every backup compressed, the newest too (a clone left whole comes to hold every
-# page the brain changes until the next deploy); then the last 3 backups and each of the last 7
-# days' newest kept, the last 3 releases (and the live one and the previous, which a rollback
-# needs), the update feed and the one before it.
+# Every deploy backup compressed, the swap's own as soon as the swap is done: a clone left whole
+# comes to hold every page the brain (and the new build's prepare) changes after it.
 # A backup is the brain at rest, checkpointed (the swap's), so it's compressed as it is, straight
 # from the file: no compacted copy beside it, and only its .zst is written. The .zst is tested
-# before the clone goes. The backup to the image may still be reading it: it holds the file itself.
-tidy() {
+# before the clone goes.
+compress() {
   # What a run cut short left (a compacted copy, a .zst half written).
   rm -f "$S/backups"/.*.vacuum "$S/backups"/.*.vacuum-journal "$S/backups"/.*.zst.part
   deploy_backups | grep '\.db$' | while read -r b; do
@@ -162,6 +161,13 @@ tidy() {
     fi
     rm -f "$part"
   done
+}
+
+# After a deploy: any backup still whole compressed; then the last 3 backups and each of the last 7
+# days' newest kept, the last 3 releases (and the live one and the previous, which a rollback
+# needs), the update feed and the one before it.
+tidy() {
+  compress
   days='' kept=0
   deploy_backups | while read -r b; do
     day=${b%%-*}
@@ -562,6 +568,16 @@ ship() {
     exit 0
   fi
   [ -n "$IDENTITY" ] && [ -n "$BUNDLE_ID" ] && [ -n "$SERVER" ] || { say "FAILED: ~/.switch/deploy.json needs server, identity and hostId"; exit 1; }
+  # Room for what a deploy writes at most: a release the size of the live one, and the brain once
+  # more (the canary's clone, then the swap's, each holding every page its build's prepare rewrites).
+  free=$(df -k "$S" | awk 'NR==2 { print $4 }')
+  release=$(du -sk "$S/current/" 2>/dev/null | cut -f1)
+  brain=$(stat -f %z "$S/brain.db" 2>/dev/null || echo 0)
+  need=$((${release:-0} + brain / 1024))
+  if [ "$free" -lt "$need" ]; then
+    say "FAILED: $((free / 1048576)) GB free, a deploy needs $((need / 1048576 + 1)) GB (a release and the brain once more)"
+    exit 1
+  fi
   # Every host runs this release (packages/core/src/release.ts), so it carries a build for each
   # target a host has said it runs (the core keeps them in host-targets), beside the bundle for this
   # Mac's own: each one's platform packages are installed too.
@@ -622,14 +638,17 @@ ship() {
   CANARY_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   rm -rf "$canary" 2>/dev/null || true
   mkdir -p "$canary"
-  # The last deploy's backup, compressed by its tidy; a consistent copy of the live brain without one.
-  last=$(deploy_backups | head -1)
-  if [ -n "$last" ] && [ "${last%.zst}" != "$last" ]; then
-    zstd -q -d "$S/backups/$last" -o "$canary/brain.db"
-  elif [ -n "$last" ]; then
-    cp -c "$S/backups/$last" "$canary/brain.db"
-  elif [ -f "$S/brain.db" ]; then
-    sqlite3 "$S/brain.db" "VACUUM INTO '$canary/brain.db';"
+  # The live brain's APFS clone, which costs only the pages the canary changes. The brain and its WAL
+  # are cloned inside a read transaction: while it's open no checkpoint backfills past what the WAL
+  # still holds and the WAL isn't restarted, so the two clones open as one consistent brain.
+  if [ -f "$S/brain.db" ]; then
+    sqlite3 -readonly -bail -cmd ".timeout 10000" "$S/brain.db" >/dev/null <<SQL
+BEGIN;
+SELECT count(*) FROM sqlite_schema;
+.system cp -c '$S/brain.db' '$canary/brain.db' && { [ ! -f '$S/brain.db-wal' ] || cp -c '$S/brain.db-wal' '$canary/brain.db-wal'; }
+COMMIT;
+SQL
+    [ -f "$canary/brain.db" ] || { rm -rf "$canary"; say "FAILED: no clone of the brain for the canary"; exit 1; }
   fi
   # A launchd job like the core, not a child of this ssh session: only the login session reaches
   # the keychain that the agent's subscriptions sign in with.
@@ -726,9 +745,14 @@ PLIST
   fi
   say "swapped in $(perl -e "printf '%.1f', $td - $tw") s; live core served $(since "$td") s after start"
   say "DEPLOYED $sha in $(since "$t0") s"
+  # The swap's backup compressed now, its clone gone, before it comes to hold what the live brain
+  # changes.
+  lockf -t 900 "$S/tidy.lock" /usr/sbin/taskpolicy -c utility sh "$rel/ship.sh" compress ||
+    say "the swap's backup not compressed: tidy tries again"
   # Every store to the backup disk, with the brain as it was before this build's migration: the
-  # core runs it (backup.sh), and tells the agent if it fails.
-  curl -sf -m 15 --retry 4 --retry-all-errors --retry-delay 5 -X POST "http://127.0.0.1:$PORT/backup?label=$sha&brain=$S/backups/$(deploy_backups | grep '\.db$' | head -1)" >/dev/null ||
+  # core runs it (backup.sh, which takes the backup's .zst), and tells the agent if it fails.
+  b=$(deploy_backups | head -1)
+  curl -sf -m 15 --retry 4 --retry-all-errors --retry-delay 5 -X POST "http://127.0.0.1:$PORT/backup?label=$sha&brain=$S/backups/${b%.zst}" >/dev/null ||
     say "backup: the core didn't take it"
   lockf -k "$S/landings.lock" sh "$rel/ship.sh" settle
   nohup lockf -t 0 "$S/tidy.lock" /usr/sbin/taskpolicy -b sh "$rel/ship.sh" tidy >>"$LOGS/ship.log" 2>&1 </dev/null &
@@ -739,6 +763,7 @@ PLIST
 case ${1:-} in
   swap) swap "$2" "$3" "${4:-}" ;;
   settle) settle ;;
+  compress) compress ;;
   tidy) tidy; say "tidied: backups $(du -sh "$S/backups" | cut -f1), releases $(du -sh "$S/releases" | cut -f1)" ;;
   watch) watch "$2" "${3:-}" ;;
   rollback) rollback "$2" "${3:-}" ;;

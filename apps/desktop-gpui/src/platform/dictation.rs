@@ -328,13 +328,14 @@ pub fn takes_dictation(field: &str, focus: &FocusHandle, window: &Window, start:
 }
 
 /// ⌘D: finishes the dictation under way, or starts one in the main window's view (the menu sends it
-/// there, whichever window is in front): in its field with focus, else the one in view.
+/// there, whichever window is in front), or the composer's while it's up: in its field with focus,
+/// else the one in view.
 pub fn toggle(cx: &mut App) {
     if dictating(cx) {
         stop(cx);
         return;
     }
-    let Some(front) = super::lifecycle::main_window(cx) else { return };
+    let Some(front) = crate::composer::window(cx).or_else(|| super::lifecycle::main_window(cx)) else { return };
     let fields: Vec<(FocusHandle, AnyWindowHandle, Rc<dyn Fn(&mut Window, &mut App)>, Instant)> =
         entity(cx).read(cx).fields.iter().filter(|f| f.window == front).map(|f| (f.focus.clone(), f.window, f.start.clone(), f.drawn)).collect();
     let _ = front.update(cx, move |_, window, cx| {

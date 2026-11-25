@@ -1,8 +1,9 @@
 //! Files wherever they show (the desktop's `ui/attached.tsx`, `picture-row.tsx`): pictures and
 //! videos as a row that scrolls sideways, a lone picture in place, sound to play, 3D files to turn,
-//! and any other file as its name and size. A picture's click is Quick Look (a row's, on the row's
-//! pictures at that one); a video plays in place; a file's name, clicked, saves it to Downloads and
-//! opens it (a 3D file in Preview), turning while it's fetched. Right-click gives Open, Quick Look,
+//! and any other file as its name and size. A picture's or a video's click opens it full screen
+//! (`viewer.rs`; a row's, on the row's pictures and videos at that one); a video's key plays it in
+//! place; a file's name, clicked, saves it to Downloads and opens it (a 3D file in Preview), turning
+//! while it's fetched. Right-click gives Open, Quick Look,
 //! Show in Finder and Download. Each is a set height before it loads, so a column keeps to its
 //! latest as they come in. When a row holds more than it shows, its count shows under it.
 
@@ -192,8 +193,16 @@ pub fn mount(id: &str, hash: &str, window: &mut Window, cx: &mut App) {
     window.use_keyed_state(SharedString::from(format!("{id}.mount")), cx, move |_, cx| Pictures::mounted(&hash, cx));
 }
 
-/// A picture of the core's, drawn when it's in; a set box until then.
-fn picture(f: &Shown, h: gpui::Pixels, max_w: gpui::Pixels, fit: gpui::ObjectFit, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The file full screen, as the viewer shows it.
+fn item_of(f: &Shown) -> crate::viewer::Item {
+    crate::viewer::Item { route: f.route.clone(), name: f.name.clone(), kind: f.kind.clone(), blob: f.blob.clone() }
+}
+
+/// A picture of the core's (or a link's), drawn when it's in; a set box until then. `radius` is its
+/// frame's: gpui clips a frame's children to its box, not its rounded corners, so the picture takes
+/// them itself.
+#[allow(clippy::too_many_arguments)]
+fn picture(f: &Shown, h: gpui::Pixels, max_w: gpui::Pixels, fit: gpui::ObjectFit, radius: gpui::Pixels, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
     // Decoded at the most it's drawn on either side, in the screen's pixels: a wide one's width is
     // its longest side.
     let most = (f32::from(h.max(max_w)) * window.scale_factor()).ceil() as u32;
@@ -204,10 +213,13 @@ fn picture(f: &Shown, h: gpui::Pixels, max_w: gpui::Pixels, fit: gpui::ObjectFit
     if f.blob.as_ref().is_some_and(|b| Pictures::failed(b, cx)) {
         return div().h(h).max_w(max_w).flex().items_center().px(u(4.)).text_color(l.ink2).child(div().min_w_0().truncate().child(f.name.clone())).into_any_element();
     }
-    let shown = f.blob.as_ref().and_then(|b| Pictures::sized(b, format_of(&f.kind, &f.name), most, cx));
+    let shown = match &f.blob {
+        Some(b) => Pictures::sized(b, format_of(&f.kind, &f.name), most, cx),
+        None => crate::widgets::media::WebPictures::get(&f.route, cx).map(gpui::ImageSource::Image),
+    };
     match shown {
-        Some(image) => img(image).h(h).max_w(max_w).object_fit(fit).into_any_element(),
-        None => div().h(h).w(h).bg(l.hover).into_any_element(),
+        Some(image) => img(image).h(h).max_w(max_w).object_fit(fit).rounded(radius).into_any_element(),
+        None => div().h(h).w(h).rounded(radius).bg(l.hover).into_any_element(),
     }
 }
 
@@ -220,31 +232,29 @@ fn picture_row(pictures: &[Shown], size: Size, right: bool, key: &str, scroll: &
         Size::Window => (96., 384., 240.),
     };
     let h = l.z(if any_video { tall } else { high });
-    let stills: Vec<(String, String)> = pictures.iter().filter(|p| kind_of(&p.kind, &p.name) != FileKind::Video).map(|p| (p.route.clone(), p.name.clone())).collect();
-    let mut still_at = 0;
+    let radius = l.z(18.);
+    let all: Rc<Vec<crate::viewer::Item>> = Rc::new(pictures.iter().map(item_of).collect());
     let tiles: Vec<AnyElement> = pictures
         .iter()
         .enumerate()
         .map(|(i, p)| {
+            let all = all.clone();
+            let open: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, cx| crate::viewer::open((*all).clone(), i, window, cx));
             if kind_of(&p.kind, &p.name) == FileKind::Video {
-                return crate::media::video_tile(&p.route, &p.kind, &p.name, u(if any_video { tall } else { high }), menu_of(p), window, cx);
+                return crate::media::video_tile(&p.route, &p.kind, &p.name, u(if any_video { tall } else { high }), open, menu_of(p), window, cx);
             }
-            let at = still_at;
-            still_at += 1;
-            let all = stills.clone();
             let fm = menu_of(p);
             let id = SharedString::from(format!("{key}.pic{i}"));
             let focus = crate::said::focus_for(id.clone(), window, cx);
-            crate::said::keyed(div().id(id), &focus, l.z(18.), l, window)
+            // The hairline is drawn over the picture's edge, as the video's is.
+            crate::said::keyed(div().id(id), &focus, radius, l, window)
                 .flex_none()
                 .h(h)
                 .overflow_hidden()
-                .rounded(u(18.))
-                .border_1()
-                .border_color(l.line1)
-                .on_click(move |_, _, cx| chat_platform::pictures(all.clone(), at, cx))
+                .on_click(move |_, window, cx| open(window, cx))
                 .on_mouse_down(MouseButton::Right, move |_, window, cx| fm(window, cx))
-                .child(picture(p, h, l.z(max_w), gpui::ObjectFit::Cover, l, window, cx))
+                .child(picture(p, h, l.z(max_w), gpui::ObjectFit::Cover, radius, l, window, cx))
+                .child(div().absolute().inset_0().rounded(radius).border_1().border_color(l.line1))
                 .into_any_element()
         })
         .collect();
@@ -268,17 +278,16 @@ fn attached_file(f: &Shown, size: Size, key: &str, scroll: &ScrollHandle, l: &Lo
         FileKind::Image => {
             // `h-60 max-w-full` in a chat, `h-24 max-w-60` in an ask.
             let h = l.z(if size == Size::Chat { 240. } else { 96. });
-            let (one, fm) = ((f.route.clone(), f.name.clone()), menu_of(f));
+            let (one, fm) = (item_of(f), menu_of(f));
             let id = SharedString::from(format!("{key}.img.{}", f.route));
             let focus = crate::said::focus_for(id.clone(), window, cx);
             let pic = crate::said::keyed(div().id(id), &focus, l.z(18.), l, window)
                 .flex_none()
                 .max_w_full()
                 .overflow_hidden()
-                .rounded(u(18.))
-                .on_click(move |_, _, cx| chat_platform::pictures(vec![one.clone()], 0, cx))
+                .on_click(move |_, window, cx| crate::viewer::open(vec![one.clone()], 0, window, cx))
                 .on_mouse_down(MouseButton::Right, move |_, window, cx| fm(window, cx))
-                .child(picture(f, h, if size == Size::Chat { max.unwrap_or(l.z(420.)) } else { l.z(240.) }, gpui::ObjectFit::Contain, l, window, cx));
+                .child(picture(f, h, if size == Size::Chat { max.unwrap_or(l.z(420.)) } else { l.z(240.) }, gpui::ObjectFit::Contain, l.z(18.), l, window, cx));
             capped(pic, size, l).into_any_element()
         }
         FileKind::Video => picture_row(std::slice::from_ref(f), size, false, key, scroll, l, window, cx),

@@ -2,9 +2,12 @@
 //! on this Mac (a chip's), decoded off the main thread at the size they're drawn, never the
 //! photo's own: a 12-megapixel photo drawn 240 points tall is kept at 720 pixels. What's
 //! decoded is kept in a cache bounded by bytes, least recently drawn out first, its texture freed
-//! from every window's atlas as it goes; the fetched bytes in another, so a picture scrolled back
-//! to decodes again without the network. Views that draw them observe this entity, so a picture
-//! shows as it comes.
+//! from every window's atlas as it goes, but never one drawn in the last second: what's on screen
+//! stays past the bound (a row of ten square pictures on a Retina screen is 58 MB) rather than
+//! each decode putting out one still drawn, which shows its empty box and decodes again, putting
+//! out the next. The fetched bytes are kept in another, so a picture scrolled back to decodes
+//! again without the network. Views that draw them observe this entity, so a picture shows as it
+//! comes.
 // The typed API the views use; parts not yet drawn are still the API.
 #![allow(dead_code)]
 
@@ -12,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext, Context, Entity, Global, Image, ImageFormat, ImageSource, RenderImage};
 use image::{AnimationDecoder, Frame, RgbaImage};
@@ -21,11 +25,16 @@ use crate::net::Net;
 
 /// What's decoded, at most: about twenty-five pictures at chat size (each also has its texture).
 const DECODED: usize = 48 << 20;
+/// How lately a picture was drawn for it to be on screen still, and kept past `DECODED`.
+const SHOWN: Duration = Duration::from_secs(1);
 /// What's fetched and kept to decode again.
 const FETCHED: usize = 16 << 20;
 /// The size `get` decodes to, in pixels on its longest side: a chat picture (240 points tall, at
 /// most 420 wide) on a Retina screen.
 pub const DISPLAY: u32 = 720;
+
+/// A decoded picture and when it was last drawn.
+type Kept = (Shown, Instant);
 
 #[derive(Clone)]
 enum Shown {
@@ -59,7 +68,7 @@ enum From {
 type Key = (From, u32);
 
 pub struct Pictures {
-    decoded: LruCache<Key, Shown>,
+    decoded: LruCache<Key, Kept>,
     decoded_bytes: usize,
     fetched: LruCache<From, Arc<Vec<u8>>>,
     fetched_bytes: usize,
@@ -293,7 +302,8 @@ impl Pictures {
         let key = (from.clone(), bucket(px));
         let this = Self::entity(cx);
         let (hit, start) = this.update(cx, |p, _| {
-            if let Some(s) = p.decoded.get(&key) {
+            if let Some((s, drawn)) = p.decoded.get_mut(&key) {
+                *drawn = Instant::now();
                 return (Some(s.source()), false);
             }
             (None, !p.loading.contains(&key) && !p.failed.contains(&from))
@@ -393,12 +403,15 @@ impl Pictures {
                 match shown {
                     Some(s) => {
                         p.decoded_bytes += s.cost();
-                        if let Some(old) = p.decoded.put(key, s) {
+                        if let Some((old, _)) = p.decoded.put(key, (s, Instant::now())) {
                             p.decoded_bytes -= old.cost();
                             p.free(old, cx);
                         }
                         while p.decoded_bytes > DECODED && p.decoded.len() > 1 {
-                            let Some((_, old)) = p.decoded.pop_lru() else { break };
+                            if p.decoded.peek_lru().is_some_and(|(_, (_, drawn))| drawn.elapsed() < SHOWN) {
+                                break;
+                            }
+                            let Some((_, (old, _))) = p.decoded.pop_lru() else { break };
                             p.decoded_bytes -= old.cost();
                             p.free(old, cx);
                         }

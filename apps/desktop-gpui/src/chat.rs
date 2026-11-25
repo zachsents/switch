@@ -196,7 +196,7 @@ fn links(cites: bool) -> OnLink {
     })
 }
 
-/// A picture in the agent's words: Quick Look on a click, its file's menu on a right-click.
+/// A picture in the agent's words: its file's menu on a right-click (a click opens it full screen).
 pub fn on_picture() -> OnPicture {
     Rc::new(|src: &str, name: &str, menu: bool, window: &mut Window, cx: &mut App| {
         chat_platform::file(src, name, if menu { Do::Menu } else { Do::Look }, window, cx).detach();

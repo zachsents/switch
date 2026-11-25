@@ -2,8 +2,8 @@
 //! and `transport.tsx`, and `attached.tsx`'s sound). AVFoundation plays each; a video's frames come
 //! out of it as pixel buffers in the format gpui's Metal renderer draws, and gpui's own surface
 //! element draws them. Each player is kept by its address in one registry, so a list drawing its
-//! rows afresh every frame finds the same one, and one plays at a time across the app: one
-//! starting pauses the one playing.
+//! rows afresh every frame finds the same one (the full screen's too, `viewer.rs`), and one plays at
+//! a time across the app: one starting pauses the one playing.
 
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -11,10 +11,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, FontFeatures,
-    InteractiveElement, IntoElement, MouseButton, ObjectFit, ParentElement, PathBuilder, Pixels, Render, Rems,
-    StatefulInteractiveElement, Styled, Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
-    canvas, div, point, prelude::*, px, relative, size, surface, svg,
+    AnyElement, App, AppContext, Bounds, Context, Entity, FontFeatures, InteractiveElement, IntoElement, MouseButton,
+    ObjectFit, ParentElement, PathBuilder, Pixels, Render, Rems, StatefulInteractiveElement, Styled, Task, WeakEntity,
+    Window, WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, relative, size, surface, svg,
 };
 use objc2::{AnyThread, MainThreadMarker};
 use objc2::rc::Retained;
@@ -35,13 +34,11 @@ use crate::chat::key_look;
 use crate::look::{Look, u};
 use crate::net::Net;
 
-/// Phosphor's play and pause, bold (the desktop's `widgets/basic/icons.ts`), and arrows-out-simple
-/// for Full screen (`video-tile.tsx`), on a 256 grid.
+/// Phosphor's play and pause, bold (the desktop's `widgets/basic/icons.ts`), on a 256 grid.
 const PLAY: &str = "M234.49,111.07,90.41,22.94A20,20,0,0,0,60,39.87V216.13a20,20,0,0,0,30.41,16.93l144.08-88.13a19.82,19.82,0,0,0,0-33.86ZM84,208.85V47.15L216.16,128Z";
 const PAUSE: &str = "M200,28H160a20,20,0,0,0-20,20V208a20,20,0,0,0,20,20h40a20,20,0,0,0,20-20V48A20,20,0,0,0,200,28Zm-4,176H164V52h32ZM96,28H56A20,20,0,0,0,36,48V208a20,20,0,0,0,20,20H96a20,20,0,0,0,20-20V48A20,20,0,0,0,96,28ZM92,204H60V52H92Z";
 const SPEAKER: &str = "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm54-106.08a40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.58,24,24,0,0,0,0-31.72,8,8,0,0,1,12-10.58ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z";
 const MUTED: &str = "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm101.66-61.3a8,8,0,0,1-11.32,11.32L216,139.31l-18.34,18.35a8,8,0,0,1-11.32-11.32L204.69,128l-18.35-18.34a8,8,0,0,1,11.32-11.32L216,116.69l18.34-18.35a8,8,0,0,1,11.32,11.32L227.31,128Z";
-const FULL: &str = "M220,48V96a12,12,0,0,1-24,0V77l-39.51,39.52a12,12,0,0,1-17-17L179,60H160a12,12,0,0,1,0-24h48A12,12,0,0,1,220,48ZM99.51,139.51,60,179V160a12,12,0,0,0-24,0v48a12,12,0,0,0,12,12H96a12,12,0,0,0,0-24H77l39.52-39.51a12,12,0,0,0-17-17Z";
 
 /// How often a player reads where it's at while it plays or loads: the media element's
 /// `timeupdate`. Frames come on the window's own frames instead.
@@ -52,7 +49,6 @@ pub fn glyph(name: &str) -> Option<&'static str> {
     Some(match name {
         "play" => PLAY,
         "pause" => PAUSE,
-        "full" => FULL,
         "speaker" => SPEAKER,
         "muted" => MUTED,
         _ => return None,
@@ -68,10 +64,9 @@ struct Media {
 
 impl gpui::Global for Media {}
 
-/// A key over a video, or a sound's line: Play or Pause, and Full screen.
+/// A video's or a sound's Play or Pause key.
 struct Keys {
     play: Entity<Button>,
-    full: Option<Entity<Button>>,
 }
 
 /// A video's or a sound's state, as use-media.ts keeps it: where it's at, how long it is, whether
@@ -97,7 +92,6 @@ pub struct Player {
     track: Option<Entity<Slider<f64>>>,
     /// The length the track was last told.
     track_length: f64,
-    full: Option<AnyWindowHandle>,
     /// A sound's loudness, as a media element's controls set it: silenced, and how loud (0 to 1).
     muted: bool,
     volume: f64,
@@ -189,7 +183,6 @@ impl Player {
             keys: None,
             track: None,
             track_length: f64::NAN,
-            full: None,
             muted: false,
             volume: 1.,
             mute_key: None,
@@ -287,7 +280,7 @@ impl Player {
         if self.playing { self.pause(cx) } else { self.play(cx) }
     }
 
-    fn play(&mut self, cx: &mut Context<Self>) {
+    pub fn play(&mut self, cx: &mut Context<Self>) {
         let me = cx.entity();
         let was = cx.global_mut::<Media>().now.replace(me.downgrade());
         if let Some(other) = was.and_then(|w| w.upgrade()).filter(|o| *o != me) {
@@ -309,7 +302,7 @@ impl Player {
         cx.notify();
     }
 
-    fn pause(&mut self, cx: &mut Context<Self>) {
+    pub fn pause(&mut self, cx: &mut Context<Self>) {
         // SAFETY: the player, on the main thread.
         unsafe { self.av.pause() };
         self.playing = false;
@@ -350,17 +343,30 @@ impl Player {
         cx.notify();
     }
 
-    /// A video's keys, made with the window that first draws it.
-    fn keys(&mut self, full: bool, window: &mut Window, cx: &mut Context<Self>) -> &Keys {
+    /// Its keys, made with the window that first draws it.
+    fn keys(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &Keys {
         if self.keys.is_none() {
-            self.keys = Some(make_keys(cx.entity().downgrade(), full, window, cx));
+            self.keys = Some(make_keys(cx.entity().downgrade(), window, cx));
         }
         self.keys.as_ref().expect("keys")
     }
+
+    /// A video's latest frame, and the picture's own size once it's known.
+    pub fn frame(&self) -> (Option<CFRetained<CVPixelBuffer>>, Option<(f32, f32)>) {
+        (self.frame.clone(), self.natural)
+    }
+
+    /// Takes the frame for now while it plays, asking the window for the next.
+    pub fn draw(player: &Entity<Player>, window: &mut Window, cx: &mut App) {
+        if player.read(cx).playing {
+            player.update(cx, |p, _| p.pull());
+            window.request_animation_frame();
+        }
+    }
 }
 
-fn make_keys(player: WeakEntity<Player>, full: bool, window: &mut Window, cx: &mut App) -> Keys {
-    let toggled = player.clone();
+fn make_keys(player: WeakEntity<Player>, window: &mut Window, cx: &mut App) -> Keys {
+    let toggled = player;
     let play = cx.new(|cx| {
         Button::new(
             // After the key's own update, as every key's and field's word here is heard.
@@ -373,21 +379,7 @@ fn make_keys(player: WeakEntity<Player>, full: bool, window: &mut Window, cx: &m
             cx,
         )
     });
-    let full = full.then(|| {
-        cx.new(|cx| {
-            Button::new(
-                ButtonOptions::default().action(move |_, _, window, cx| {
-                    if let Some(p) = player.upgrade() {
-                        window.defer(cx, move |window, cx| full_screen(p, window, cx));
-                    }
-                    ActionOutcome::Done
-                }),
-                window,
-                cx,
-            )
-        })
-    });
-    Keys { play, full }
+    Keys { play }
 }
 
 /// A glyph, 14 px, in the ink around it (`glyph.tsx`).
@@ -395,8 +387,8 @@ fn glyph_of(name: &str) -> gpui::Svg {
     svg().path(format!("media/{name}.svg")).flex_none().size(u(14.))
 }
 
-/// The keys over a video's bottom edge: Play or Pause on the left, Full screen on the right; shown
-/// while it's paused or under the pointer.
+/// The key over a video's bottom edge: Play or Pause, on the left; shown while it's paused or under
+/// the pointer. The wheel goes on through it to the chat.
 fn key_row(keys: &Keys, playing: bool, group: &'static str, l: &Look, cx: &App) -> gpui::Stateful<gpui::Div> {
     let play = key_look(Button::root(&keys.play, cx), l)
         .px(u(6.))
@@ -411,12 +403,9 @@ fn key_row(keys: &Keys, playing: bool, group: &'static str, l: &Look, cx: &App) 
         .flex()
         .items_center()
         .justify_between()
-        .occlude()
+        .block_mouse_except_scroll()
         .when(playing, |d| d.invisible().group_hover(group, |s| s.visible()))
         .child(play)
-        .children(keys.full.as_ref().map(|full| {
-            key_look(Button::root(full, cx), l).px(u(6.)).aria_label("Full screen").child(glyph_of("full").text_color(l.ink))
-        }))
 }
 
 /// The four corners outside a rounded frame, in the background: gpui's surface has no rounding of
@@ -454,12 +443,15 @@ fn corners(radius: Pixels, color: gpui::Hsla) -> impl IntoElement {
 
 /// A video tile: `route` is the blob route ("/blobs/<hash>"), `kind` its MIME type, `frame_h` its
 /// height. Black behind the picture, contained in it; as wide as the picture at that height, at most
-/// 420. A click on the picture plays or pauses it; a right-click is the file's menu.
+/// 420. A click on the picture opens it full screen, playing (`on_open`); its key plays or pauses
+/// it in place; a right-click is the file's menu.
+#[allow(clippy::too_many_arguments)]
 pub fn video_tile(
     route: &str,
     kind: &str,
     name: &str,
     frame_h: Rems,
+    on_open: Rc<dyn Fn(&mut Window, &mut App)>,
     on_menu: Rc<dyn Fn(&mut Window, &mut App)>,
     window: &mut Window,
     cx: &mut App,
@@ -473,19 +465,15 @@ pub fn video_tile(
         return div().flex_none().h(h).w((h * 2.).min(widest)).rounded(u(18.)).bg(l.black).into_any_element();
     };
     let playing = player.read(cx).playing;
-    if playing {
-        player.update(cx, |p, _| p.pull());
-        window.request_animation_frame();
-    }
+    Player::draw(&player, window, cx);
     player.update(cx, |p, cx| {
-        p.keys(true, window, cx);
+        p.keys(window, cx);
     });
     let p = player.read(cx);
     let (nw, nh) = p.natural.unwrap_or((300., 150.));
     let w = (h * (nw / nh)).min(widest);
     let frame = p.frame.clone();
     let keys = key_row(p.keys.as_ref().expect("keys"), playing, "video", &l, cx);
-    let toggled = player.clone();
     let radius = u(18.).to_pixels(rem);
     div()
         .id(gpui::ElementId::Name(format!("video {route}").into()))
@@ -500,7 +488,7 @@ pub fn video_tile(
             div()
                 .id("picture")
                 .size_full()
-                .on_click(move |_, _, cx| toggled.update(cx, |p, cx| p.toggle(cx)))
+                .on_click(move |_, window, cx| on_open(window, cx))
                 .children(frame.map(|f| surface(f).object_fit(ObjectFit::Contain).size_full())),
         )
         .child(corners(radius, l.bg))
@@ -524,11 +512,7 @@ fn track_options(p: &Player, player: WeakEntity<Player>) -> SliderOptions<f64> {
         .max(if known { p.length } else { 1. })
         .step(1.)
         .disabled(!known)
-        // After the track's own update, as every field's change here is heard.
-        .on_value_change(move |to, _, _, cx| {
-            let (to, player) = (*to, player.clone());
-            cx.defer(move |cx| drop(player.update(cx, |p, cx| p.seek(to, cx))));
-        })
+        .on_value_change(move |to, _, _, cx| drop(player.update(cx, |p, cx| p.seek(*to, cx))))
 }
 
 /// A sound to play in place, its controls in the house look: Play or Pause on a key, where it's at
@@ -560,11 +544,22 @@ pub fn audio_player(
     let Some(player) = player_of(route, kind, name, false, cx) else {
         return frame.into_any_element();
     };
+    frame.children(controls(&player, &l, window, cx)).into_any_element()
+}
+
+/// A video, by its route, type and name, as the chat's tile plays it: the same player.
+pub fn video(route: &str, kind: &str, name: &str, cx: &mut App) -> Option<Entity<Player>> {
+    player_of(route, kind, name, true, cx)
+}
+
+/// A player's keys in a line, as a media element's controls have them: Play or Pause on a key,
+/// where it's at on a track to press or drag, its time and length as figures, Mute and how loud.
+pub fn controls(player: &Entity<Player>, l: &Look, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    let l = *l;
     player.update(cx, |p, cx| {
-        p.keys(false, window, cx);
+        p.keys(window, cx);
     });
-    let (scrubber, figures) = transport(&player, &l, window, cx);
-    // Mute and how loud, as an `audio` element's controls have them.
+    let (scrubber, figures) = transport(player, &l, window, cx);
     player.update(cx, |p, cx| {
         if p.mute_key.is_none() {
             let weak = cx.entity().downgrade();
@@ -582,13 +577,19 @@ pub fn audio_player(
         }
         if p.loudness.is_none() {
             let weak = cx.entity().downgrade();
-            let options = SliderOptions::default().value(p.volume).min(0.).max(1.).step(0.05).on_value_change(move |to, _, _, cx| {
-                let (to, weak) = (*to, weak.clone());
-                cx.defer(move |cx| drop(weak.update(cx, |p, cx| p.set_volume(to, cx))));
-            });
+            let options = SliderOptions::default().value(p.volume).min(0.).max(1.).step(0.05).on_value_change(move |to, _, _, cx| drop(weak.update(cx, |p, cx| p.set_volume(*to, cx))));
             p.loudness = Some(cx.new(|cx| Slider::new(options, window, cx)));
         }
     });
+    // The knob follows the loudness, as the track's follows where it's at: the slider holds the
+    // value it's given.
+    let (loudness, volume) = {
+        let p = player.read(cx);
+        (p.loudness.clone().expect("loudness"), p.volume)
+    };
+    if loudness.read(cx).state().value != volume {
+        loudness.update(cx, |s, cx| s.set_controlled_value(Some(volume), cx));
+    }
     let p = player.read(cx);
     let keys = p.keys.as_ref().expect("keys");
     let play = key_look(Button::root(&keys.play, cx), &l)
@@ -604,7 +605,7 @@ pub fn audio_player(
         let line = Slider::track(s, cx).h(px(3.)).w_full().rounded_full().bg(l.line1).child(Slider::indicator(s, cx).rounded_full().bg(l.ink)).child(thumb);
         Slider::root(s, cx).flex_none().w(u(56.)).child(Slider::control(s, cx).flex().items_center().h(u(24.)).child(line))
     });
-    frame.child(play).child(scrubber).child(figures).children(mute).children(loud).into_any_element()
+    [Some(play.into_any_element()), Some(scrubber), Some(figures), mute.map(IntoElement::into_any_element), loud.map(IntoElement::into_any_element)].into_iter().flatten().collect()
 }
 
 /// Where a player is, on a track to press or drag, and its time and length as figures.
@@ -665,111 +666,6 @@ fn transport(player: &Entity<Player>, l: &Look, window: &mut Window, cx: &mut Ap
 
 
 
-/// Puts a video in a window of its own, filling the screen; asked again, takes it out.
-fn full_screen(player: Entity<Player>, window: &mut Window, cx: &mut App) {
-    if let Some(open) = player.read(cx).full {
-        player.update(cx, |p, _| p.full = None);
-        open.update(cx, |_, window, _| window.remove_window()).ok();
-        return;
-    }
-    let display = window.display(cx);
-    let bounds = display.as_ref().map(|d| d.bounds()).unwrap_or_else(|| Bounds::centered(None, size(px(1280.), px(800.)), cx));
-    let shown = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Fullscreen(bounds)),
-            titlebar: Some(TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: None }),
-            display_id: display.map(|d| d.id()),
-            focus: true,
-            show: true,
-            ..Default::default()
-        },
-        |window, cx| cx.new(|cx| FullScreen::new(player.clone(), window, cx)),
-    );
-    if let Ok(handle) = shown {
-        player.update(cx, |p, _| p.full = Some(handle.into()));
-    }
-}
-
-/// A video filling the screen in a window of its own: the same player's frames on black, its keys
-/// over the bottom edge. Esc or Full screen leaves.
-struct FullScreen {
-    player: Entity<Player>,
-    keys: Keys,
-    focus: FocusHandle,
-}
-
-impl FullScreen {
-    fn new(player: Entity<Player>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let keys = make_keys(player.downgrade(), true, window, cx);
-        let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        let gone = player.downgrade();
-        cx.on_release(move |_, cx| {
-            gone.update(cx, |p, _| p.full = None).ok();
-        })
-        .detach();
-        FullScreen { player, keys, focus }
-    }
-}
-
-impl Focusable for FullScreen {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for FullScreen {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let l = Look::get(cx);
-        let playing = self.player.read(cx).playing;
-        if playing {
-            self.player.update(cx, |p, _| p.pull());
-            window.request_animation_frame();
-        }
-        let frame = self.player.read(cx).frame.clone();
-        let toggled = self.player.clone();
-        let leaving = self.player.clone();
-        div()
-            .id("full screen")
-            .track_focus(&self.focus)
-            .group("full")
-            .relative()
-            .size_full()
-            .bg(l.black)
-            .on_key_down(move |e, window, cx| {
-                if e.keystroke.key == "escape" {
-                    leaving.update(cx, |p, _| p.full = None);
-                    window.remove_window();
-                }
-            })
-            .child(
-                div()
-                    .id("picture")
-                    .size_full()
-                    .on_click(move |_, _, cx| toggled.update(cx, |p, cx| p.toggle(cx)))
-                    .children(frame.map(|f| surface(f).object_fit(ObjectFit::Contain).size_full())),
-            )
-            .child(key_row(&self.keys, playing, "full", &l, cx))
-            // As WebKit's own full-screen video: where it's at and how long, to drag through.
-            .child({
-                let (scrubber, figures) = transport(&self.player, &l, window, cx);
-                div()
-                    .absolute()
-                    .bottom(u(6.))
-                    .left(u(48.))
-                    .right(u(48.))
-                    .h(u(24.))
-                    .flex()
-                    .items_center()
-                    .px(u(10.))
-                    .rounded(u(4.))
-                    .bg(l.bg.opacity(0.8))
-                    .child(scrubber)
-                    .child(figures)
-            })
-    }
-}
-
 /// A window to look at video tiles and a sound ($SWITCH_GPUI_MEDIA: files or addresses, by commas):
 /// a tile for each, in a row, and the first as a sound.
 pub struct LookAt {
@@ -794,7 +690,7 @@ impl Render for LookAt {
         let name_of = |src: &str| src.rsplit('/').next().unwrap_or_default().to_string();
         let menu: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(|_, _| eprintln!("menu"));
         let tiles: Vec<AnyElement> =
-            self.srcs.iter().map(|src| video_tile(src, "video/mp4", &name_of(src), u(240.), menu.clone(), window, cx)).collect();
+            self.srcs.iter().map(|src| video_tile(src, "video/mp4", &name_of(src), u(240.), Rc::new(|_, _| eprintln!("open")), menu.clone(), window, cx)).collect();
         let first = self.srcs[0].clone();
         div()
             .size_full()

@@ -133,6 +133,16 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 let wheel = page.starts_with("wheel:");
                 let pressing = ["down:", "drag:", "up:"].iter().any(|p| page.starts_with(p));
                 let presses = if page.starts_with("dbl:") { 2 } else { 1 };
+                // The composer's own steps, from outside its window (`key:hotkey…`, `key:nsc:…`).
+                if let Some(app) = page.strip_prefix("key:hotkey") {
+                    let app = app.strip_prefix('-').map(str::to_string);
+                    std::thread::spawn(move || hotkey(app.as_deref()));
+                    cx.background_executor().timer(Duration::from_millis(2500)).await;
+                }
+                if let Some(what) = page.strip_prefix("key:nsc:") {
+                    let what = what.to_string();
+                    let _ = cx.update(|cx| ns_composer(&what, cx));
+                }
                 let _ = cx.update_window(last, move |_, window, cx| {
                     if pressing {
                         return;
@@ -173,6 +183,27 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                             ns_keys(text, true);
                             return;
                         }
+                        // `key:nsv:<what>:…`: the same, to the window last shot (the viewer's, after
+                        // `viewer`): `click:<x>:<y>`, `dbl:<x>:<y>`, `drag:<x>:<y>:<x2>:<y2>`,
+                        // `pinch:<x>:<y>:<by>` (a trackpad's magnify, `by` in all), `wheel:<x>:<y>:<dy>`
+                        // and `cmdwheel:<x>:<y>:<dy>` (pixels, ⌘ held for the second), and
+                        // `key:<escape|left|right|space>`.
+                        if let Some(what) = rest.strip_prefix("nsv:") {
+                            ns_to(window, what);
+                            return;
+                        }
+                        // `key:hotkey-<app>`: that app brought to the front, then the composer's key
+                        // pressed as the keyboard sends it, through the system (`key:hotkey` alone:
+                        // with whatever is in front).
+                        if rest.starts_with("hotkey") {
+                            return;
+                        }
+                        // `key:nsc:<what>`: real AppKit input to the composer, without the app taking
+                        // the front: `text:<words>`, `key:<enter|cmd-enter|tab|up|down|escape|cmd-v|cmd-w>`,
+                        // `click:<x>:<y>`; `away` clicks the main window.
+                        if rest.starts_with("nsc:") {
+                            return;
+                        }
                         if let Some(at) = rest.strip_prefix("nsclick-") {
                             let mut xy = at.split('-').map(|v| v.parse::<f64>().unwrap_or(0.));
                             ns_click(xy.next().unwrap_or(0.), xy.next().unwrap_or(0.));
@@ -192,6 +223,16 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                     }
                 });
                 cx.background_executor().timer(Duration::from_millis(1200)).await;
+                if page.starts_with("key:hotkey") || page.starts_with("key:nsc:") {
+                    // Where the composer stands, and who has the front.
+                    let up = cx.update(|cx| crate::composer::window(cx));
+                    let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication().and_then(|a| a.localizedName()).map(|n| n.to_string()).unwrap_or_default();
+                    let active = objc2_app_kit::NSRunningApplication::currentApplication().isActive();
+                    eprintln!("composer: {} front: {front} active: {active}", if up.is_some() { "up" } else { "closed" });
+                    if let Some(w) = up {
+                        last = w;
+                    }
+                }
                 let shot = cx.update_window(last, |_, window, cx| {
                     // Where the focus went, as the key contexts down to it.
                     let at: Vec<String> = window.context_stack().iter().map(|c| format!("{c:?}")).collect();
@@ -233,6 +274,21 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 if let Some(w) = cx.update(|cx| crate::asks::window::handle(&id, cx)) {
                     shoot = w;
                 }
+            } else if page == "composer" || page.starts_with("composer:") {
+                // `composer`, `composer:<space>` (aimed there): its window, which steps after it go
+                // to, opened as ⌘/ or Tab in ⌘K opens it.
+                let aim = page.strip_prefix("composer:").map(str::to_string);
+                let _ = cx.update(|cx| crate::composer::toggle(aim, cx));
+                cx.background_executor().timer(Duration::from_millis(800)).await;
+                if let Some(w) = cx.update(|cx| crate::composer::window(cx)) {
+                    shoot = w;
+                }
+            } else if page == "viewer" {
+                // `viewer`: the full screen's window, which steps after it go to; `main` the main
+                // window again.
+                if let Some(w) = cx.update(|cx| crate::viewer::handle(cx)) {
+                    shoot = w;
+                }
             } else if let Some(path) = page.strip_prefix("read:") {
                 // `read:<file>`: its words as Markdown in a reading window, as More opens one.
                 let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -248,7 +304,7 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 let r = rest.to_string();
                 let _ = cx.update(|cx| Nav::open(Page::Space(r), cx));
             }
-            let special = page == "palette" || page == "shortcuts" || page.starts_with("settings:") || page.starts_with("ask:") || page.starts_with("read:") || page.starts_with("narrow:") || page.starts_with("wide:") || page.starts_with("width");
+            let special = page == "viewer" || page == "composer" || page.starts_with("composer:") || page == "main" || page == "palette" || page == "shortcuts" || page.starts_with("settings:") || page.starts_with("ask:") || page.starts_with("read:") || page.starts_with("narrow:") || page.starts_with("wide:") || page.starts_with("width");
             let to = match page.strip_prefix("thread:") {
                 Some(t) => {
                     let t = t.to_string();
@@ -535,5 +591,228 @@ fn ns_click(x: f64, y: f64) {
         if let Some(e) = e {
             app.postEvent_atStart(&e, false);
         }
+    }
+}
+
+/// Posts real AppKit input to `window` for `key:nsv:…`, as the mouse, the trackpad and the keyboard
+/// send it: mouse events made for the window; the trackpad's magnify and the wheel as Quartz events
+/// (a magnify can't be made otherwise), turned into AppKit's and put in the app's queue.
+fn ns_to(window: &gpui::Window, what: &str) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
+    type Ref = *mut std::ffi::c_void;
+    unsafe extern "C" {
+        fn CGEventCreate(source: Ref) -> Ref;
+        fn CGEventCreateScrollWheelEvent2(source: Ref, units: u32, count: u32, w1: i32, w2: i32, w3: i32) -> Ref;
+        fn CGEventSetType(e: Ref, t: u32);
+        fn CGEventSetIntegerValueField(e: Ref, field: u32, v: i64);
+        fn CGEventSetDoubleValueField(e: Ref, field: u32, v: f64);
+        fn CGEventSetLocation(e: Ref, at: objc2_core_foundation::CGPoint);
+        fn CGEventSetFlags(e: Ref, flags: u64);
+        fn CFRelease(r: Ref);
+    }
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    let Some(w) = crate::platform::appkit::ns_window(window) else { return };
+    w.makeKeyAndOrderFront(None);
+    let n = w.windowNumber();
+    let frame = w.frame();
+    let h = w.contentRectForFrameRect(frame).size.height;
+    let parts: Vec<&str> = what.split(':').collect();
+    let num = |i: usize| parts.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.);
+    let (x, y) = (num(1), num(2));
+    let local = |x: f64, y: f64| NSPoint::new(x, h - y);
+    let post = |e: Option<objc2::rc::Retained<NSEvent>>| {
+        if let Some(e) = e {
+            app.postEvent_atStart(&e, false);
+        }
+    };
+    let mouse = |kind: NSEventType, at: NSPoint, clicks: isize| -> Option<objc2::rc::Retained<NSEvent>> {
+        unsafe {
+            objc2::msg_send![objc2::class!(NSEvent), mouseEventWithType: kind, location: at, modifierFlags: NSEventModifierFlags::empty(), timestamp: 0f64, windowNumber: n, context: std::ptr::null::<objc2::runtime::AnyObject>(), eventNumber: 0isize, clickCount: clicks, pressure: 1f32]
+        }
+    };
+    // A Quartz event at (x, y) in the window, as the screen counts from its top left, for the
+    // window.
+    let quartz = |e: Ref| -> Option<objc2::rc::Retained<NSEvent>> {
+        let screen = w.screen().map(|s| s.frame()).unwrap_or(frame);
+        let at = objc2_core_foundation::CGPoint::new(frame.origin.x + x, screen.size.height - (frame.origin.y + h) + y);
+        unsafe {
+            CGEventSetLocation(e, at);
+            // Quartz's window field (51), which AppKit reads as the event's window, and field 58
+            // set, without which AppKit takes the point as the window's corner rather than from
+            // the location (found by trying each).
+            CGEventSetIntegerValueField(e, 51, n as i64);
+            CGEventSetDoubleValueField(e, 58, 1.);
+            let ns: Option<objc2::rc::Retained<NSEvent>> = objc2::msg_send![objc2::class!(NSEvent), eventWithCGEvent: e];
+            CFRelease(e);
+            ns
+        }
+    };
+    match parts.first().copied().unwrap_or_default() {
+        "click" => {
+            post(mouse(NSEventType::LeftMouseDown, local(x, y), 1));
+            post(mouse(NSEventType::LeftMouseUp, local(x, y), 1));
+        }
+        "dbl" => {
+            for clicks in [1, 2] {
+                post(mouse(NSEventType::LeftMouseDown, local(x, y), clicks));
+                post(mouse(NSEventType::LeftMouseUp, local(x, y), clicks));
+            }
+        }
+        "drag" => {
+            let (x2, y2) = (num(3), num(4));
+            post(mouse(NSEventType::LeftMouseDown, local(x, y), 1));
+            for i in 1..=10 {
+                let t = i as f64 / 10.;
+                post(mouse(NSEventType::LeftMouseDragged, local(x + (x2 - x) * t, y + (y2 - y) * t), 1));
+            }
+            post(mouse(NSEventType::LeftMouseUp, local(x2, y2), 1));
+        }
+        "pinch" => {
+            // Began, five changes making `by` in all, ended: Quartz's gesture event (type 29), its
+            // HID kind a zoom (field 110 = 8), the change (113) and the phase (132).
+            let by = num(3);
+            for (phase, d) in [(1, 0.)].into_iter().chain((0..5).map(|_| (2, by / 5.))).chain([(4, 0.)]) {
+                let e = unsafe { CGEventCreate(std::ptr::null_mut()) };
+                unsafe {
+                    CGEventSetType(e, 29);
+                    CGEventSetIntegerValueField(e, 110, 8);
+                    CGEventSetDoubleValueField(e, 113, d);
+                    CGEventSetIntegerValueField(e, 132, phase);
+                }
+                post(quartz(e));
+            }
+        }
+        wheel @ ("wheel" | "cmdwheel") => {
+            let e = unsafe { CGEventCreateScrollWheelEvent2(std::ptr::null_mut(), 0, 1, num(3) as i32, 0, 0) };
+            if wheel == "cmdwheel" {
+                // kCGEventFlagMaskCommand.
+                unsafe { CGEventSetFlags(e, 1 << 20) };
+            }
+            post(quartz(e));
+        }
+        "key" => {
+            let (code, ch): (u16, String) = match parts.get(1).copied().unwrap_or_default() {
+                "escape" => (53, "\u{1b}".into()),
+                "left" => (123, "\u{f702}".into()),
+                "right" => (124, "\u{f703}".into()),
+                _ => (49, " ".into()),
+            };
+            let c = NSString::from_str(&ch);
+            for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+                let e: Option<objc2::rc::Retained<NSEvent>> = unsafe {
+                    objc2::msg_send![objc2::class!(NSEvent), keyEventWithType: kind, location: NSPoint::new(0., 0.), modifierFlags: NSEventModifierFlags::empty(), timestamp: 0f64, windowNumber: n, context: std::ptr::null::<objc2::runtime::AnyObject>(), characters: &*c, charactersIgnoringModifiers: &*c, isARepeat: false, keyCode: code]
+                };
+                post(e);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The composer's key, as the keyboard sends it: a Quartz event posted to the system, which takes
+/// it for the hotkey before any app; `app` (a name) brought to the front first.
+fn hotkey(app: Option<&str>) {
+    type Ref = *mut std::ffi::c_void;
+    unsafe extern "C" {
+        fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
+        fn CGEventSetFlags(e: Ref, flags: u64);
+        fn CGEventPost(tap: u32, e: Ref);
+        fn CFRelease(r: Ref);
+    }
+    if let Some(app) = app {
+        let _ = std::process::Command::new("open").args(["-a", app]).status();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+    }
+    let Ok(k) = gpui::Keystroke::parse(crate::platform::hotkey::KEY) else { return };
+    // The key's place on an ANSI keyboard, and ⌘'s flag.
+    const CODES: &str = "asdfhgzxcv bqweryt123465=97-80]ou[ip lj'k;\\,/nm.";
+    let code = CODES.find(k.key.as_str()).unwrap_or(44) as u16;
+    for down in [true, false] {
+        // SAFETY: a keyboard event made here, posted once at the HID tap and released.
+        unsafe {
+            let e = CGEventCreateKeyboardEvent(std::ptr::null_mut(), code, down);
+            if k.modifiers.platform {
+                CGEventSetFlags(e, 1 << 20);
+            }
+            CGEventPost(0, e);
+            CFRelease(e);
+        }
+    }
+}
+
+/// Real AppKit input to the composer's window, put in the app's queue without the app taking the
+/// front (`key:nsc:…`).
+fn ns_composer(what: &str, cx: &mut gpui::App) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    if what == "away" {
+        // A click on the main window: it takes the keyboard, as a click there would.
+        if let Some(main) = crate::platform::lifecycle::main_window(cx) {
+            let _ = main.update(cx, |_, window, _| crate::platform::appkit::show(window));
+        }
+        return;
+    }
+    let Some(handle) = crate::composer::window(cx) else { return };
+    let Ok(Some(w)) = handle.update(cx, |_, window, _| crate::platform::appkit::ns_window(window)) else { return };
+    let n = w.windowNumber();
+    let h = w.contentRectForFrameRect(w.frame()).size.height;
+    let post = |e: Option<objc2::rc::Retained<NSEvent>>| {
+        if let Some(e) = e {
+            app.postEvent_atStart(&e, false);
+        }
+    };
+    let key = |code: u16, ch: &str, flags: NSEventModifierFlags| {
+        let c = NSString::from_str(ch);
+        for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+            post(unsafe {
+                objc2::msg_send![objc2::class!(NSEvent), keyEventWithType: kind, location: NSPoint::new(0., 0.), modifierFlags: flags, timestamp: 0f64, windowNumber: n, context: std::ptr::null::<objc2::runtime::AnyObject>(), characters: &*c, charactersIgnoringModifiers: &*c, isARepeat: false, keyCode: code]
+            });
+        }
+    };
+    let parts: Vec<&str> = what.splitn(2, ':').collect();
+    let arg = parts.get(1).copied().unwrap_or_default();
+    const CODES: &str = "asdfhgzxcv bqweryt123465=97-80]ou[ip lj'k;\\,/nm.";
+    match parts.first().copied().unwrap_or_default() {
+        "text" => {
+            for ch in arg.chars() {
+                let shifted = ch == '#' || ch.is_ascii_uppercase();
+                let code = match ch {
+                    ' ' => 49,
+                    '#' => 20,
+                    _ => CODES.find(ch.to_ascii_lowercase()).unwrap_or(0) as u16,
+                };
+                key(code, &ch.to_string(), if shifted { NSEventModifierFlags::Shift } else { NSEventModifierFlags::empty() });
+            }
+        }
+        "key" => {
+            let (code, ch, flags) = match arg {
+                "enter" => (36, "\r", NSEventModifierFlags::empty()),
+                "cmd-enter" => (36, "\r", NSEventModifierFlags::Command),
+                "tab" => (48, "\t", NSEventModifierFlags::empty()),
+                "up" => (126, "\u{f700}", NSEventModifierFlags::empty()),
+                "down" => (125, "\u{f701}", NSEventModifierFlags::empty()),
+                "escape" => (53, "\u{1b}", NSEventModifierFlags::empty()),
+                "cmd-v" => (9, "v", NSEventModifierFlags::Command),
+                "cmd-w" => (13, "w", NSEventModifierFlags::Command),
+                _ => (51, "\u{7f}", NSEventModifierFlags::empty()),
+            };
+            key(code, ch, flags);
+        }
+        "click" => {
+            let mut xy = arg.split(':').map(|v| v.parse::<f64>().unwrap_or(0.));
+            let at = NSPoint::new(xy.next().unwrap_or(0.), h - xy.next().unwrap_or(0.));
+            for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+                post(unsafe {
+                    objc2::msg_send![objc2::class!(NSEvent), mouseEventWithType: kind, location: at, modifierFlags: NSEventModifierFlags::empty(), timestamp: 0f64, windowNumber: n, context: std::ptr::null::<objc2::runtime::AnyObject>(), eventNumber: 0isize, clickCount: 1isize, pressure: 1f32]
+                });
+            }
+        }
+        _ => {}
     }
 }

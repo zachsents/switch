@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite"
 import path from "node:path"
-import { defineCommand, defineEvent, EventId, ModelTag, on, ThreadId, TurnId } from "@switch/brain"
+import {
+  defineCommand,
+  defineEvent,
+  EventId,
+  ModelTag,
+  on,
+  Query,
+  ThreadId,
+  TurnId,
+} from "@switch/brain"
 import type { Incoming, Projection } from "@switch/brain"
 import { Option, Schema } from "effect"
 
@@ -474,6 +483,108 @@ const WAITING = `threads.status = 'done' AND (
 /** Whether a thread whose turn ended done still has work going on: it's waiting. */
 export const stillGoing = (db: Database, thread: ThreadId) =>
   db.query(`SELECT 1 FROM threads WHERE thread = ? AND ${WAITING}`).get(thread) !== null
+
+/** Whether a thread has a watch open or a script running, whatever its status (`WAITING`'s test). */
+const goesOn = (db: Database, thread: ThreadId) =>
+  db
+    .query(
+      `SELECT 1 WHERE EXISTS (SELECT 1 FROM expectations WHERE thread = ?1 AND status = 'open')
+         OR EXISTS (SELECT 1 FROM scripts WHERE thread = ?1 AND status = 'running')`,
+    )
+    .get(thread) !== null
+
+const decodeWatch = Schema.decodeUnknownOption(Schema.fromJsonString(Query))
+
+/** A condition's values: a list's for `in`, else its one. */
+const valuesOf = (c: { readonly op: string; readonly value?: unknown } | undefined): unknown[] => {
+  if (c === undefined) {
+    return []
+  }
+  const { value } = c
+  return c.op === "in" && Array.isArray(value) ? value : [value]
+}
+
+/**
+ * Whether a task's work carries on by itself, sure to wake it again: a watch of its own at a time,
+ * or on the end of a script of its own still running; or a task of its own still at it. Its next
+ * end reports, so this one is progress (Nov 24: a task relaying its deploys' and tasks' progress
+ * woke its space a dozen times to say nothing). A watch on the world (a sense's events, an item)
+ * may never fire: what the task did until then is its report.
+ */
+const carriesOn = (db: Database, thread: ThreadId): boolean => {
+  const running = new Set(
+    db
+      .query<{ name: string }, [string]>(
+        "SELECT name FROM scripts WHERE thread = ? AND status = 'running'",
+      )
+      .all(thread)
+      .map((r) => r.name),
+  )
+  const wakes = db
+    .query<{ when_q: string | null; by: number | null }, [string]>(
+      "SELECT when_q, by FROM expectations WHERE thread = ? AND status = 'open'",
+    )
+    .all(thread)
+    .some((x) => {
+      if (x.when_q === null) {
+        return x.by !== null
+      }
+      const q = decodeWatch(x.when_q)
+      if (Option.isNone(q) || (q.value.from ?? "events") !== "events") {
+        return false
+      }
+      const where = q.value.where ?? []
+      return (
+        valuesOf(where.find((c) => c.field === "type")).includes("script.ended") &&
+        valuesOf(where.find((c) => c.field === "payload.script")).some(
+          (n) => typeof n === "string" && running.has(n),
+        )
+      )
+    })
+  if (wakes) {
+    return true
+  }
+  const queued = db.query<{ n: number }, [string]>(
+    "SELECT count(*) AS n FROM thread_waiting WHERE thread = ?",
+  )
+  return db
+    .query<{ thread: ThreadId; status: string }, [string]>(
+      "SELECT thread, status FROM threads WHERE parent = ?",
+    )
+    .all(thread)
+    .some(
+      (c) =>
+        c.status === "running" ||
+        c.status === "limited" ||
+        (queued.get(c.thread)?.n ?? 0) > 0 ||
+        (c.status === "done" && carriesOn(db, c.thread)),
+    )
+}
+
+/**
+ * What a task's turn `turn` ending `status` tells its parent: null while its work carries on by
+ * itself (`carriesOn`) and no wait on the user was hung this turn, its own or its tasks'; else how
+ * it ended, "waiting" when a watch or script of its own goes on.
+ */
+export const taskEnd = (db: Database, thread: ThreadId, status: string, turn: string) => {
+  if (status !== "done") {
+    return status
+  }
+  const asked =
+    db
+      .query(
+        `WITH RECURSIVE tree(thread) AS (SELECT ?1
+             UNION SELECT t.thread FROM threads t JOIN tree ON t.parent = tree.thread)
+         SELECT 1 FROM expectations x JOIN tree ON x.thread = tree.thread
+         WHERE x.status = 'open' AND json_extract(x.when_q, '$.from') = 'items'
+           AND x.set_seq > (SELECT seq FROM events WHERE id = ?2 || ':start')`,
+      )
+      .get(thread, turn) !== null
+  if (!asked && carriesOn(db, thread)) {
+    return null
+  }
+  return goesOn(db, thread) ? "waiting" : "done"
+}
 
 /** Every waiting thread, in one read from the open watches and running scripts: what `stillGoing`
  * says of each, for a list of all threads. */

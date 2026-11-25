@@ -238,8 +238,26 @@ pub fn button(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEle
     let press = ctx.on_press(&action);
     // Base UI's Button: named by what's in it.
     let named = ctx.scope.child(c, "child").map(|ch| crate::widgets::render::words_in(&ctx.for_child(&ch, true, false), &ch.id, 0)).unwrap_or_default();
+    // A picture in it (a page's, opening the page) is the key itself: edge to edge as an Image is,
+    // pressed anywhere on it, dimmed while held, never a key's face.
+    if let Some((ch, shown)) = ctx.scope.child(c, "child").and_then(|ch| picture_of(ctx, &ch.id).map(|p| (ch, p))) {
+        let inner = ctx.for_child(&ch, true, false);
+        let about = if named.is_empty() { inner.scope.words(&shown, "description") } else { named };
+        let picture = inner.build(&ch, window, cx);
+        let key = kit::press(kit::focusable(div().id(ctx.id(c, "key")), &l).aria_label(about).cursor_pointer().active(|s| s.opacity(0.85)), valid, move |_, _, cx| press(cx))
+            .when(!valid, |d| d.opacity(0.4))
+            .child(picture);
+        return share(div(), c, ctx).child(key).into_any_element();
+    }
     let key = kit::press(kit::button(ctx.id(c, "key"), look, valid, &l).role(gpui::Role::Button).aria_label(named), valid, move |_, _, cx| press(cx)).children(inner);
     share(div().flex().h(u(24.)).items_center().px(u(8.)), c, ctx).child(key).into_any_element()
+}
+
+/// The component at `id` when it's a picture as wide as its cell (an Image of no small variant).
+fn picture_of(ctx: &Ctx, id: &str) -> Option<std::rc::Rc<Value>> {
+    let (c, name, _) = crate::widgets::render::component(ctx, id)?;
+    let small = matches!(c.get("variant").and_then(Value::as_str), Some("icon" | "avatar" | "smallFeature"));
+    (name == "Image" && !small).then_some(c)
 }
 
 /// A2UI's Icon: one of its names as old Switchboard drew it (Phosphor, bold), or its own `svgPath`,
@@ -292,7 +310,8 @@ pub fn image(c: &Value, ctx: &Ctx, cx: &mut App) -> AnyElement {
         Some(p) => {
             // Not at a set size, it's at the picture's own ratio.
             let ratio = crate::widgets::basic::ratio_of(&p);
-            let i = img(p).object_fit(fit).size_full();
+            // An avatar's round: gpui clips its frame's children to its box, not its corners.
+            let i = img(p).object_fit(fit).size_full().when(variant == "avatar", |i| i.rounded_full());
             let mut d = sized(div());
             if !fixed {
                 d.style().aspect_ratio = ratio;

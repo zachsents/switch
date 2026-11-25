@@ -6,6 +6,7 @@ This Mac's own browser (Chrome, or another Chromium browser), signed in as the u
 - `act`: exact control. Look, click, type, keys, scroll, screenshots, JavaScript, uploads, dialogs, console, network and tabs. `sign_in` fills a sign-in from a login in the user's vault ([switch-ext-secrets](../secrets); `save_account`, `accounts`), else the browser fills it from its saved passwords. `fill_secret` puts a vault secret (a card's number, an ID number) straight into a field.
 - `secret`: the vault's secrets `fill_secret` uses: list them, keep a card the browser has saved, forget them.
 - The `tab` widget shows the tab held for the user (an approval, a code, a human check), live, and they drive it from there.
+- `preview`: a web page's picture, taken in a headless copy of the browser apart from the user's windows and kept as a blob. The `preview` widget shows it and opens the page on a click; its placement's input is `url`, `every` (5m, 30m or 60m) and `width`. It's taken again `every` apart while someone asks for it, each new one a `browser.preview` event the widget refreshes on.
 - `browser.page` events say what's in front in the browser, and whether an agent is driving it.
 
 Nothing secret passes through the agent: passwords, card and identity numbers are never typed by it or shown to it.

@@ -271,6 +271,17 @@ fn fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("js-image", alone(BASIC_CATALOG, json!({ "component": "Image", "url": "javascript:alert(1)" }))),
         ("data-image", alone(BASIC_CATALOG, json!({ "component": "Image", "url": DOT }))),
         ("feed", alone(sw, json!({ "component": "Feed", "action": "camera" }))),
+        // A page's picture that opens the page: the key is the picture, edge to edge.
+        (
+            "picture-key",
+            basic(
+                vec![
+                    json!({ "id": "open", "component": "Button", "variant": "borderless", "child": "shot", "action": { "functionCall": { "@call": "openUrl", "args": { "url": { "@path": "/url" } } } } }),
+                    json!({ "id": "shot", "component": "Image", "url": DOT, "description": { "@path": "/title" }, "fit": "cover" }),
+                ],
+                json!({ "url": "https://example.com/", "title": "Example" }),
+            ),
+        ),
         ("unlabelled-date", alone(BASIC_CATALOG, json!({ "component": "DateTimeInput" }))),
         ("caption", alone(BASIC_CATALOG, json!({ "component": "Text", "text": "Nothing", "variant": "caption" }))),
         ("unknown-icon", alone(BASIC_CATALOG, json!({ "component": "Icon", "name": "nope" }))),

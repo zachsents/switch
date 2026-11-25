@@ -2,6 +2,8 @@
 # A snapshot of every store in ~/.switch, to the backup disk ~/.switch/deploy.json names:
 #   backups      the folder on it (an encrypted APFS disk image, switch.sparsebundle, is kept there)
 #   backupsSize  the image's cap (default 40g), which old snapshots are dropped to stay under
+# The image is compacted after each run, giving the disk back what it deleted. A disk too full for
+# the image's room is a failure (snapshots are never dropped for it).
 # The image's passphrase is in the login keychain (ax.switch.backup), never a file or a log; a first
 # run makes both. Keep a copy off this machine: a restore elsewhere needs it.
 # Inside, snapshots/<time>-<label>/files is ~/.switch as it was: what the release, the checkouts and
@@ -105,6 +107,38 @@ fi
 MNT=$HOME/Library/Caches/$SERVICE/mnt
 mkdir -p "$MNT"
 attached=''
+gb() { awk -v k="$1" 'BEGIN { printf "%.1f GB", k / 1048576 }'; }
+# The image's cap, as it was made (its Info.plist, readable without the passphrase), in KB.
+CAP=$(($(plutil -extract size raw -o - "$IMG/Info.plist" 2>/dev/null || echo 0) / 1024))
+# Free space on the disk the image is on, in KB: the image's bands grow into it.
+host_free() { df -k "$DEST" | awk 'NR == 2 { print $4 }'; }
+# The image keeps what it deleted (a snapshot, the brain's copy) on the disk until it's compacted,
+# which it can be only while detached: after each run, and before one when the disk is low. The
+# passphrase goes through stdin, as for attaching. A failed compact is logged, and fails nothing.
+compact() {
+  mount | grep -qF " on $MNT (" && return 0
+  before=$(du -sk "$IMG" 2>/dev/null | cut -f1)
+  t=$(date +%s)
+  out=$(mktemp "${TMPDIR:-/tmp}/switch-backup-compact.XXXXXX")
+  p=$(security find-generic-password -s "$SERVICE" -a backups -w 2>/dev/null || true)
+  if printf %s "$p" | hdiutil compact -stdinpass "$IMG" >"$out" 2>&1; then
+    p=''
+    after=$(du -sk "$IMG" 2>/dev/null | cut -f1)
+    say "compacted the image in $(($(date +%s) - t)) s: $(gb $((${before:-0} - ${after:-0}))) freed, $(gb "${after:-0}") on the disk, $(gb "$(host_free)") free there"
+  else
+    p=''
+    say "compacting the image failed: $(grep -v '^$' "$out" | tail -1)"
+  fi
+  rm -f "$out"
+}
+# This run's brain copy goes in the image first: with less than that and a margin on the disk, what
+# the image deleted is given back before it opens.
+need=$(($(stat -f %z "$S/brain.db" 2>/dev/null || echo 0) / 1024 + 2097152))
+if [ "$(host_free)" -lt "$need" ] && ! mount | grep -qF " on $MNT ("; then
+  compact
+  [ "$(host_free)" -ge "$need" ] ||
+    fail "The backup disk ($DEST) has $(gb "$(host_free)") free, and a snapshot needs about $(gb "$need"): free some space on it"
+fi
 if ! mount | grep -qF " on $MNT ("; then
   printf %s "$pass" | hdiutil attach -quiet -stdinpass -nobrowse -noautoopen -owners on -mountpoint "$MNT" "$IMG" ||
     fail "Can't open $IMG"
@@ -115,12 +149,21 @@ fi
 mdutil -i off "$MNT" >/dev/null 2>&1 || true
 pass=''
 work=$(mktemp -d "${TMPDIR:-/tmp}/switch-backup.XXXXXX")
+# Detached, if this run attached it, and compacted then; once, at the end or on the way out.
 done_() {
   rm -rf "$work"
-  [ -z "$attached" ] || hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -quiet -force "$MNT" 2>/dev/null || true
+  [ -n "$attached" ] || return 0
+  attached=''
+  if hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -quiet -force "$MNT" 2>/dev/null; then
+    # Stopped (a deploy restarts the core): the next run compacts it.
+    [ -n "$stopping" ] || compact
+  else
+    say "the image didn't detach, so it isn't compacted"
+  fi
 }
+stopping=''
 trap done_ EXIT
-trap 'exit 1' INT TERM HUP
+trap 'stopping=1; exit 1' INT TERM HUP
 
 SNAP=$MNT/snapshots
 mkdir -p "$SNAP"
@@ -133,8 +176,12 @@ if [ -n "$partial" ]; then
   rm -rf "$SNAP"/*.partial
 fi
 
-# Free space in the image, as a percentage of it.
-free_pct() { df -k "$MNT" | awk 'NR == 2 { printf "%d", $4 * 100 / $2 }'; }
+# Room left in the image, as a percentage of its cap: what's used in it against the cap, never
+# df's free space, which is no more than the disk under it has left (a full disk is no reason to
+# drop a snapshot: dropping one doesn't give the disk anything back until the image is compacted).
+used() { df -k "$MNT" | awk 'NR == 2 { print $3 }'; }
+[ "$CAP" -gt 0 ] || CAP=$(df -k "$MNT" | awk 'NR == 2 { print $2 }')
+free_pct() { echo $(((CAP - $(used)) * 100 / CAP)); }
 snapshots() { ls -1 "$SNAP" | grep -v '\.partial$' | sort; }
 # The newest 5, each of the last 14 days' newest and each of the last 8 weeks' newest are kept;
 # then the oldest go while the image is less than a fifth free (never the newest).
@@ -298,7 +345,18 @@ rm -f "$copy" "$work"/brain.db*
 mv "$new" "$SNAP/$name"
 date +%s >"$S/backup-last"
 prune
-say "$label: $name in $(($(date +%s) - t0)) s, $packed node_modules packed; image $(df -h "$MNT" | awk 'NR == 2 { print $3 " used, " $4 " free" }')"
+say "$label: $name in $(($(date +%s) - t0)) s, $packed node_modules packed; image $(gb "$(used)") used of its $(gb "$CAP")"
+room=$((CAP - $(used)))
+done_
+# The disk under the image: too little left for the room the image keeps (a fifth of its cap) is a
+# failure, for the agent to make room (snapshots aren't dropped for it); less than it would take to
+# fill the image, a line in the log.
+free=$(host_free)
+if [ "$free" -lt $((CAP / 5)) ]; then
+  fail "The backup disk is nearly full: $(gb "$free") free on it, the backup image needs up to $(gb "$room") more (cap $(gb "$CAP")): free space on it or lower backupsSize"
+elif [ "$free" -lt "$room" ]; then
+  say "the backup disk has $(gb "$free") free, less than the $(gb "$room") the image may still grow"
+fi
 # The second copy, once there is one, pulls within two days.
 if [ -f "$S/backup-pulled" ]; then
   age=$((($(date +%s) - $(cat "$S/backup-pulled")) / 3600))

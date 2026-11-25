@@ -173,12 +173,40 @@ fn shown(cx: &App) {
     }
 }
 
+/// This launch's word of which build runs here (`client.reported`), once it's in.
+static REPORTED: AtomicBool = AtomicBool::new(false);
+static LAUNCH: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+
+/// Which build runs on this machine, for the brain: the published app's only (a build without a
+/// feed is the dev channel, never this machine's app), again until it's in.
+fn report_build(now: f64, cx: &mut App) {
+    if super::update::FEED.is_none() || REPORTED.load(Ordering::Relaxed) {
+        return;
+    }
+    let due = SENT_AT.lock().ok().and_then(|s| s.get(LAUNCH.as_str()).copied()).is_none_or(|at| now - at > AGAIN_MS);
+    if !due {
+        return;
+    }
+    if let Ok(mut s) = SENT_AT.lock() {
+        s.insert(LAUNCH.clone(), now);
+    }
+    let payload = json!({ "client": "desktop", "device": DEVICE.clone(), "build": build(), "hash": super::update::HASH });
+    let answer = cx.global::<Net>().emit("client.reported", payload, Some(LAUNCH.clone()));
+    cx.spawn(async move |_| {
+        if let Ok(Ok(_)) = answer.await {
+            REPORTED.store(true, Ordering::Relaxed);
+        }
+    })
+    .detach();
+}
+
 /// Sends what's kept, each again until it's in, but not on every beat.
 fn flush(cx: &mut App) {
     if quiet() {
         return;
     }
     let now = now_ms();
+    report_build(now, cx);
     let due: Vec<Report> = PENDING.lock().map(|p| p.clone()).unwrap_or_default().into_iter().filter(|r| SENT_AT.lock().ok().and_then(|s| s.get(&r.id).copied()).is_none_or(|at| now - at > AGAIN_MS)).collect();
     for r in due {
         if let Ok(mut s) = SENT_AT.lock() {

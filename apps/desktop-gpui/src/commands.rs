@@ -16,6 +16,8 @@ use crate::spaces;
 pub enum Command {
     /// ⌘K.
     Find,
+    /// ⌘/: the composer, from anywhere (`platform/hotkey.rs`).
+    Compose,
     /// ⌘F's bar on the space's chat.
     FindIn,
     /// To the message box, on the space's page.
@@ -66,9 +68,10 @@ pub struct OpenItem(pub String);
 #[action(namespace = switch)]
 pub struct Escape;
 
-/// Every shortcut, as the ⌘/ sheet and Settings list them.
-pub const SHORTCUTS: [(&str, &str); 18] = [
+/// Every shortcut, as the ⇧⌘/ sheet and Settings list them.
+pub const SHORTCUTS: [(&str, &str); 19] = [
     ("Find", "⌘K"),
+    ("Composer", "⌘/"),
     ("Find in Chat", "⌘F"),
     ("New Message", "⌘N"),
     ("Chat", "⌘L"),
@@ -85,7 +88,7 @@ pub const SHORTCUTS: [(&str, &str); 18] = [
     ("Split Off", "⇧⌘N"),
     ("Settings", "⌘,"),
     ("Close Window", "⌘W"),
-    ("Keyboard Shortcuts", "⌘/"),
+    ("Keyboard Shortcuts", "⇧⌘/"),
 ];
 
 /// The window's keys. ⌘↑ and ⌘↓ hold in a field too (the box's caret doesn't take them).
@@ -102,7 +105,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         k("cmd-n", Command::Message),
         k("cmd-l", Command::Chat),
         k("cmd-shift-n", Command::Split(None)),
-        k("cmd-/", Command::Shortcuts),
+        k(crate::platform::hotkey::KEY, Command::Compose),
+        k("cmd-?", Command::Shortcuts),
         k("cmd-.", Command::Stop),
         k("cmd-d", Command::Dictate),
         k("cmd-,", Command::Settings("general".into())),
@@ -169,6 +173,7 @@ pub fn run(c: &Command, window: &mut Window, cx: &mut App) {
     let on_space = matches!(page, Page::Space(_));
     match c {
         Command::Find => Shell::update(cx, |s| s.finding = !s.finding),
+        Command::Compose => crate::composer::toggle(None, cx),
         Command::FindIn => {
             if !on_space {
                 Nav::open(Page::Space(space.clone()), cx);

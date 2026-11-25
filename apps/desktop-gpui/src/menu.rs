@@ -117,7 +117,7 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 item("Find in Chat", Command::FindIn),
             ],
         ),
-        menu("View", vec![item("Find", Command::Find), MenuItem::separator(), MenuItem::action("Zoom", Zoom), MenuItem::action(if model.full { "Exit Full Screen" } else { "Enter Full Screen" }, FullScreen)]),
+        menu("View", vec![item("Find", Command::Find), item("Composer", Command::Compose), MenuItem::separator(), MenuItem::action("Zoom", Zoom), MenuItem::action(if model.full { "Exit Full Screen" } else { "Enter Full Screen" }, FullScreen)]),
         menu(
             "Go",
             vec![

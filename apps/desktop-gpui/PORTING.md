@@ -137,7 +137,7 @@ detail.
 | `mainview/ui/ask-portal.tsx` | 2 | `asks/portal.rs`, `webview.rs` | done: none in a quiet copy (its page would act on the remote Mac with the credential); the live screen streams only while drawn (let go two seconds off screen), and goes with its card (closed, gone from the chat, its space left); the picture is a key; the controller lies over the whole window as a dialog, the page takes keys, wheel and pointer; Esc in the live screen is the remote Mac's (the page has the keys, as the desktop's frame does); the controller's own Esc, with the window's keys, closes it and nothing else (not the ask's window, not up a space), the keyboard back on the picture, as when it ends |
 | `mainview/ui/ask-reply.tsx` | 2 | `asks/card.rs` | done: closed (or sent), the reply goes with its words and error, a fresh one when it opens again; opened, the field has the keys (its `autoFocus`); Reply says it's pressed |
 | `mainview/ui/ask-sealed.tsx` | 2 | `asks/card.rs`, `mutations.rs` (`answer_sealed`) | done: label and placeholder `sealed.use` as it is, else "Secret" |
-| `mainview/ui/attached.tsx` | 1 | `attached.rs` | done: a row of pictures and videos that scrolls sideways (count under it when it holds more than it shows), a lone picture, sound, 3D files, a file line that turns while it opens; Open, Quick Look, the file menu (platform/files.rs). Its overlay scrollbar isn't drawn: the row scrolls by trackpad and wheel |
+| `mainview/ui/attached.tsx` | 1 | `attached.rs` | done: a row of pictures and videos that scrolls sideways (count under it when it holds more than it shows), a lone picture, sound, 3D files, a file line that turns while it opens; a picture's or video's click opens it full screen (`viewer.rs`: zoom, pan, ←/→ through the message's); Open, Quick Look, the file menu (platform/files.rs). Its overlay scrollbar isn't drawn: the row scrolls by trackpad and wheel |
 | `mainview/ui/band.tsx` | 3 | `band.rs` | done |
 | `mainview/ui/blip.tsx` | 1 | `quiet.rs` | done |
 | `mainview/ui/boundary.tsx` | 4 | `boundary.rs` | done: the band, a space's rail and chat, a thread, the palette, each widget, a widget's window and Settings each build inside one; a panic while one builds shows "Can't show this" and Retry there, and is an error report (`client.crashed`); a panic while gpui lays out or paints is past every section, a crash |
@@ -267,7 +267,7 @@ detail.
 | `mainview/ui/use-theme-sync.ts` | 3 | `theme.rs` | done |
 | `mainview/ui/use-timeline-follow.ts` | 1 | `chat.rs` | done |
 | `mainview/ui/use-track.ts` | 3 | `track.rs` | done |
-| `mainview/ui/video-tile.tsx` | 1 | `media.rs` | done natively: AVPlayer's frames drawn with gpui's surface; one plays at a time; full screen in a window of its own |
+| `mainview/ui/video-tile.tsx` | 1 | `media.rs` | done natively: AVPlayer's frames drawn with gpui's surface; one plays at a time; a click opens it full screen, playing, in `viewer.rs` |
 | `mainview/ui/widget-cell.tsx` | 2 | `widgets/column.rs`, `widgets/render.rs` (`nothing`) | done: a cell with nothing to show (no words but headings' and captions', no picture, frame or glyph: an empty Row, an Entry, a Divider, an Image with no address it would show, a Feed with no frame yet) is drawn out of view, so a feed in it keeps asking for frames |
 | `mainview/ui/widget-column.tsx` | 2 | `widgets/column.rs` | done |
 | `mainview/ui/widget-window.tsx` | 2 | `widgets/window.rs` | done: a failed load is the boundary's fallback (`boundary::failed_read`), reported once, Retry asking again |
@@ -348,7 +348,7 @@ detail.
 | `mainview/widgets/old-parts.ts` | 2 | `a2ui/mod.rs` | done |
 | `mainview/widgets/page-theme.ts` | 2 | `widgets/page.rs` | done |
 | `mainview/widgets/pick.tsx` | 2 | `widgets/house/` | done |
-| `mainview/widgets/pictures.tsx` | 2 | `widgets/house/gallery.rs` | done: a click is Quick Look on the saved pictures, from the one clicked |
+| `mainview/widgets/pictures.tsx` | 2 | `widgets/house/gallery.rs` | done: a click opens the pictures full screen (`viewer.rs`), from the one clicked |
 | `mainview/widgets/playing.tsx` | 2 | `widgets/house/` | done |
 | `mainview/widgets/row.tsx` | 2 | `widgets/house/` | done |
 | `mainview/widgets/set-mutation.ts` | 2 | `mutations.rs` (`widget_set`), called by `widgets/house/lines.rs` (`run`: Pick's Set, Check's ring, Entry's Enter, Playing's keys) | done |
@@ -418,6 +418,11 @@ file became; what differs on purpose:
   with it hidden (`lifecycle.rs`); Close, Minimize, Zoom and Full Screen act on the window in front.
   Checked on the mini with real menu presses and keys through the macOS extension.
 - A sign-in belongs to the window that started it; closing that window cancels it.
+- The composer (`composer.rs`, new here, old Switchboard's quick panel): ⌘/ from any app (Carbon's
+  `RegisterEventHotKey` through global-hotkey, `platform/hotkey.rs`: no permission) or Tab on a
+  space in ⌘K; the box in a panel that never takes the front; the core's `/route` for where it
+  goes. ⌘/'s sheet moved to ⇧⌘/. A quiet copy takes the key only with `SWITCH_GPUI_HOTKEY=1`.
+  Checked on the mini with real keys and clicks through the macOS extension, over Calculator.
 - A quiet copy (`SWITCH_GPUI_QUIET=1`) writes nothing to the core (socket, HTTP, uploads, sign-ins,
   credentials), keeps its data and reports in a folder of its own (`switch-gpui-quiet-<pid>`, swept
   once it's gone) and sends no reports. The app's reports are its own file, never the Electrobun
@@ -544,7 +549,9 @@ page's frame with gpui's own renderer (native views like the web view aren't in 
 window; `charts` the charts' gallery (with `SWITCH_GPUI_DRIVE=1`, each section's first chart
 again under the pointer and from the keys); `copy` copies from a sandboxed page. Between pages,
 `click:`, `dbl:`, `hover:`, `down:`/`drag:`/`up:`, `wheel:<x>:<y>:<dy>` and `key:<keystroke>` go to
-the window last shot; `fixture:<file>` adds the asks in a JSON array to this copy's brain only
+the window last shot (`viewer` makes that the full screen's, `main` the main window again;
+`key:nsv:<click|dbl|drag|pinch|wheel|cmdwheel|key>:…` posts real AppKit input to it, a pinch as a
+trackpad's magnify); `fixture:<file>` adds the asks in a JSON array to this copy's brain only
 (nothing reaches the core), `close:<id>` closes one as done and `reopen:<id>` opens it again.
 `SWITCH_GPUI_WHEEL=x,y,px,seconds` (with `SWITCH_GPUI_SIZE`,
 `SWITCH_GPUI_AT`) turns the wheel a step a frame on Home, for watching a web view keep to its row;

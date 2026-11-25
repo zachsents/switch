@@ -224,8 +224,9 @@ export const notesSince = (db: Database, space: SpaceId, since: number): Note[] 
 
 const SYSTEM = `You triage events for Switch, the user's personal agent. Switch keeps a tree of spaces (projects and sub-projects), each with one master thread and an agent working in it. Every event below already lives in one space (given). For each event decide:
 
-- "v": "wake" when the space's agent should take care of it now: a person's message to the user or their business (a text, an email, a DM) that bears on the space, whatever it asks or says, so the agent drafts the reply, does the work or decides nothing's needed; and the user waiting on it, something broken or about to break, a deadline near, a job the agent started failing or finishing (the work that started it hears it). "note" only for what asks nothing of anyone, which the agent reads next time it looks: automated notices, status changes, receipts, updates on something already handled. Anything that needs a reply or action is "wake", never "note". One exception: a person's message in a conversation the user handles themselves (marked so) is "note" when it's personal (chatter, feelings, plans or questions between the two of them, which the user is answering already), and "wake" only for business, logistics Switch should act on (a booking, a delivery, a payment, something to schedule or look up) or an ask of Switch. "ignore" when no one working on its space needs it (noise, spam, marketing, routine state nothing hinges on).
+- "v": "wake" when the space's agent should take care of it now: a person's message to the user or their business (a text, an email, a DM) that bears on the space, whatever it asks or says, so the agent drafts the reply, does the work or decides nothing's needed; and the user waiting on it, something broken or about to break, a deadline near, a job the agent started failing or finishing (the work that started it hears it). "note" only for what asks nothing of anyone, which the agent reads next time it looks: automated notices, status changes, receipts, updates on something already handled. Anything that needs a reply or action is "wake", never "note". A person's message in a conversation the user handles themselves (marked so) goes by "acts" below instead. "ignore" when no one working on its space needs it (noise, spam, marketing, routine state nothing hinges on).
 - "person": true when the event is a message a person wrote to the user or their business, not an automated sender (a notification, alert, newsletter, receipt or no-reply address).
+- "acts": only for a message marked as in a conversation the user handles themselves: true when it holds business, logistics Switch should act on (a booking, a delivery, a payment, something to schedule or look up) or an ask of Switch; false when it's personal (chatter, feelings, plans or questions between the two of them, however pressing it sounds), which the user is answering already. False for every other event.
 - "note": for note or wake, one line under 120 characters saying what changed, with the names and numbers that matter, about this event's own subject only: never restate other lines or other events. Empty for ignore.
 - "line": true only for an app's event the user would want to see in its space's chat as it happens: an outcome such as an order paid, a delivery arrived, a print the user asked for done. Never for routine state, progress, messages or chatter, nor for the agent's own jobs (a build, a simulation, a script, a render it started), whose work hears how they end, nor for trouble in Switch itself (an extension or source down or crash-looping, an error): that is the agent's to fix, a "wake", not the user's to watch. Most events are false.
 - "same": for a line, the line it continues when its subject has one: an id from "Lines in its space's chat now" ("L123"), or an earlier event in this batch that makes a line ("e2"). One subject is one line, revised in place to its latest state however it moves or is worded: an order placed, shipped and delivered is one line; "delayed", "still delayed", "delayed again, now Friday" are one delay. Its note then says the latest, with since when. "" only for a subject no line has yet (another order, another printer, a new job).
@@ -236,7 +237,7 @@ An event's time is when it happened. One from long before now came late (a sourc
 
 The user's rules and preferences, when given below, say what they want woken for and what can wait.
 
-Answer with JSON only: {"e0": {"v": "ignore", "person": false, "note": "", "line": false, "same": "", "mentions": [], "meets": []}, ...}, one key per event.`
+Answer with JSON only: {"e0": {"v": "ignore", "person": false, "acts": false, "note": "", "line": false, "same": "", "mentions": [], "meets": []}, ...}, one key per event.`
 
 // Measured on the membership corpus (.experiments/autonomy): ten per call.
 const BATCH = 10
@@ -619,6 +620,7 @@ const answerOf = (
     ],
     meets: strings(field(a, "meets")).filter((id) => meetable.has(id)),
     person: field(a, "person") === true,
+    acts: field(a, "acts") === true,
   }
 }
 
@@ -773,18 +775,22 @@ const handledBy = (db: Database, t: Tagged) => {
 
 /**
  * A person's message it doesn't ignore wakes its space: the agent takes care of it. One a source
- * brought in long after it was sent (a backfill of history), or in a conversation the user handles
- * themselves, goes by the model's verdict.
+ * brought in long after it was sent (a backfill of history) goes by the model's verdict. One in a
+ * conversation the user handles themselves wakes only for what Switch should act on ("acts"), and
+ * is a note otherwise, whatever the verdict: the model's "wake" there has contradicted its own note
+ * ("personal, leave it to him").
  */
 const verdictOf = (
-  a: { readonly verdict: Sorting; readonly person: boolean },
+  a: { readonly verdict: Sorting; readonly person: boolean; readonly acts: boolean },
   t: Tagged,
   handled: boolean,
 ) => {
+  if (handled && fromSomeone(t) && a.verdict !== "ignore") {
+    return a.acts ? "wake" : "note"
+  }
   const m = messageOf(t.event.type, t.event.payload, t.event.time)
   return a.verdict === "note" &&
     a.person &&
-    !handled &&
     fromSomeone(t) &&
     m !== null &&
     m.at >= t.event.time - LATE_MS

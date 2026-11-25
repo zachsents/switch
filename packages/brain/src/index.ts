@@ -1,4 +1,5 @@
 export { Brain } from "./brain.ts"
+export { behind, checkpointing } from "./checkpoint.ts"
 export {
   Fingerprints,
   knowSecrets,
@@ -112,6 +113,8 @@ export {
   membership,
   membershipConfig,
   retagged,
+  route,
+  routing,
   SpaceTagged,
   SpaceUntagged,
   tagger,

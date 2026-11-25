@@ -297,6 +297,21 @@ xcodebuild -project "$project/Switchboard.xcodeproj" -scheme Switchboard -config
   DEVELOPMENT_TEAM="$team" APP_BUNDLE_ID="$bundle_id" SWITCH_CORE="$core" build -quiet
 app=$build/Build/Products/Release-iphoneos/Switchboard.app
 
+# Its symbols, kept on the Mac that built it for the newest ten builds, named by commit and the
+# app image's UUID: a crash report from the phone (Crashes.swift) names that UUID (`binary`) and
+# its own frames by offset, read with these.
+dsym=$app.dSYM
+if [ -d "$dsym" ]; then
+  dsyms="$HOME/Library/Application Support/Switchboard/iphone-dsyms"
+  uuid=$(dwarfdump --uuid "$dsym" 2>/dev/null | awk '/^UUID:/ {print $2; exit}')
+  name=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)-$(printf %s "$uuid" | cut -c1-8)
+  mkdir -p "$dsyms" && rm -rf "$dsyms/$name.dSYM" && cp -R "$dsym" "$dsyms/$name.dSYM" && touch "$dsyms/$name.dSYM"
+  ls -1t "$dsyms" | tail -n +11 | while read -r old; do rm -rf "${dsyms:?}/$old"; done
+  echo "Symbols: $dsyms/$name.dSYM (binary $uuid)"
+else
+  echo "No dSYM at $dsym, so this build's crashes can't be symbolicated." >&2
+fi
+
 if [ "$mode" = build ]; then
   echo "Built $app"
   exit 0

@@ -16,6 +16,29 @@ struct BasicButton: View {
   @Environment(\.lineUp) private var lineUp
 
   var body: some View {
+    if let child = node.child(for: "child"), Self.isPicture(child) {
+      // A picture in it (a page's, opening the page) is the key itself: edge to edge as an Image
+      // is, pressed anywhere on it, never a key's face.
+      Button {
+        node.action(for: "action", userActivation: true)?()
+        openModal?()
+      } label: {
+        ComponentNodeView(node: child)
+      }
+      .buttonStyle(PictureKey())
+      .disabled(!node.isValid || node.bool(for: "disabled") == true)
+      .accessibilityIdentifier("a2ui-\(node.id)")
+    } else {
+      key
+    }
+  }
+
+  /// A picture as wide as its cell: an Image of no small variant.
+  private static func isPicture(_ child: Node) -> Bool {
+    child.type == "Image" && !["icon", "avatar", "smallFeature"].contains(child.string(for: "variant") ?? "")
+  }
+
+  private var key: some View {
     styled(
       Button {
         node.action(for: "action", userActivation: true)?()
@@ -37,6 +60,17 @@ struct BasicButton: View {
     case "borderless": key.buttonStyle(QuietKey())
     default: key.buttonStyle(KeyStyle())
     }
+  }
+}
+
+/// A key that's a picture: the picture as it is, dimmed while held.
+struct PictureKey: ButtonStyle {
+  @Environment(\.isEnabled) private var enabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .contentShape(.rect)
+      .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.85 : 1)
   }
 }
 

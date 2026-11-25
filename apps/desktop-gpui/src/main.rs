@@ -22,6 +22,7 @@ mod chat_marks;
 mod chatbox;
 mod color_panel;
 mod commands;
+mod composer;
 mod cutover;
 mod derive;
 mod files;
@@ -65,6 +66,7 @@ mod thread;
 mod time;
 mod track;
 mod webview;
+mod viewer;
 mod widgets;
 
 use std::time::Instant;
@@ -111,6 +113,7 @@ fn main() {
         cx.bind_keys(chat::bindings());
         cx.bind_keys(thread::bindings());
         cx.bind_keys(commands::bindings());
+        cx.bind_keys(composer::bindings());
         cx.bind_keys(kit::bindings());
         cx.bind_keys([gpui::KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());

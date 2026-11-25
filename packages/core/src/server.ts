@@ -88,7 +88,9 @@ import {
   sealedRoute,
 } from "./asks.ts"
 import { blobsRoute } from "./blobs.ts"
+import { checkpointer } from "./checkpointer.ts"
 import { queryRoute } from "./query.ts"
+import { routeRoute } from "./route.ts"
 import { chatLayer, triageLayer } from "./chat.ts"
 import { alarmsWorker } from "./alarms.ts"
 import { clocksWorker } from "./clocks.ts"
@@ -110,6 +112,7 @@ import { makeHost } from "./host.ts"
 import { notifier, notifyConfig } from "./notify.ts"
 import { reportsConfig } from "./reports.ts"
 import { scriptsApp } from "./scripts-app.ts"
+import { statusApp } from "./status.ts"
 import { eventsRoute, scriptsConfig, scriptsRetire } from "./scripts.ts"
 import { itemChecks } from "./item-checks.ts"
 import { takeInLayer } from "./take-in.ts"
@@ -178,6 +181,7 @@ const layerBrain = Layer.unwrap(
       ownCredentials(c.dir)
       return Brain.layer({
         path: c.brain,
+        ...(c.brain === ":memory:" ? {} : { checkpoint: checkpointer(c.brain) }),
         events: brainParts.flatMap((p) => p.events),
         projections: brainParts.flatMap((p) => p.projections),
         commands: brainParts.flatMap((p) => p.commands),
@@ -355,6 +359,16 @@ const layerScriptsApp = Layer.effectDiscard(
     const gateway = yield* Gateway
     const runtime = yield* Runtime
     const app = yield* inProcess(scriptsApp).pipe(Effect.provideService(Runtime, runtime))
+    yield* Effect.forkScoped(gateway.keep(app))
+  }),
+)
+
+// Switch's own parts read the hosts' runs too.
+const layerStatusApp = Layer.effectDiscard(
+  Effect.gen(function* statusPlug() {
+    const gateway = yield* Gateway
+    const runtime = yield* Runtime
+    const app = yield* inProcess(statusApp).pipe(Effect.provideService(Runtime, runtime))
     yield* Effect.forkScoped(gateway.keep(app))
   }),
 )
@@ -568,6 +582,7 @@ const layerRoutes = HttpRouter.serve(
     extensionsRoute,
     blobsRoute,
     queryRoute,
+    routeRoute,
     eventsRoute,
     modelsRoute,
     accountsRoute,
@@ -659,6 +674,7 @@ export const layerServer = (
     layerBrainApp,
     pictureRedaction,
     layerScriptsApp,
+    layerStatusApp,
     layerWorkers,
     stallsWatch,
     layerPagesListener,

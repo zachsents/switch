@@ -31,6 +31,13 @@ export interface BrainConfig {
   readonly projections: readonly Projection[]
   readonly commands: readonly CommandDef[]
   readonly upcasts?: readonly Upcast[]
+  /**
+   * Told after each commit, to checkpoint the WAL somewhere else (the core's checkpointer, a
+   * process of its own). Given, the brain's commits never checkpoint: SQLite's own checkpoint runs
+   * in the commit that fills the WAL, writing its pages into the main file and syncing it, seconds
+   * of the core's thread on a busy disk (Nov 24). Without it, SQLite checkpoints as it does.
+   */
+  readonly checkpoint?: () => void
 }
 
 /** `id` is the client's: a retry with the same id is a no-op. */
@@ -97,6 +104,8 @@ CREATE INDEX IF NOT EXISTS events_time ON events (time);
 CREATE INDEX IF NOT EXISTS events_time_type ON events (time, type);
 CREATE INDEX IF NOT EXISTS events_permissions ON events (type, json_extract(payload, '$.machine'), seq)
   WHERE type GLOB '*.permissions';
+CREATE INDEX IF NOT EXISTS events_attention ON events (type, json_extract(payload, '$.machine'), seq)
+  WHERE type GLOB '*.attention';
 CREATE INDEX IF NOT EXISTS events_ended_spend ON events
   (seq, json_extract(payload, '$.thread'), json_extract(payload, '$.turn'), json_extract(payload, '$.costUsd'))
   WHERE type = 'turn.ended';
@@ -149,7 +158,7 @@ const checked = (
   return { encoded, json: JSON.stringify(encoded) }
 }
 
-const open = (path: string) => {
+const open = (path: string, elsewhere: boolean) => {
   const db = new Database(path, { create: true, strict: true })
   // First: another process's moment on the file (a WAL recovery, a checkpoint) is waited out, not
   // a "database is locked" that fails a deploy's prepare with the core stopped.
@@ -157,6 +166,9 @@ const open = (path: string) => {
   db.run("PRAGMA journal_mode = WAL")
   // WAL with NORMAL survives an app crash; a power cut can lose the last commits.
   db.run("PRAGMA synchronous = NORMAL")
+  if (elsewhere) {
+    db.run("PRAGMA wal_autocheckpoint = 0")
+  }
   db.run(SCHEMA)
   return db
 }
@@ -177,7 +189,7 @@ const timed = <A>(f: (db: Database) => A, db: Database) => {
 
 const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
   const db = yield* Effect.acquireRelease(
-    Effect.sync(() => open(config.path)),
+    Effect.sync(() => open(config.path, config.checkpoint !== undefined)),
     (d) =>
       Effect.sync(() => {
         d.close()
@@ -264,7 +276,8 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
   }
 
   // The one write: events (skipping ids already in the log), projections, receipt.
-  const write = db.transaction((events: readonly Prepared[], commandId: string | null) => {
+  const committed = () => config.checkpoint?.()
+  const writing = db.transaction((events: readonly Prepared[], commandId: string | null) => {
     const stored: StoredEvent[] = []
     for (const e of events) {
       const row = insertEvent.get(e.id, e.time, e.type, e.v, e.source, e.json)
@@ -283,6 +296,11 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     }
     return { stored, seq }
   })
+  const write = (events: readonly Prepared[], commandId: string | null) => {
+    const out = writing(events, commandId)
+    committed()
+    return out
+  }
 
   const live = yield* PubSub.unbounded<StoredEvent>()
   // Commit and publish under one permit, so subscribers see events in seq order. Load, decide
@@ -526,6 +544,7 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
             return db.transaction(f)(db)
           } finally {
             db.run("PRAGMA secure_delete = OFF")
+            committed()
           }
         }),
       ),
@@ -536,6 +555,7 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
           return p
             ? Effect.sync(() => {
                 rebuildNow(p)
+                committed()
               })
             : Effect.die(new Error(`No projection ${name}`))
         }),

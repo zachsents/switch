@@ -73,6 +73,22 @@ const installed = () =>
     ),
   )
 
+/**
+ * The program of the first browser here that runs headless, for a page's picture taken apart from
+ * the user's windows (preview.ts); null when there's none. Arc has no headless mode.
+ */
+export const headlessProgram = (): string | null => {
+  for (const b of CHROMIUM.filter((c) => c.bundle !== "company.thebrowser.Browser")) {
+    for (const dir of ["/Applications", path.join(homedir(), "Applications")]) {
+      const program = path.join(dir, `${b.name}.app`, "Contents", "MacOS", b.name)
+      if (existsSync(program)) {
+        return program
+      }
+    }
+  }
+  return null
+}
+
 /** The extension's files, the manifest stamped with a hash of them all as `version_name`. */
 const files = () => {
   const read = FILES.map((name) => readFileSync(path.join(SOURCE, name)))

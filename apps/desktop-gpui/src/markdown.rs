@@ -5,7 +5,7 @@
 //! as the house draws them — paragraphs apart, lists with their markers in ink3, headings a weight
 //! up, links in ink underlined in ink3, code in mono (a click copies it: inline, its words; in a
 //! block, the whole block), quotes on a rule, tables on the grid, pictures at a set height (a click
-//! is Quick Look), `details` that open and shut. A link to another space's exchange
+//! opens the words' pictures full screen at it, `viewer.rs`), `details` that open and shut. A link to another space's exchange
 //! (`switch://space/…`) is a chip that opens that space; a page here (`switchboard://…`) opens in
 //! this window; a link to a bare id becomes one to that record; any other link opens in the
 //! browser. Math and mermaid stay their text, as Streamdown 2 leaves them without its math and
@@ -684,7 +684,7 @@ thread_local! {
 /// What a link's click does: the app opens it or goes to the page it names.
 pub type OnLink = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
-/// What a picture's click and right-click do (Quick Look, the file's menu), by its address and name.
+/// What a picture's right-click does (the file's menu), by its address and name.
 pub type OnPicture = Rc<dyn Fn(&str, &str, bool, &mut Window, &mut App)>;
 
 /// Where a message's words are drawn: the column's selection, its entry's order, the links'.
@@ -701,6 +701,31 @@ pub struct Ctx {
     /// In a widget's cell (A2UI's Text, `widgets/basic/text.tsx`): each block inset from the cell's
     /// edges as a line's words are, a heading a line of its own, no space between blocks but theirs.
     pub cell: bool,
+    /// The words' pictures, in order, full screen from the one clicked (`render` fills them).
+    pub pictures: Rc<Vec<crate::viewer::Item>>,
+}
+
+/// Every picture in `list`, in order, however deep.
+fn pictures_in(list: &[Block], out: &mut Vec<crate::viewer::Item>) {
+    for b in list {
+        match b {
+            Block::Image { src, .. } => out.push(picture_item(src)),
+            Block::Heading(_, more) | Block::Task(_, _, more) | Block::Quote(more) | Block::Group(more) => pictures_in(more, out),
+            Block::Details { summary, body, .. } => {
+                pictures_in(&summary.1, out);
+                pictures_in(body, out);
+            }
+            Block::List { items, .. } => items.iter().for_each(|i| pictures_in(i, out)),
+            Block::Table { head, rows, .. } => head.iter().chain(rows.iter().flatten()).for_each(|c| pictures_in(&c.rich.1, out)),
+            Block::Spaced(inner) => pictures_in(std::slice::from_ref(inner.as_ref()), out),
+            Block::Para(_) | Block::Plain(_) | Block::Code(_) | Block::Rule => {}
+        }
+    }
+}
+
+/// A picture's address as the viewer shows it: the core's blob, or a link's.
+fn picture_item(src: &str) -> crate::viewer::Item {
+    crate::viewer::Item { route: src.to_string(), name: name_of(src), kind: "image/*".into(), blob: crate::files::image_blob(src) }
 }
 
 fn font(bold: bool, italic: bool, code: bool) -> Font {
@@ -821,7 +846,7 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
                             window.refresh();
                         })
                         .child(div().flex_none().text_color(l.ink3).child(marker))
-                        .child(div().flex_1().min_w_0().child(words(&summary.0, n, cx, l, false, color)).children(blocks(&summary.1, n, cx, l, color, window, app)));
+                        .child(div().flex_auto().min_w_0().child(words(&summary.0, n, cx, l, false, color)).children(blocks(&summary.1, n, cx, l, color, window, app)));
                     let body = shown.then(|| div().flex().flex_col().min_w_0().children(blocks(body, n, cx, l, color, window, app)));
                     div().flex().flex_col().min_w_0().child(head).children(body).into_any_element()
                 }
@@ -847,7 +872,7 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
                             .justify_center()
                             .when(*done, |d| d.bg(l.ink3).child(crate::chat_marks::drawn("copied", u(10.).to_pixels(window.rem_size()), l.bg))),
                     )
-                    .child(div().flex_1().min_w_0().child(words(w, n, cx, l, false, color)).children(blocks(more, n, cx, l, color, window, app)))
+                    .child(div().flex_auto().min_w_0().child(words(w, n, cx, l, false, color)).children(blocks(more, n, cx, l, color, window, app)))
                     .into_any_element(),
                 Block::List { start, items } => gap(div(), 8.)
                     .when(cx.cell, |d| d.py(u(4.)).pl(u(8.)).pr(u(8.)))
@@ -859,12 +884,14 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
                             None => "•".into(),
                         };
                         // `my-0.5` between items, collapsed to one; a long number widens its
-                        // marker rather than running out past the bubble.
+                        // marker rather than running out past the bubble. The words grow from their
+                        // own width (`flex-auto`): from none (`flex-1`), Taffy takes their width at
+                        // their narrowest while the bubble fits its words, a word a line.
                         div()
                             .flex()
                             .when(k > 0, |d| d.mt(u(2.)))
                             .child(div().flex_none().min_w(if start.is_some() { u(28.) } else { u(20.) }).flex().justify_end().pr(u(6.)).text_color(l.ink3).child(marker))
-                            .child(div().flex_1().min_w_0().flex().flex_col().children(blocks(item, n, cx, l, color, window, app)))
+                            .child(div().flex_auto().min_w_0().flex().flex_col().children(blocks(item, n, cx, l, color, window, app)))
                     }))
                     .into_any_element(),
                 Block::Code(c) => {
@@ -979,18 +1006,28 @@ fn inline_image(src: &str, alt: &str, cx: &Ctx, l: &Look, window: &mut Window, a
     match shown {
         Some(Err(())) => div().text_color(l.ink2).child(if alt.is_empty() { name } else { alt.to_string() }).into_any_element(),
         found => {
-            let (look, menu) = (cx.on_picture.clone(), cx.on_picture.clone());
-            let (s1, n1, s2, n2) = (src.to_string(), name.clone(), src.to_string(), name.clone());
+            let menu = cx.on_picture.clone();
+            let (s2, n2) = (src.to_string(), name.clone());
+            let all = cx.pictures.clone();
+            let me = picture_item(src);
             let id = SharedString::from(format!("{}.img.{src}", cx.id));
             let focus = crate::said::focus_for(id.clone(), window, app);
             crate::said::keyed(div().id(id), &focus, l.z(4.), l, window)
                 .max_w_full()
                 .rounded(u(4.))
                 .overflow_hidden()
-                .on_click(move |_, window, cx| look(&s1, &n1, false, window, cx))
+                .on_click(move |_, window, cx| {
+                    let at = all.iter().position(|i| *i == me);
+                    let (items, at) = match at {
+                        Some(at) => ((*all).clone(), at),
+                        None => (vec![me.clone()], 0),
+                    };
+                    crate::viewer::open(items, at, window, cx);
+                })
                 .on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| menu(&s2, &n2, true, window, cx))
                 .child(match found {
-                    Some(Ok(image)) => img(image).h(h).max_w_full().object_fit(gpui::ObjectFit::Contain).into_any_element(),
+                    // Its own corners: gpui clips the frame's children to its box, not its corners.
+                    Some(Ok(image)) => img(image).h(h).max_w_full().object_fit(gpui::ObjectFit::Contain).rounded(u(4.)).into_any_element(),
                     _ => div().h(h).into_any_element(),
                 })
                 .into_any_element()
@@ -1028,6 +1065,9 @@ fn name_of(src: &str) -> String {
 
 /// A message's Markdown, drawn.
 pub fn render(doc: &Doc, cx: &Ctx, l: &Look, window: &mut Window, app: &mut App) -> gpui::Div {
+    let mut pictures = vec![];
+    pictures_in(&doc.blocks, &mut pictures);
+    let cx = &Ctx { pictures: Rc::new(pictures), ..cx.clone() };
     // A bubble's words come after what it replies to.
     let mut n = crate::select::WORDS;
     let color = cx.ink.unwrap_or(l.ink);

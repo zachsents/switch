@@ -152,3 +152,53 @@ pub fn left_dragging() -> bool {
     let Some(mtm) = MainThreadMarker::new() else { return false };
     NSApplication::sharedApplication(mtm).currentEvent().is_some_and(|e| e.r#type() == objc2_app_kit::NSEventType::LeftMouseDragged)
 }
+
+/// The display the pointer is on, as Quartz numbers it.
+pub fn pointer_display() -> Option<u32> {
+    type Ref = *mut std::ffi::c_void;
+    unsafe extern "C" {
+        fn CGEventCreate(source: Ref) -> Ref;
+        fn CGEventGetLocation(e: Ref) -> objc2_core_foundation::CGPoint;
+        fn CGGetDisplaysWithPoint(at: objc2_core_foundation::CGPoint, max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        fn CFRelease(r: Ref);
+    }
+    // SAFETY: an event made from nothing carries where the pointer is; it's released once read, and
+    // the display's room is the one asked for.
+    unsafe {
+        let e = CGEventCreate(std::ptr::null_mut());
+        if e.is_null() {
+            return None;
+        }
+        let at = CGEventGetLocation(e);
+        CFRelease(e);
+        let (mut display, mut count) = (0u32, 0u32);
+        (CGGetDisplaysWithPoint(at, 1, &mut display, &mut count) == 0 && count == 1).then_some(display)
+    }
+}
+
+/// The app in front, unless it's this one: what a panel that never takes the front hands the
+/// keyboard back to, if the app took it meanwhile.
+pub struct Front(Retained<NSRunningApplication>);
+
+impl Front {
+    pub fn now() -> Option<Self> {
+        let app = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        (app.processIdentifier() != NSRunningApplication::currentApplication().processIdentifier()).then_some(Self(app))
+    }
+
+    pub fn restore(&self) {
+        if NSRunningApplication::currentApplication().isActive() {
+            self.0.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::empty());
+        }
+    }
+}
+
+/// Takes the window's buttons away, for a window with no title bar for them.
+pub fn hide_buttons(window: &Window) {
+    let Some(w) = ns_window(window) else { return };
+    for b in [objc2_app_kit::NSWindowButton::CloseButton, objc2_app_kit::NSWindowButton::MiniaturizeButton, objc2_app_kit::NSWindowButton::ZoomButton] {
+        if let Some(b) = w.standardWindowButton(b) {
+            b.setHidden(true);
+        }
+    }
+}

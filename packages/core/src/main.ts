@@ -3,7 +3,8 @@
 // `switch prepare` readies the brain for this build. `switch sb` is what old appendages call `sb`.
 // `switch event <name> [json]` is a script's event (scripts.ts). `switch light <model> <copy>` makes a
 // model's light copy for the core (light-mesh.ts), off its thread. `switch measure <brain>` prints
-// reflection's measures (measure.ts), off it too.
+// reflection's measures (measure.ts), off it too. `switch checkpoint <brain>` checkpoints the
+// brain's WAL as the core commits (checkpointer.ts), off its thread as well.
 // `switch guard` is the hook that keeps a turn's shell off heavy work on the user's own laptop: it
 // runs before each shell command, so it loads only what it needs. `switch pairings`, `approve`,
 // `deny`, `revoke` and `rotate` manage credentials.
@@ -35,6 +36,14 @@ if (command === "sb") {
 } else if (command === "light") {
   const { light } = await import("./light-mesh.ts")
   await light(process.argv.slice(3))
+} else if (command === "checkpoint") {
+  const { checkpointing } = await import("@switch/brain")
+  const brain = process.argv.at(3)
+  if (brain === undefined) {
+    process.stderr.write("switch checkpoint <brain>\n")
+    process.exit(2)
+  }
+  await checkpointing(brain, Bun.stdin.stream())
 } else if (command === "measure") {
   const { measure } = await import("./measure.ts")
   measure(process.argv.slice(3))

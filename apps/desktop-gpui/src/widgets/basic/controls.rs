@@ -674,7 +674,7 @@ pub fn date_time(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
                 .on_open_change({
                     let opened = opened.clone();
                     let held_picker = held_picker.clone();
-                    move |open, details, window, cx| {
+                    move |open, details, _, cx| {
                         // The press that opened it settles focus in the date's words a moment
                         // after: that isn't leaving it. Anything else closes it.
                         let (was, at) = opened.get();
@@ -683,12 +683,9 @@ pub fn date_time(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
                             return;
                         }
                         opened.set((*open, None));
-                        let (open, held) = (*open, held_picker.clone());
-                        window.defer(cx, move |_, cx| {
-                            if let Some(p) = held.borrow().as_ref().and_then(|w| w.upgrade()) {
-                                p.update(cx, |p, cx| p.set_controlled_open(Some(open), cx));
-                            }
-                        });
+                        if let Some(p) = held_picker.borrow().as_ref().and_then(|w| w.upgrade()) {
+                            p.update(cx, |p, cx| p.set_controlled_open(Some(*open), cx));
+                        }
                     }
                 })
                 .field_style(field.clone())

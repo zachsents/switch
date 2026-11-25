@@ -13,7 +13,7 @@ What the store's developer dashboard asks for, ready to paste. The upload is
 - **Summary** (from the manifest): Lets Switch, the agent on your Mac, see the page you're on and work for you in background tabs.
 - **Category**: Productivity, Tools
 - **Language**: English
-- **Homepage**: https://switch.sents.dev
+- **Homepage**: https://switch.ax
 - **Support**: https://github.com/zachsents/switch/issues
 
 **Description**
@@ -31,7 +31,7 @@ The Switch app on your Mac. The extension connects only to it, through Chrome's 
 
 Privacy
 The extension sends nothing to us or anyone else and makes no network requests of its own. What it reads goes to the Switch app on your Mac. Logins and cards you've saved in Switch are filled into pages without being shown to the agent.
-Privacy policy: https://switch.sents.dev/privacy
+Privacy policy: https://switch.ax/privacy
 
 Switch is open source: https://github.com/zachsents/switch
 ```
@@ -72,7 +72,7 @@ The extension loads no code from anywhere and runs none in its own context. At t
 
 Certify all three: not sold or transferred to third parties outside the approved use cases; not used for purposes unrelated to the single purpose; not used to decide creditworthiness or for lending.
 
-**Privacy policy**: https://switch.sents.dev/privacy
+**Privacy policy**: https://switch.ax/privacy
 
 ## Distribution
 

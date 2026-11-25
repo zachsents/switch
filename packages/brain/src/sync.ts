@@ -77,6 +77,10 @@ export type ClientMessage = typeof clientMessage.Type
 
 const decodeClientMessage = Schema.decodeUnknownOption(Schema.fromJsonString(clientMessage))
 
+/** Whether a watched type names `type`: itself, or `*.<name>` any extension's `<extension>.<name>`. */
+const watches = (watched: readonly string[], type: string) =>
+  watched.some((w) => w === type || (w.startsWith("*.") && type.endsWith(w.slice(1))))
+
 const encode = (message: SyncMessage) => JSON.stringify(message)
 const text = new TextDecoder()
 
@@ -103,7 +107,7 @@ export const syncLayer = (view: View) =>
           const writer = yield* socket.writer
           const reader = yield* socket.reader
           const send = (m: SyncMessage) => writer.write(encode(m))
-          let watched = new Set<string>()
+          let watched: readonly string[] = []
 
           const answer = (frame: string | Uint8Array) => {
             const message = Option.getOrUndefined(
@@ -113,7 +117,7 @@ export const syncLayer = (view: View) =>
               return Effect.void
             }
             if (message.type === "watch") {
-              watched = new Set(message.types)
+              watched = message.types
               return Effect.void
             }
             if (message.type === "page") {
@@ -167,7 +171,9 @@ export const syncLayer = (view: View) =>
           }
           const out = brain.changes(after).pipe(
             Stream.filterEffect((e) =>
-              watched.has(e.type) ? Effect.succeed(true) : brain.read((db) => view.live(db, e)),
+              watches(watched, e.type)
+                ? Effect.succeed(true)
+                : brain.read((db) => view.live(db, e)),
             ),
             Stream.groupedWithin(512, "50 millis"),
             Stream.runForEach((events) => send({ type: "events", events })),

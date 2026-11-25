@@ -230,7 +230,8 @@ export interface Widget {
   readonly surfaces: readonly Surface[]
   /** Its content: a `ui://` resource of A2UI messages. */
   readonly resource: string
-  /** The read-only tool whose structured result is its data model, and the events that refresh it. */
+  /** The read-only tool whose structured result is its data model, and the events that refresh it
+   * (a type, or `*.<name>`: any extension's `<extension>.<name>`). */
   readonly tool?: string
   readonly refresh?: readonly string[]
   /** How it sits in a space's grid; none is `auto`. */
@@ -245,7 +246,8 @@ export const widget: Schema.Codec<Widget> = Schema.Struct({
   surfaces: Schema.Array(surface),
   /** Its content: a `ui://` resource of A2UI messages. */
   resource: Schema.String,
-  /** The read-only tool whose structured result is its data model, and the events that refresh it. */
+  /** The read-only tool whose structured result is its data model, and the events that refresh it
+   * (a type, or `*.<name>`: any extension's `<extension>.<name>`). */
   tool: Schema.optionalKey(Schema.String),
   refresh: Schema.optionalKey(Schema.Array(Schema.String)),
   /** How it sits in a space's grid; none is `auto`. */

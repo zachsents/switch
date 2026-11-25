@@ -1,7 +1,8 @@
 //! ⌘K (the desktop's `ui/palette.tsx` and `palette-choices.tsx`), as old Switchboard's search did:
 //! spaces (archived ones too, once looked for), what was said or kept that holds the words (the
-//! brain's find), and a new space by that name. ↑ ↓ move, Enter chooses, Esc closes. A new space is
-//! shown at once; if the brain says no, the palette stays open with its reason.
+//! brain's find), and a new space by that name. ↑ ↓ move, Enter chooses, Tab on a space opens the
+//! composer aimed at it, Esc closes. A new space is shown at once; if the brain says no, the
+//! palette stays open with its reason.
 
 use std::time::Duration;
 
@@ -302,7 +303,14 @@ impl Palette {
     fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let flat: Vec<Choice> = self.choices(cx).into_iter().flat_map(|(_, c)| c).collect();
         match e.keystroke.key.as_str() {
-            "tab" => cx.stop_propagation(),
+            // Tab on a space: the composer, aimed there, over wherever the window is.
+            "tab" => {
+                cx.stop_propagation();
+                if let Some(Choice { go: Go::Space(id, None), .. }) = flat.get(self.highlight.min(flat.len().saturating_sub(1))).filter(|c| c.key.starts_with("s:")).cloned() {
+                    self.close(window, cx);
+                    cx.defer(move |cx| crate::composer::toggle(Some(id), cx));
+                }
+            }
             "down" if !flat.is_empty() => {
                 self.reveal = true;
                 self.highlight = (self.highlight + 1) % flat.len();

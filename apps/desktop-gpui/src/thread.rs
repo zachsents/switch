@@ -116,6 +116,9 @@ pub struct ThreadView {
     /// The column is 48 rem or more, as last laid out: read before the list lays out its rows,
     /// which can't ask the list then.
     wide: bool,
+    /// The words' width in the column, as the chat's, laid out then too: 720 less its padding once
+    /// it's wide, all of it less its padding below that.
+    column: gpui::Pixels,
     docs: HashMap<u64, Rc<Doc>>,
     sh: Shared,
     steer: Entity<ChatBox>,
@@ -181,6 +184,7 @@ impl ThreadView {
             opened: HashSet::new(),
             asked: None,
             wide: true,
+            column: px(0.),
             docs: HashMap::new(),
             // Its Said is given no title (thread.tsx): a reading window opened from it has none.
             sh: Shared::new(String::new(), String::new(), None),
@@ -357,7 +361,7 @@ impl ThreadView {
                                 key: &format!("t{seq}"),
                                 order: *seq,
                                 doc,
-                                width: None,
+                                width: Some(self.column),
                             },
                             &self.sh,
                             &l,
@@ -463,7 +467,7 @@ impl ThreadView {
         if !shown.is_empty() {
             let doc = Rc::new(Doc::of(&shown));
             out = out.child(said::said(
-                Said { who: Who::Agent, ink, text: &shown, detail: None, dim: false, streaming: true, time: None, seq: None, tail: true, reactions: None, reply_to: &[], here: None, parts: &[], model: None, key: "streaming", order: u64::MAX - 3, doc: Some(doc), width: None },
+                Said { who: Who::Agent, ink, text: &shown, detail: None, dim: false, streaming: true, time: None, seq: None, tail: true, reactions: None, reply_to: &[], here: None, parts: &[], model: None, key: "streaming", order: u64::MAX - 3, doc: Some(doc), width: Some(self.column) },
                 &self.sh,
                 &l,
                 window,
@@ -634,7 +638,9 @@ impl ThreadView {
         let l = Look::get(cx);
         let running = model(cx).read(cx).brain.threads.get(&self.thread).is_some_and(|t| t.status == Status::Running);
         self.live = running || self.pacer.as_ref().is_some_and(Pacer::coming);
-        self.wide = self.list.viewport_bounds().size.width >= l.z(768.);
+        let w = self.list.viewport_bounds().size.width;
+        self.wide = w >= l.z(768.);
+        self.column = ((if self.wide { l.z(720.) } else { w }) - l.z(24.)).max(px(0.));
         let list = list(self.list.clone(), cx.processor(|this: &mut ThreadView, ix, window, cx| this.render_block(ix, window, cx))).size_full();
         div()
             .key_context("Thread")

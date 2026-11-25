@@ -7,7 +7,17 @@
 import { hostname } from "node:os"
 
 import { Effect, Queue, Schema } from "effect"
-import { AppEvents, answer, defineApp, defineEvent, mcpApp, Models, tool } from "switch-ext-kit"
+import {
+  AppEvents,
+  answer,
+  BASIC_CATALOG,
+  defineApp,
+  defineEvent,
+  mcpApp,
+  Models,
+  surface,
+  tool,
+} from "switch-ext-kit"
 import type { WidgetDef, ModelsService, AsksService } from "switch-ext-kit"
 
 import { challengeTools } from "./challenge.ts"
@@ -23,6 +33,7 @@ import { askedField, consented, guard, marked } from "./personal.ts"
 import type { Decide, Done } from "./common.ts"
 import * as portal from "./portal.ts"
 import { run } from "./run.ts"
+import * as previews from "./preview.ts"
 import type { Tab } from "./tab.ts"
 
 const APP = "browser"
@@ -59,6 +70,18 @@ export const Heartbeat = defineEvent(
       open: Schema.Boolean,
       tabs: Schema.optionalKey(Schema.Finite),
     }),
+  }),
+)
+
+/** A web page's new picture, for its preview widget. */
+export const PreviewEvent = defineEvent(
+  "browser.preview",
+  1,
+  Schema.Struct({
+    url: Schema.String,
+    title: Schema.String,
+    image: Schema.String,
+    takenAt: Schema.Finite,
   }),
 )
 
@@ -108,6 +131,19 @@ export const watch = Effect.gen(function* watching() {
         yield* Effect.ignore(events.emit(Heartbeat.make(beat)))
       }
     }
+  }
+})
+
+/** Emits each web page's new picture as it's taken (preview.ts). */
+export const pictures = Effect.gen(function* picturing() {
+  const events = yield* AppEvents
+  const shots = yield* Queue.unbounded<previews.Shot>()
+  previews.onShot((shot) => {
+    Queue.offerUnsafe(shots, shot)
+  })
+  for (;;) {
+    const shot = yield* Queue.take(shots)
+    yield* Effect.ignore(events.emit(PreviewEvent.make({ ...shot, url: redactUrl(shot.url) })))
   }
 })
 
@@ -394,6 +430,25 @@ const portalTool = tool(
     }),
 )
 
+const previewTool = tool(
+  "preview",
+  {
+    description:
+      "A web page's picture, taken in a headless browser apart from the user's windows and kept as a blob: { image, url, title, takenAt }. `url` the page; `every` how often it's taken again while asked for (5m, 30m, 60m; 30m by default); `width` the viewport's (320 to 1920, 1280 by default), 16:10. One older than `every` comes back as it is while a new one is taken. The preview widget shows it, opening the page on a click: place it with this input.",
+    readOnly: true,
+    input: Schema.Struct({
+      url: Schema.String,
+      every: optionalString,
+      width: optionalNumber,
+    }),
+  },
+  (input) =>
+    task(async () => {
+      const shot = await previews.preview(input)
+      return answer({ ...shot }, [{ type: "text", text: JSON.stringify(shot) }])
+    }),
+)
+
 // Built when the extension starts: Bun runs no macros from an installed package.
 const html = tabHtml(APP)
 
@@ -418,12 +473,67 @@ const tabWidget: WidgetDef = {
     }),
 }
 
+// A web page's picture, edge to edge; a click opens the page.
+const previewWidget: WidgetDef = {
+  name: "preview",
+  title: "Web page",
+  surfaces: ["space", "chat"],
+  resource: `ui://${APP}/preview`,
+  tool: "preview",
+  refresh: [PreviewEvent.type],
+  size: {
+    aspect: "wide",
+    ratio: previews.RATIO,
+    min: { cols: 2, rows: 2 },
+    preferred: { cols: 4, rows: 3 },
+    grows: true,
+  },
+  settings: [
+    {
+      key: "every",
+      label: "Refresh",
+      options: [
+        { value: "5m", label: "5 min" },
+        { value: "30m", label: "30 min" },
+        { value: "60m", label: "Hourly" },
+      ],
+      initial: previews.DEFAULT_EVERY,
+    },
+  ],
+  a2ui: () =>
+    surface("preview", BASIC_CATALOG, [
+      {
+        id: "root",
+        component: "Button",
+        variant: "borderless",
+        child: "picture",
+        action: { functionCall: { "@call": "openUrl", args: { url: { "@path": "/url" } } } },
+      },
+      {
+        id: "picture",
+        component: "Image",
+        url: { "@path": "/image" },
+        description: { "@path": "/title" },
+        fit: "cover",
+      },
+    ]),
+}
+
 export const browserApp = defineApp<ModelsService | AsksService>({
   name: APP,
   version: "3",
   instructions:
     'The user\'s own browser on this Mac, signed in as they are there, in background tabs. run does routine web tasks with a decision model; act is exact control: its sign_in signs in from a login in the user\'s vault or the browser\'s saved passwords, and fill_secret puts a vault secret in a field. When the step left is the user\'s own in a tab (a CAPTCHA or other human check, which you never solve; a sign-in only they can finish; a passkey), fill everything else, hold the tab (act\'s hold), and put up an action item with a live view: portal {"app": "browser", "session": "<session>"}. Its card shows this Mac\'s screen live in both apps, their iPhone included, wherever they are; opening it brings that tab to the front, and they click, drag, scroll and type in it. A notification about it opens it. Add a resolve_when that finds the page past the check when you can. Nothing in it is kept. Release sessions when done.',
-  tools: [runTool, actTool, secretTool, viewTool, inputTool, portalTool, ...challengeTools],
-  events: [PageEvent, Heartbeat],
-  widgets: [tabWidget],
+  tools: [
+    runTool,
+    actTool,
+    secretTool,
+    viewTool,
+    inputTool,
+    portalTool,
+    previewTool,
+    ...challengeTools,
+  ],
+  events: [PageEvent, Heartbeat, PreviewEvent],
+  widgets: [tabWidget, previewWidget],
 })

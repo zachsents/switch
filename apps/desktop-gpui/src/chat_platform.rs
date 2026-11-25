@@ -1,5 +1,5 @@
 //! What the chat asks of this Mac, in one place: a file's Open, Quick Look, Show in Finder,
-//! Download and right-click menu (`use-menu.ts`'s `fileAction`, `picturesAction`), and a long reply
+//! Download and right-click menu (`use-menu.ts`'s `fileAction`), and a long reply
 //! in a reading window of its own (`rpc.send.read`). The platform does the work (platform/files.rs,
 //! platform/windows.rs).
 
@@ -11,11 +11,6 @@ pub use crate::platform::files::Do;
 /// Answers whether it was done.
 pub fn file(url: &str, name: &str, what: Do, window: &mut Window, cx: &mut App) -> gpui::Task<bool> {
     crate::platform::files::file(crate::platform::files::FileAsk { url: url.to_string(), name: name.to_string(), r#do: what }, window, cx)
-}
-
-/// A gallery's pictures in Quick Look, at the one clicked.
-pub fn pictures(pictures: Vec<(String, String)>, at: usize, cx: &mut App) {
-    crate::platform::files::pictures(pictures, at, cx);
 }
 
 /// A long reply's words, whole, in a window of its own under the space's name.

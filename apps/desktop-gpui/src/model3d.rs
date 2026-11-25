@@ -1,6 +1,7 @@
 //! A 3D file in a chat, to turn (the desktop's `ui/model.tsx`): STL, 3MF, GLB, glTF or OBJ, drawn
 //! with wgpu off screen and handed to gpui as pictures. Dragging turns it, a pinch zooms, and
-//! scrolling scrolls the chat past it. It's fetched as the core's light copy, so a 100 MB scan
+//! scrolling scrolls the chat past it; a click opens it full screen (`viewer.rs`), where the wheel
+//! zooms it too. It's fetched as the core's light copy, so a 100 MB scan
 //! arrives as a few MB. One model at a time is live, the one the pointer is over; the rest are
 //! pictures of it (a 3MF's own thumbnail when it has one). All of them are drawn with the app's one
 //! GPU device. Printing files are Z-up.
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 use gpui::{
-    AnyElement, App, AppContext, AsyncApp, Bounds, Context, Corners, DispatchPhase, ElementId, Entity, Global, Image,
+    AnyElement, App, AppContext, AsyncApp, Bounds, ClickEvent, Context, Corners, DispatchPhase, ElementId, Entity, Global, Image,
     ImageFormat, ImageSource, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, ParentElement, PinchEvent, Pixels, Point, Render, RenderImage, ScrollEvent,
     StatefulInteractiveElement, Styled, StyledImage, WeakEntity, Window, canvas, div, img, prelude::*, px, svg,
@@ -1054,6 +1055,7 @@ impl Live {
 
 pub struct ModelView {
     route: String,
+    name: String,
     load: Load,
     seen: Instant,
     live: Option<Live>,
@@ -1061,6 +1063,32 @@ pub struct ModelView {
     view: Option<Vec3>,
     /// The measuring run: live as soon as it's in, turning on its own.
     auto: bool,
+    /// Full screen: live as soon as it's in, square-cornered, the wheel zooming it.
+    full: bool,
+}
+
+/// A 3D file full screen: a view of its own, live as soon as it's in, from where the chat's was
+/// left; the chat's model as it's loaded, when it is.
+pub fn full_view(route: &str, name: &str, cx: &mut App) -> Entity<ModelView> {
+    let chat = Models::view(route, name, cx);
+    let (loaded, view) = {
+        let c = chat.read(cx);
+        let loaded = match &c.load {
+            Load::Ready(l) => Some(l.clone()),
+            _ => None,
+        };
+        (loaded, c.live.as_ref().map(|l| l.eye).or(c.view))
+    };
+    let full = cx.new(|cx| {
+        let mut v = match loaded {
+            Some(l) => ModelView { route: route.to_string(), name: name.to_string(), load: Load::Ready(l), seen: Instant::now(), live: None, view, auto: false, full: true },
+            None => ModelView::new(route, name, Source::Core(route.to_string()), cx),
+        };
+        v.full = true;
+        v
+    });
+    full.update(cx, |v, cx| v.wake(None, cx));
+    full
 }
 
 impl ModelView {
@@ -1072,18 +1100,19 @@ impl ModelView {
         })
         .detach();
         let name = name.to_string();
+        let loading = name.clone();
         cx.spawn(async move |this, cx| {
-            let mut got = load(&source, &name, cx).await;
+            let mut got = load(&source, &loading, cx).await;
             if got.is_err() {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                got = load(&source, &name, cx).await;
+                got = load(&source, &loading, cx).await;
             }
             this.update(cx, |v, cx| {
                 v.load = match got {
                     Ok(l) => Load::Ready(Arc::new(l)),
                     Err(m) => Load::Failed(m),
                 };
-                if v.auto {
+                if v.auto || v.full {
                     v.wake(None, cx);
                 }
                 cx.notify();
@@ -1091,7 +1120,7 @@ impl ModelView {
             .ok();
         })
         .detach();
-        ModelView { route: route.to_string(), load: Load::Loading, seen: Instant::now(), live: None, view: None, auto: false }
+        ModelView { route: route.to_string(), name: name.to_string(), load: Load::Loading, seen: Instant::now(), live: None, view: None, auto: false, full: false }
     }
 
     /// Makes this the live model; the last one rests.
@@ -1155,7 +1184,7 @@ impl ModelView {
 
     /// Draws the live model into `bounds` at the screen's pixel ratio, and again each frame while
     /// it's still turning.
-    fn paint_live(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn paint_live(&mut self, bounds: Bounds<Pixels>, corners: Corners<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let (Load::Ready(loaded), Some(live), Some(gpu)) = (&self.load, &mut self.live, gpu()) else { return };
         if live.drag.is_some() {
             let me = cx.entity().downgrade();
@@ -1193,7 +1222,7 @@ impl ModelView {
             let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
             let frame = gpu.draw(&live.model, live.eye, aspect, loaded.radius, size, &mut live.targets);
             let drawn = started.elapsed().as_secs_f64() * 1000.;
-            let _ = window.paint_image(bounds, bounds, Corners::default(), frame.clone(), 0, false);
+            let _ = window.paint_image(bounds, bounds, corners, frame.clone(), 0, false);
             if let Some(last) = live.frame.replace(frame) {
                 let _ = window.drop_image(last);
             }
@@ -1208,7 +1237,7 @@ impl ModelView {
                 }
             }
         } else if let Some(frame) = &live.frame {
-            let _ = window.paint_image(bounds, bounds, Corners::default(), frame.clone(), 0, false);
+            let _ = window.paint_image(bounds, bounds, corners, frame.clone(), 0, false);
         }
         if moving || self.auto {
             window.request_animation_frame();
@@ -1217,10 +1246,27 @@ impl ModelView {
 }
 
 impl Render for ModelView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.seen = Instant::now();
         let l = Look::get(cx);
-        let base = div().id(ElementId::Name(format!("model:{}", self.route).into())).size_full();
+        // In a chat it's the top of a rounded frame with a hairline round it: gpui clips a frame's
+        // children to its box, not its corners, so the picture takes the frame's top corners itself.
+        let r = if self.full { px(0.) } else { u(18.).to_pixels(window.rem_size()) - px(1.) };
+        let corners = Corners { top_left: r, top_right: r, ..Default::default() };
+        let (route, name, full) = (self.route.clone(), self.name.clone(), self.full);
+        // A click that didn't turn it opens it full screen.
+        let open = move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+            let (Some(at), false) = (e.mouse_position(), full) else { return };
+            let from = match e {
+                ClickEvent::Mouse(m) => m.down.position,
+                _ => at,
+            };
+            if f32::from(at.x - from.x).hypot(f32::from(at.y - from.y)) < 4. {
+                let item = crate::viewer::Item { route: route.clone(), name: name.clone(), kind: String::new(), blob: None };
+                crate::viewer::open(vec![item], 0, window, cx);
+            }
+        };
+        let base = div().id(ElementId::Name(format!("model:{}", self.route).into())).size_full().on_click(open);
         match &self.load {
             Load::Failed(message) => base
                 .flex()
@@ -1250,7 +1296,7 @@ impl Render for ModelView {
                         }
                     }))
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| this.wake(Some(window), cx)))
-                    .child(img(source).size_full().object_fit(ObjectFit::Contain))
+                    .child(img(source).size_full().object_fit(ObjectFit::Contain).rounded_t(r))
                     .into_any_element()
             }
             Load::Ready(_) => {
@@ -1267,19 +1313,20 @@ impl Render for ModelView {
                             }
                         }),
                     )
-                    // A scroll scrolls the chat: only a pinch zooms, or a wheel with Control held.
+                    // A scroll scrolls the chat: only a pinch zooms, or a wheel with Control held;
+                    // full screen, the wheel too.
                     .on_pinch(cx.listener(|this, e: &PinchEvent, _, cx| {
                         this.zoom(1. / (1. + e.delta).max(1e-3), cx);
                         cx.stop_propagation();
                     }))
                     .on_scroll(cx.listener(|this, e: &ScrollEvent, window, cx| {
-                        if e.modifiers.control {
+                        if e.modifiers.control || this.full {
                             let dy = f32::from(e.delta.pixel_delta(window.line_height()).y);
                             this.zoom((-dy * 0.01).exp(), cx);
                             cx.stop_propagation();
                         }
                     }))
-                    .child(canvas(|_, _, _| {}, move |bounds, (), window, cx| me.update(cx, |v, cx| v.paint_live(bounds, window, cx))).size_full())
+                    .child(canvas(|_, _, _| {}, move |bounds, (), window, cx| me.update(cx, |v, cx| v.paint_live(bounds, corners, window, cx))).size_full())
                     .into_any_element()
             }
         }

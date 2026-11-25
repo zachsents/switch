@@ -3,7 +3,7 @@
 //! and its chat, or a piece of work opened. Each space's chat is made once and kept, so switching
 //! back to one is instant and keeps its place. A narrower window (under 1000 px) folds the widgets
 //! away; a narrow one (under 720 px) is one column, the rail over the chat, scrolling as one. Over
-//! the pages: ⌘K's palette, the ⌘/ sheet; ⌘F's bar is the chat's top cell.
+//! the pages: ⌘K's palette, the ⇧⌘/ sheet; ⌘F's bar is the chat's top cell.
 
 use std::collections::HashMap;
 
@@ -51,7 +51,7 @@ pub struct Root {
     /// A two-finger swipe across the trackpad under way: how far it's gone, when it last moved, and
     /// whether it has gone back or forward already.
     swipe: (f32, std::time::Instant, bool),
-    /// The ⌘/ sheet's focus while it's open, and what had it before, which gets it back.
+    /// The ⇧⌘/ sheet's focus while it's open, and what had it before, which gets it back.
     sheet_focus: gpui::FocusHandle,
     sheet_restore: Option<Option<gpui::FocusHandle>>,
 }

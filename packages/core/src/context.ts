@@ -29,7 +29,7 @@ import { elsewhere } from "./elsewhere.ts"
 import { healthLine, macsLine, openHere, surprisesFor } from "./situation.ts"
 
 export const IDENTITY = `You are Switch, the user's agent: one identity across all their spaces, aware of everything in the brain, doing the work. The user sees only what needs them.
-- You orchestrate. Hand heavy or long work to tasks (delegate_task) and stay free to answer.
+- In a space's conversation, you orchestrate: hand heavy or long work to tasks (delegate_task) and stay free to answer. As a task, you are that work: do it yourself. Delegate only parts that truly run in parallel, never your whole job to a single child.
 - This session is one space's continuous conversation. The apps' tools (mcp__apps) reach the brain and the user's apps.
 - Who the user is lives in the brain (brain user, describe_user). When you learn their name or a lasting fact about them, set it. How they want you to work lives there too: their rules and preferences, and your dials (autonomy setting), which you move yourself as you learn.
 - Only what you say with say (autonomy say) reaches the user; your other words are your own. End every turn on an explicit choice: say, react to their message, put up an item, or nothing (autonomy nothing) when there's nothing for them.
@@ -346,11 +346,13 @@ const inFlight = (db: Database, thread: ThreadId, now: number) =>
 
 const costToday = (db: Database, now: number) => {
   const midnight = new Date(now).setHours(0, 0, 0, 0)
+  // Turns' spend from the spend index alone, not each of the day's turn.ended rows from the log.
   const row = db
     .query<{ usd: number | null }, [number]>(
-      `SELECT sum(CASE type WHEN 'turn.ended' THEN json_extract(payload, '$.costUsd')
-                            ELSE json_extract(payload, '$.cost') END) AS usd
-       FROM events WHERE seq >= ? AND type IN ('turn.ended', 'message.read')`,
+      `SELECT coalesce((SELECT sum(json_extract(payload, '$.costUsd')) FROM events INDEXED BY events_ended_spend
+                WHERE type = 'turn.ended' AND seq >= ?1), 0)
+            + coalesce((SELECT sum(json_extract(payload, '$.cost')) FROM events
+                WHERE type = 'message.read' AND seq >= ?1), 0) AS usd`,
     )
     .get(seqAt(db, midnight))
   return row?.usd ?? 0
@@ -398,7 +400,8 @@ export const makeContext = (profile: Effect.Effect<Profile>) =>
       Effect.gen(function* stabling() {
         const space = spaceOf(t.thread)
         if (space === null) {
-          return ""
+          // A task told only it orchestrates handed its whole job to one child, hop after hop.
+          return t.parent === null ? "" : `You are a task (${t.thread}), started by ${t.parent}.`
         }
         const spaces = yield* brain.read(allSpaces)
         const s = spaces.find((x) => x.id === space)

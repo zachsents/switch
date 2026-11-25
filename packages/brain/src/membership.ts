@@ -281,6 +281,66 @@ const homeOf = (
     return c.pick(d.answers.home?.choice)
   })
 
+// A message the user sends with no space: the space it's plainly for, else Home. A wrong space costs
+// more than Home, so it takes both a sure pick and words that point at that space alone. Measured on
+// a week of the user's own messages (Nov 18 to 24), each routed as if sent with no space from the
+// brain as it was before it: of 525 typed in a space, 26% went there, 74% to Home and 1 elsewhere;
+// of 91 typed in Home, 90 stayed. Each space's latest chat lines told it more than its latest events.
+const ROUTE_QUESTION =
+  "Which space is the user's message for? Pick the single most specific space it is plainly about. " +
+  "Pick home when it is general, could be for more than one space, or its words alone don't say which."
+const NAMED_QUESTION =
+  "Do the message's own words name or plainly point to something only one of the spaces has " +
+  "(a person, company, product, order, part, place or file), rather than fitting several?"
+const SURE = 0.8
+const NAMED = 0.7
+const CHAT = 8
+
+/** What routing a message reads: the spaces, their latest lines, and the message. */
+export const routing = (
+  line: (event: StoredEvent) => Line | null,
+  db: Database,
+  text: string,
+  time: number,
+) => {
+  const c = context(line, db)
+  const latest = db.query<{ source: string; text: string }, [string, number]>(
+    "SELECT source, text FROM messages WHERE space = ? AND widget IS NULL ORDER BY seq DESC LIMIT ?",
+  )
+  const chats = c.choices.flatMap((s) => {
+    const rows = latest.all(s.value, CHAT).toReversed()
+    const said = rows.map(
+      (r) =>
+        `${r.source === "agent" ? "Switch" : "User"}: ${clip(r.text.replaceAll(/\s+/gu, " "), 160)}`,
+    )
+    return rows.length > 0 ? [`- ${s.value}: ${said.join(" | ")}`] : []
+  })
+  const head = chats.length > 0 ? [`Latest in each space's chat:\n${chats.join("\n")}`] : []
+  return {
+    input: {
+      stable: STABLE,
+      item: [...head, `Message from the user (${when(time)}): ${text}`].join("\n\n"),
+    },
+    questions: {
+      space: { instructions: ROUTE_QUESTION, choices: c.choices },
+      named: { instructions: NAMED_QUESTION, choices: [], predicate: true },
+    } satisfies Record<string, Question>,
+    pick: c.pick,
+  }
+}
+
+/** The space a message the user sent with no space goes to: the model's pick when it's sure, else Home. */
+export const route = (line: (event: StoredEvent) => Line | null, text: string) =>
+  Effect.gen(function* routingIt() {
+    const brain = yield* Brain
+    const models = yield* Models
+    const r = yield* brain.read((db) => routing(line, db, text, Date.now()))
+    const d = yield* models.decide(r.input, r.questions)
+    const space = r.pick(d.answers.space?.choice)
+    const sure = (d.answers.space?.probabilities[space] ?? 0) >= SURE
+    return sure && (d.answers.named?.probabilities.yes ?? 0) >= NAMED ? space : HOME
+  })
+
 /**
  * The tag that puts an event in `home`, shown also in `mentions`: a chat line, a triage note and a
  * task it opens go along. `key` makes its id.

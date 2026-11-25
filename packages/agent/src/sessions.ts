@@ -46,6 +46,7 @@ import {
   TurnModel,
   TurnStarted,
   stillGoing,
+  taskEnd,
   waitingEvent,
   waitingFor,
   waitingRows,
@@ -717,15 +718,20 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
             costUsd: end.costUsd,
             ...(t.tagged !== null && { model: tagOf(live, t.tagged) }),
           }),
-          // One whose turn ended while its work goes on (a watch of its own, a script it set) is
-          // waiting, not done.
-          waitingEvent(`${t.id}:task:wake`, {
-            thread: parent,
-            text: "",
-            note: `Task ${task} "${t.thread.title}" ${end.status === "done" && stillGoing(db, task) ? "waiting" : end.status}: ${end.result}`,
-            from: "steer",
-          }),
         )
+        // Its progress, while its work carries on by itself, stays on its row: the parent wakes
+        // for its end.
+        const ended = taskEnd(db, task, end.status, t.id)
+        if (ended !== null) {
+          out.push(
+            waitingEvent(`${t.id}:task:wake`, {
+              thread: parent,
+              text: "",
+              note: `Task ${task} "${t.thread.title}" ${ended}: ${end.result}`,
+              from: "steer",
+            }),
+          )
+        }
       }
       const why = live.once ? null : carryWhy(db, live.thread, end)
       if (why !== null) {
@@ -817,13 +823,21 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
     ) {
       return Effect.succeed(null)
     }
-    return config.report({
-      thread: t.thread.thread,
-      turn: t.id,
-      title: t.thread.title,
-      text: end.result,
-      ...(t.bypass !== null && { bypass: t.bypass }),
-    })
+    const readOf = config.report
+    // Progress no one is woken for isn't read.
+    return Effect.flatMap(
+      brain.read((db) => taskEnd(db, t.thread.thread, end.status, t.id)),
+      (ended) =>
+        ended === null
+          ? Effect.succeed(null)
+          : readOf({
+              thread: t.thread.thread,
+              turn: t.id,
+              title: t.thread.title,
+              text: end.result,
+              ...(t.bypass !== null && { bypass: t.bypass }),
+            }),
+    )
   }
 
   const handle = Effect.fnUntraced(function* handling(live: Live, batch: readonly CliMessage[]) {
@@ -1471,7 +1485,8 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
           }),
         ])
       }
-      yield* brain.dispatch({
+      // Its receipt's seq is its opening, the one event a delegation writes, a retry's as well.
+      const opened = yield* brain.dispatch({
         // The brain keeps command ids: a retry with the same clientRequestId is a no-op.
         id: `delegate:${id}`,
         type: Delegate.type,
@@ -1490,25 +1505,15 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       })
       // Filed in the space its work is about: a tag on its opening, as a space's chat has.
       if (space !== null) {
-        const opened = yield* brain.read(
-          (db) =>
-            db
-              .query<{ seq: number }, [string]>(
-                "SELECT seq FROM events WHERE type = 'thread.opened' AND json_extract(payload, '$.thread') = ?",
-              )
-              .get(id)?.seq ?? null,
-        )
-        if (opened !== null) {
-          yield* ingest([
-            event(`filed:${id}`, SpaceTagged.type, {
-              seq: opened,
-              home: space,
-              mentions: [],
-              conversation: null,
-              links: [],
-            }),
-          ])
-        }
+        yield* ingest([
+          event(`filed:${id}`, SpaceTagged.type, {
+            seq: opened.seq,
+            home: space,
+            mentions: [],
+            conversation: null,
+            links: [],
+          }),
+        ])
       }
       // Start it unless a first try already did.
       yield* lock(id).withPermit(

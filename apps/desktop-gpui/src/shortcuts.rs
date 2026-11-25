@@ -1,4 +1,4 @@
-//! ⌘/ (the desktop's `ui/shortcuts-sheet.tsx`): every shortcut, a line each, its keys at the end.
+//! ⇧⌘/ (the desktop's `ui/shortcuts-sheet.tsx`): every shortcut, a line each, its keys at the end.
 
 use gpui::{App, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px};
 

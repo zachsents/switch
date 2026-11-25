@@ -1,6 +1,7 @@
 // The brain as an app: reading its log and spaces, posting a message to a space, and where widgets
 // show. It reads the gateway for the widgets apps offer, so it's kept once the gateway is up.
 import {
+  allCovers,
   allSpaces,
   ArchiveSpace,
   Brain,
@@ -163,7 +164,7 @@ const create = tool(
   {
     closed: true,
     description:
-      "Make a space, only when the user's own words ask for one; never to hold an event or a matter on your own (that goes to the space it's about, or Home). `parent` null puts it at the top level.",
+      "Make a space, only when the user's own words ask for one; never to hold an event or a matter on your own (that goes to the space it's about, or Home). `parent` null puts it at the top level. It's made without a cover: draw one (autonomy_image) and set it (autonomy_cover).",
     input: Schema.Struct({
       name: Schema.String,
       parent: Schema.NullOr(Schema.String),
@@ -195,7 +196,13 @@ const create = tool(
         parent,
         ...(input.about !== undefined && { about: input.about }),
       })
-      return { id, ...made }
+      const looks = yield* brain.read((db) => allCovers(db).map((c) => c.image))
+      return {
+        id,
+        ...made,
+        cover: `None yet: draw one with autonomy_image in the look of the spaces' covers, from the blobs in covers, and set it with autonomy_cover.`,
+        covers: looks.slice(-3),
+      }
     }),
 )
 

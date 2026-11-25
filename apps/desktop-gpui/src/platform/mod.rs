@@ -12,6 +12,7 @@ pub mod dictation;
 pub mod extension;
 pub mod files;
 pub mod helpers;
+pub mod hotkey;
 pub mod idle;
 pub mod lifecycle;
 pub mod mesh;
@@ -45,6 +46,7 @@ pub fn start(cx: &mut App) {
     windows::init(cx);
     notify::start(cx);
     lifecycle::start(cx);
+    hotkey::start(cx);
 }
 
 /// The main window is open: the watch, updates and the desktop extension, which need it and the

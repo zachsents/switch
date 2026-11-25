@@ -1,7 +1,7 @@
 //! The house's Gallery (the desktop's `widgets/pictures.tsx`, and `ui/picture-row.tsx` in its cell
 //! look): several pictures as one row that scrolls sideways, edge to edge in the cell, each 160 tall
-//! and its own width (at most 420), a hairline between them; a click is Quick Look on the row's
-//! pictures from that one. When the row holds more than it shows, its count shows under it. A
+//! and its own width (at most 420), a hairline between them; a click opens the row's pictures
+//! full screen at that one (`viewer.rs`). When the row holds more than it shows, its count shows under it. A
 //! picture without an address A2UI's Image would show (http, https or data) is left out.
 
 use std::rc::Rc;
@@ -77,9 +77,12 @@ pub fn gallery(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEl
                 .h(px(160.))
                 .overflow_hidden()
                 .when(i > 0, |d| d.border_l(px(l.w1)).border_color(l.line1))
-                // Quick Look on the pictures from this one, through the app's own helper; a
+                // Full screen on the pictures from this one (`viewer.rs`), as Quick Look was; a
                 // right-click is the file's menu (pictures.tsx, picture-row.tsx).
-                .on_click(move |_, _, cx| crate::chat_platform::pictures((*all).clone(), i, cx))
+                .on_click(move |_, window, cx| {
+                    let items = all.iter().map(|(url, name)| crate::viewer::Item { route: url.clone(), name: name.clone(), kind: "image/*".into(), blob: None }).collect();
+                    crate::viewer::open(items, i, window, cx);
+                })
                 .on_mouse_down(gpui::MouseButton::Right, {
                     let (u, n) = (url.clone(), name.clone());
                     move |_, window, cx| crate::chat_platform::file(&u, &n, crate::platform::files::Do::Menu, window, cx).detach()

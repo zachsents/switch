@@ -336,7 +336,7 @@ impl ChatBox {
         self.focus(window, cx);
         cx.notify();
     }
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Enter while dictating keeps the words, to edit and send.
         if self.listening(cx).is_some() {
             dict::stop(cx);
@@ -404,6 +404,7 @@ impl ChatBox {
         self.input.update(cx, |t, cx| {
             t.set_value(text, ChangeOptions::default(), window, cx);
         });
+        self.keep(cx);
         cx.notify();
     }
 
@@ -806,7 +807,9 @@ impl Render for ChatBox {
                     .text_size(u(12.))
                     .overflow_hidden()
                     .child(match preview {
-                        Some(p) => img(p).size(u(40.)).flex_none().object_fit(gpui::ObjectFit::Cover).into_any_element(),
+                        // The chip's left corners, inside its hairline: gpui clips the chip's children to its
+                        // box, not its corners.
+                        Some(p) => img(p).size(u(40.)).flex_none().object_fit(gpui::ObjectFit::Cover).rounded_l(u(4.).to_pixels(window.rem_size()) - px(1.)).into_any_element(),
                         None => div()
                             .flex()
                             .flex_none()

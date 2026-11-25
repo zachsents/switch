@@ -3,7 +3,7 @@
 // at a Mac while it's unlocked and their input there is under five minutes old; of several, the one
 // with the latest input. Away from every Mac, they're on their phone.
 import type { Database } from "bun:sqlite"
-import { extensionsEvent } from "@switch/brain"
+import { extensionsEvent, seqAt } from "@switch/brain"
 import { Option, Schema } from "effect"
 
 const Attention = Schema.Struct({
@@ -30,14 +30,18 @@ export interface Mac {
   readonly app: string | null
 }
 
+// Each machine's latest from the attention index alone, then one row each. Read from the log, the
+// week's every attention event was a row read, its payload grouped: about 5,500 pages from a cold
+// cache, a second or more of the core's thread before each turn in a space and each push (Nov 24).
 export const macs = (db: Database, now: number): Mac[] =>
   db
     .query<{ payload: string; time: number }, [number]>(
       `SELECT payload, time FROM events WHERE seq IN (
-         SELECT max(seq) FROM events WHERE type IN (${extensionsEvent("attention")}) AND time > ?
-         GROUP BY json_extract(payload, '$.machine'))`,
+         SELECT max(seq) FROM events INDEXED BY events_attention
+          WHERE type GLOB '*.attention' AND type IN (${extensionsEvent("attention")}) AND seq >= ?
+          GROUP BY json_extract(payload, '$.machine'))`,
     )
-    .all(now - 7 * 24 * 3_600_000)
+    .all(seqAt(db, now - 7 * 24 * 3_600_000))
     .flatMap((r) =>
       Option.match(decode(r.payload), {
         onNone: () => [],

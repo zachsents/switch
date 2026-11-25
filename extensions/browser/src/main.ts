@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { Effect, Layer } from "effect"
 import { AppEvents, Models, OUTBOX_FILE, serve } from "switch-ext-kit"
 
-import { browserApp, watch } from "./app.ts"
+import { browserApp, pictures, watch } from "./app.ts"
 import { install, serve as listen } from "./chrome.ts"
 import { register } from "./keeper.ts"
 import { prepare } from "./portal.ts"
@@ -21,6 +21,7 @@ await Effect.runPromise(
     Effect.gen(function* serving() {
       const done = yield* serve(browserApp, new StdioServerTransport())
       yield* Effect.forkScoped(watch)
+      yield* Effect.forkScoped(pictures)
       yield* done
     }),
   ).pipe(
