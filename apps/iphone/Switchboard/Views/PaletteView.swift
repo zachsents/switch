@@ -68,11 +68,11 @@ struct PaletteView: View {
     let placed = brain.widgetsIn(here)
     for w in placed {
       commands.append(
-        Choice(id: "c:w:remove:\(w.key)", label: "Remove \(phone.widgets.offered[w.key]?.title ?? w.key)", also: "widget", icon: AnyView(Rectangle().strokeBorder(SIS.ink3, lineWidth: 1.5).frame(width: 12, height: 12)), go: nil) {
-          try await phone.command("widget.remove", ["app": .string(w.app), "name": .string(w.name)])
+        Choice(id: "c:w:remove:\(w.key)", label: "Remove \(phone.widgets.offered[w.widget]?.title ?? w.key)", also: "widget", icon: AnyView(Rectangle().strokeBorder(SIS.ink3, lineWidth: 1.5).frame(width: 12, height: 12)), go: nil) {
+          try await phone.command("widget.remove", w.named)
         })
     }
-    for w in phone.widgets.offered.values.sorted(by: { $0.title < $1.title }) where !placed.contains(where: { $0.key == w.key }) {
+    for w in phone.widgets.offered.values.sorted(by: { $0.title < $1.title }) where !placed.contains(where: { $0.widget == w.key }) {
       commands.append(
         Choice(id: "c:w:here:\(w.key)", label: "Put \(w.title) here", also: "widget", icon: AnyView(Rectangle().strokeBorder(SIS.ink3, lineWidth: 1.5).frame(width: 12, height: 12)), go: nil) {
           try await phone.command("widget.place", ["app": .string(w.app), "name": .string(w.name), "space": .string(here)])

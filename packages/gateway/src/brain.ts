@@ -346,26 +346,42 @@ const place = tool(
   {
     closed: true,
     description:
-      "Show a widget in a space, or move or resize it: an app's, or one you made (`app` `brain`, `name` from show_widget). `index` is its place among the space's widgets (0 first; none, last). `input` is what its tool is called with, `size` its columns and rows in the space's grid; none keeps what it had.",
+      "Show a widget in a space, or move or resize it: an app's, or one you made (`app` `brain`, `name` from show_widget). A widget can be placed more than once, each placement with its own input (a web page's picture per page): `another` true adds one beside those it has; `id` (as list_widgets gives it) moves or changes that one; neither is its first. `index` is its place among the space's widgets (0 first; none, last). `input` is what its tool is called with, `size` its columns and rows in the space's grid; none keeps what it had.",
     input: Schema.Struct({
       app: Schema.String,
       name: Schema.String,
       space: SpaceId,
+      id: Schema.optionalKey(Schema.String),
+      another: Schema.optionalKey(Schema.Boolean),
       index: Schema.optionalKey(Schema.Finite),
       input: Schema.optionalKey(WidgetInput),
       size: Schema.optionalKey(WidgetSize),
     }),
   },
   (input) =>
-    Effect.flatMap(named(input.space), (space) => command(PlaceWidget.type, { ...input, space })),
+    Effect.gen(function* placing() {
+      const space = yield* named(input.space)
+      const done = yield* command(PlaceWidget.type, { ...input, space })
+      const brain = yield* Brain
+      // Its placements now, so a new one's id is at hand to move or remove it by.
+      const its = (yield* brain.read(placements)).filter(
+        (w) => w.app === input.app && w.name === input.name,
+      )
+      return { ...done, placements: its }
+    }),
 )
 
 const unplace = tool(
   "remove_widget",
   {
     closed: true,
-    description: "Take a widget out of its space.",
-    input: Schema.Struct({ app: Schema.String, name: Schema.String }),
+    description:
+      "Take a widget out of its space: `id` (as list_widgets gives it) one placement of a widget placed more than once; none, its first.",
+    input: Schema.Struct({
+      app: Schema.String,
+      name: Schema.String,
+      id: Schema.optionalKey(Schema.String),
+    }),
   },
   (input) => command(RemoveWidget.type, input),
 )

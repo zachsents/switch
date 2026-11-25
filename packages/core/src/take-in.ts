@@ -83,7 +83,7 @@ export type Held = {
   | { readonly kind: "message" | "event" | "work" }
   | { readonly kind: "item"; readonly id: string }
   | { readonly kind: "expectation"; readonly id: string }
-  | { readonly kind: "widget"; readonly app: string; readonly name: string }
+  | { readonly kind: "widget"; readonly id: string; readonly app: string; readonly name: string }
 )
 
 /** Its chat, oldest first: what was said there and the other events shown in it. */
@@ -185,8 +185,8 @@ export const restIn = (db: Database, parent: SpaceId, made: StoredEvent): Held[]
   const widgets = placements(db)
     .filter((w) => w.space === parent)
     .map((w) => {
-      const text = `Widget ${w.app}/${w.name} ${JSON.stringify(w.input ?? {})}`
-      const key = `${w.app}/${w.name}`
+      const text = `Widget ${w.id} ${JSON.stringify(w.input ?? {})}`
+      const key = w.id
       return { key, text, event: made, line: { text }, kind: "widget" as const, ...w }
     })
   return [...asks, ...expected, ...widgets]
@@ -374,10 +374,10 @@ const takeIn = (space: SpaceId, parent: SpaceId, made: StoredEvent) =>
           count("widgets")
           yield* rejected(
             brain.dispatch({
-              id: `${key}:${h.app}/${h.name}`,
+              id: `${key}:${h.id}`,
               type: PlaceWidget.type,
               source: "core",
-              payload: { app: h.app, name: h.name, space },
+              payload: { app: h.app, name: h.name, id: h.id, space },
             }),
           )
         }

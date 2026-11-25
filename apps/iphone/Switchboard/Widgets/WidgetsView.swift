@@ -11,13 +11,13 @@ struct WidgetsView: View {
 
   var body: some View {
     let host = phone.widgets
-    let shown = placed.compactMap { w in host.surface(w.key).map { (w.key, $0) } }
+    let shown = placed.compactMap { w in host.surface(w).map { (w, $0) } }
     if !shown.isEmpty {
       VStack(spacing: 0) {
         if !first { Rectangle().fill(SIS.heavy).frame(height: SIS.heavyWidth) }
-        ForEach(Array(shown.enumerated()), id: \.element.0) { i, item in
-          WidgetCell(surface: item.1, catalogs: host.catalogs, ratio: host.offered[item.0]?.ratio, ruled: i > 0)
-            .modifier(Seen(phone: phone, surface: "widget", item: item.0))
+        ForEach(Array(shown.enumerated()), id: \.element.0.key) { i, item in
+          WidgetCell(surface: item.1, catalogs: host.catalogs, ratio: host.offered[item.0.widget]?.ratio, ruled: i > 0)
+            .modifier(Seen(phone: phone, surface: "widget", item: item.0.key))
         }
       }
     }

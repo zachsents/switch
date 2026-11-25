@@ -262,12 +262,14 @@ const searchHistory = (db: Database, thread: string, words: string) => {
   if (match === "") {
     return []
   }
+  // The work's own items first, each looked up in the index by rowid: `ref` is UNINDEXED, so
+  // matching first read every match in every work (70k pages, 4 to 35 s on the core's thread on
+  // Nov 24) to keep the few that are this one's. CROSS JOIN keeps that order.
   const turns = db
     .query<{ turn: string }, [string, string]>(
-      `SELECT i.turn FROM (
-         SELECT rowid, bm25(found) AS rank FROM found
-         WHERE found MATCH ?1 AND kind = 'turn' AND ref = ?2 ORDER BY rank LIMIT 200) f
-       JOIN thread_items i ON i.seq = f.rowid ORDER BY f.rank`,
+      `SELECT i.turn FROM thread_items i CROSS JOIN found f ON f.rowid = i.seq
+       WHERE i.thread = ?2 AND found MATCH ?1 AND f.kind = 'turn'
+       ORDER BY bm25(found) LIMIT 200`,
     )
     .all(match, thread)
     .map((r) => r.turn)

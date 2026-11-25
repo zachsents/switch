@@ -438,12 +438,38 @@ struct Expectation: Identifiable, Hashable {
   var lapsed = false
 }
 
-/// A widget placed in a space; a space's widgets keep this list's order.
+/// A widget placed in a space; a space's widgets keep this list's order. A widget may be placed
+/// more than once, each placement by its id (`<app>/<name>` its first, `<app>/<name>#<n>` each
+/// other) with its own input.
 struct Placement: Hashable {
+  let id: String
   let app: String
   let name: String
   let space: String
-  var key: String { "\(app)/\(name)" }
+  /// What its widget's tool is called with.
+  var input: JSON? = nil
+  /// Its surface's key: the placement's id.
+  var key: String { id }
+  /// Its widget's, as `/widgets` lists what extensions offer.
+  var widget: String { "\(app)/\(name)" }
+  /// Whether it's its widget's first, the one a command naming no placement means.
+  var first: Bool { id == widget }
+
+  /// A placement as the snapshot or a `widget.*` event has it.
+  init(_ p: JSON) {
+    app = p["app"].str
+    name = p["name"].str
+    space = p["space"].str
+    id = p["id"].str.isEmpty ? "\(p["app"].str)/\(p["name"].str)" : p["id"].str
+    if case .object = p["input"] { input = p["input"] }
+  }
+
+  /// What names it in `widget.remove`: its widget, and its id unless it's the first.
+  var named: JSON {
+    var out: [String: JSON] = ["app": .string(app), "name": .string(name)]
+    if !first { out["id"] = .string(id) }
+    return .object(out)
+  }
 }
 
 /// What the brain's find matched (packages/core/src/find.ts): a chat line, an action item or a memory.
@@ -573,7 +599,7 @@ final class Brain {
     activities = Dictionary(state["activities"].array.map { ($0["id"].str, Job($0)) }, uniquingKeysWith: { _, b in b })
     extensions = Set(state["extensions"].array.map { $0["extension"].str }.filter { !$0.isEmpty })
     accounts = Dictionary(state["accounts"].array.map { ($0["host"].str, Account($0)) }, uniquingKeysWith: { _, b in b })
-    widgets = state["widgets"].array.map { Placement(app: $0["app"].str, name: $0["name"].str, space: $0["space"].str) }
+    widgets = state["widgets"].array.map(Placement.init)
     warm = [:]
     for w in state["warm"].array { warmUp(w["space"].str, Int(w["seq"].number ?? 0)) }
     reads = [:]
@@ -755,9 +781,10 @@ final class Brain {
     case "expectation.met", "expectation.dropped": expectations[id] = nil
     case "expectation.lapsed", "expectation.broken": expectations[id]?.lapsed = true
     case "widget.placed", "widget.moved":
-      place(Placement(app: p["app"].str, name: p["name"].str, space: p["space"].str), Int(p["index"].number ?? 0))
+      place(Placement(p), Int(p["index"].number ?? 0))
     case "widget.removed":
-      widgets.removeAll { $0.app == p["app"].str && $0.name == p["name"].str }
+      let gone = Placement(p).id
+      widgets.removeAll { $0.id == gone }
     case "iphone.activity":
       activities[id] = p["phase"].str == "end" ? nil : Job(p)
     case "account.state":
@@ -949,7 +976,7 @@ final class Brain {
 
   /// Takes it out of wherever it was, then puts it `index`th among its space's widgets.
   private func place(_ w: Placement, _ index: Int) {
-    widgets.removeAll { $0.app == w.app && $0.name == w.name }
+    widgets.removeAll { $0.id == w.id }
     let there = widgets.indices.filter { widgets[$0].space == w.space }
     var to = widgets.count
     if index >= 0, index < there.count {

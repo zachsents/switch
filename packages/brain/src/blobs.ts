@@ -1,8 +1,19 @@
 // Files, named by their sha256, in a folder beside the brain: the same bytes are kept once. Each is
 // a folder, `data` and a hard link per name it was given, so a turn reads it by its real name.
 // Nothing deletes one a message or anything else may name; a file isn't taken when the disk is all
-// but full.
-import { existsSync, linkSync, mkdirSync, renameSync, rmSync, statfsSync, statSync } from "node:fs"
+// but full. Only one stored as replaceable (a web page's picture, taken again on a timer) may be
+// dropped by whoever stored it, once a newer one stands in for it, and only while nothing else has
+// it: storing the same bytes plainly, or a turn reading it by a name, makes it a kept one.
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statfsSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import path from "node:path"
 import { Context, Effect, Layer } from "effect"
 
@@ -32,14 +43,28 @@ const freeOn = (dir: string) => {
   return s.bavail * s.bsize
 }
 
+/** How a blob is stored. */
+export interface PutOptions {
+  /** Its storer may drop it once a newer one replaces it (`drop`); only a new blob becomes one. */
+  readonly replaceable?: boolean
+}
+
+/** Beside a replaceable blob's data: it may be dropped. */
+const REPLACEABLE = ".replaceable"
+
 export interface BlobsShape {
   readonly dir: string
   /** Stores bytes as they stream in. */
-  readonly put: (body: ReadableStream<Uint8Array>) => Effect.Effect<Stored, string>
+  readonly put: (
+    body: ReadableStream<Uint8Array>,
+    options?: PutOptions,
+  ) => Effect.Effect<Stored, string>
   /** Stores a copy of a file on this machine. */
   readonly putFile: (file: string) => Effect.Effect<Stored, string>
   /** Its path, under `name` when given; null when it isn't here. */
   readonly path: (hash: BlobHash, name?: string) => Effect.Effect<string | null>
+  /** Deletes a replaceable one nothing else has; whether it went. */
+  readonly drop: (hash: BlobHash) => Effect.Effect<boolean>
 }
 
 const make = (config: BlobsConfig): BlobsShape => {
@@ -54,6 +79,7 @@ const make = (config: BlobsConfig): BlobsShape => {
   // Written to a file of its own, hashed on the way, then moved into its folder.
   const keep = (
     write: (out: string, hasher: Bun.CryptoHasher) => Promise<number>,
+    replaceable: boolean,
   ): Effect.Effect<Stored, string> =>
     Effect.tryPromise({
       try: async () => {
@@ -66,9 +92,16 @@ const make = (config: BlobsConfig): BlobsShape => {
           const size = await write(out, hasher)
           const hash = BlobHash.make(hasher.digest("hex"))
           const data = path.join(folder(hash), "data")
+          const marker = path.join(folder(hash), REPLACEABLE)
           if (!existsSync(data)) {
             mkdirSync(folder(hash), { recursive: true })
+            if (replaceable) {
+              writeFileSync(marker, "")
+            }
             renameSync(out, data)
+          } else if (!replaceable) {
+            // Stored plainly as well: it's kept.
+            rmSync(marker, { force: true })
           }
           return { hash, size }
         } finally {
@@ -80,7 +113,7 @@ const make = (config: BlobsConfig): BlobsShape => {
 
   // Up to PICTURE_MAX is held whole before any of it is written: a picture is kept only with its
   // secrets filled (redact.ts), so what it showed is never on the disk.
-  const put = (body: ReadableStream<Uint8Array>) =>
+  const put = (body: ReadableStream<Uint8Array>, options?: PutOptions) =>
     keep(async (out, hasher) => {
       const sink = Bun.file(out).writer()
       let size = 0
@@ -117,7 +150,7 @@ const make = (config: BlobsConfig): BlobsShape => {
         await sink.end()
       }
       return size
-    })
+    }, options?.replaceable === true)
 
   const putFile = (file: string) =>
     Effect.suspend(() =>
@@ -135,6 +168,8 @@ const make = (config: BlobsConfig): BlobsShape => {
       if (name === undefined) {
         return data
       }
+      // Read by a name (a turn's): it's kept.
+      rmSync(path.join(folder(hash), REPLACEABLE), { force: true })
       const named = path.join(folder(hash), safeName(name))
       if (named !== data && !existsSync(named)) {
         try {
@@ -146,7 +181,21 @@ const make = (config: BlobsConfig): BlobsShape => {
       return named
     })
 
-  return { dir, put, putFile, path: pathOf }
+  // Only one stored as replaceable, with no name beside its data (a hard link a turn read it by).
+  const drop = (hash: BlobHash) =>
+    Effect.sync(() => {
+      const data = path.join(folder(hash), "data")
+      if (!existsSync(path.join(folder(hash), REPLACEABLE)) || !existsSync(data)) {
+        return false
+      }
+      if (statSync(data).nlink > 1) {
+        return false
+      }
+      rmSync(folder(hash), { recursive: true, force: true })
+      return true
+    })
+
+  return { dir, put, putFile, path: pathOf, drop }
 }
 
 export class Blobs extends Context.Service<Blobs, BlobsShape>()("switch/Blobs") {

@@ -1,6 +1,8 @@
 // Files over HTTP: PUT /blobs stores the body and says its hash, GET /blobs/:hash serves it, by range
 // for video, and GET /blobs/:hash/light a model as a viewer draws it (light-mesh.ts). Any page may
-// read and write them, as the tailnet guards the port.
+// read and write them, as the tailnet guards the port. `PUT /blobs?replaceable=1` stores one its
+// storer drops with DELETE /blobs/:hash once a newer one replaces it (a web page's picture); DELETE
+// leaves any other, and one anything else has (brain's blobs.ts).
 import { existsSync } from "node:fs"
 import { rename } from "node:fs/promises"
 import path from "node:path"
@@ -14,7 +16,7 @@ import { web } from "./web.ts"
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Range",
   "Access-Control-Expose-Headers": "Content-Length, Content-Range",
 }
@@ -27,12 +29,23 @@ const put = (blobs: BlobsShape) => async (request: Request) => {
   if (length > BLOB_MAX || request.body === null) {
     return Response.json({ error: "Too big" }, { status: 413, headers: CORS })
   }
-  const stored = await Effect.runPromise(Effect.result(blobs.put(request.body)))
+  const replaceable = new URL(request.url).searchParams.get("replaceable") === "1"
+  const stored = await Effect.runPromise(Effect.result(blobs.put(request.body, { replaceable })))
   if (stored._tag === "Failure") {
     const status = stored.failure === "Disk full" ? 507 : 400
     return Response.json({ error: stored.failure }, { status, headers: CORS })
   }
   return Response.json({ hash: stored.success.hash, bytes: stored.success.size }, { headers: CORS })
+}
+
+/** Drops a replaceable one nothing else has; says whether it went. */
+const drop = (blobs: BlobsShape) => async (request: Request) => {
+  const hash = hashOf(new URL(request.url).pathname.split("/").at(-1) ?? "")
+  if (hash === null) {
+    return Response.json({ error: "No such blob" }, { status: 400, headers: CORS })
+  }
+  const dropped = await Effect.runPromise(blobs.drop(hash))
+  return Response.json({ dropped }, { headers: CORS })
 }
 
 const RANGE = /^bytes=(?<from>\d*)-(?<to>\d*)$/u
@@ -162,6 +175,7 @@ export const blobsRoute = Layer.unwrap(
         HttpRouter.add("POST", "/blobs", web(put(blobs))),
         HttpRouter.add("OPTIONS", "/blobs", web(preflight)),
         HttpRouter.add("GET", "/blobs/:hash", web(get(blobs))),
+        HttpRouter.add("DELETE", "/blobs/:hash", web(drop(blobs))),
         HttpRouter.add("GET", "/blobs/:hash/light", web(light(blobs))),
         HttpRouter.add("OPTIONS", "/blobs/:hash/light", web(preflight)),
         HttpRouter.add("OPTIONS", "/blobs/:hash", web(preflight)),

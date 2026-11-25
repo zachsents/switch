@@ -424,23 +424,40 @@ impl Items {
 }
 
 /// A widget placed in a space; a space's widgets keep the order of this list (adapter.ts `Widget`).
+/// A widget may be placed more than once, each placement by its id (`<app>/<name>` its first,
+/// `<app>/<name>#<n>` each other) with its own input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placed {
+    pub id: String,
     pub app: String,
     pub name: String,
     pub space: String,
+    /// What its widget's tool is called with.
+    pub input: Option<Value>,
 }
 
 impl Placed {
+    /// Its surface's key: the placement's id.
     pub fn key(&self) -> String {
+        self.id.clone()
+    }
+
+    /// Its widget's, as `/widgets` lists what extensions offer.
+    pub fn widget(&self) -> String {
         format!("{}/{}", self.app, self.name)
     }
+}
+
+/// A placement's id in a `widget.*` event or the snapshot: the one it names, else its widget's first.
+pub fn placement_id(w: &Value) -> String {
+    let id = gs(w, "id");
+    if id.is_empty() { format!("{}/{}", gs(w, "app"), gs(w, "name")) } else { id }
 }
 
 fn placed_of(w: &Value) -> Placed {
     let space = gs(w, "space");
     // One with no space shows in none, as adapter.ts reads it.
-    Placed { app: gs(w, "app"), name: gs(w, "name"), space }
+    Placed { id: placement_id(w), app: gs(w, "app"), name: gs(w, "name"), space, input: w.get("input").filter(|i| i.is_object()).cloned() }
 }
 
 pub fn placed_of_snapshot(st: &Value) -> Vec<Placed> {
@@ -452,7 +469,7 @@ pub fn fold_placed(placed: &mut Vec<Placed>, kind: &str, p: &Value) {
     let w = placed_of(p);
     match kind {
         "widget.placed" | "widget.moved" => {
-            if let Some(at) = placed.iter().position(|x| x.app == w.app && x.name == w.name) {
+            if let Some(at) = placed.iter().position(|x| x.id == w.id) {
                 placed.remove(at);
             }
             let there: Vec<usize> = placed.iter().enumerate().filter(|(_, x)| x.space == w.space).map(|(i, _)| i).collect();
@@ -465,7 +482,7 @@ pub fn fold_placed(placed: &mut Vec<Placed>, kind: &str, p: &Value) {
             placed.insert(to, w);
         }
         "widget.removed" => {
-            if let Some(at) = placed.iter().position(|x| x.app == w.app && x.name == w.name) {
+            if let Some(at) = placed.iter().position(|x| x.id == w.id) {
                 placed.remove(at);
             }
         }

@@ -37,8 +37,11 @@ final class WidgetHost {
   @ObservationIgnored private weak var brain: Brain?
   @ObservationIgnored private var loading: Set<String> = []
   @ObservationIgnored private var due: Set<String> = []
-  /// Where each surface's messages come from, when it isn't `widgets/<key>`: a chat line's.
+  /// Where each surface's messages come from, when it isn't `widgets/<key>`: a chat line's, a
+  /// placement's called with its input.
   @ObservationIgnored private var paths: [String: String] = [:]
+  /// The widget each placement's surface is of, by its key: what it refreshes on is its widget's.
+  @ObservationIgnored private var placed: [String: String] = [:]
 
   init() {
     // The basic catalog in the house's drawing (HouseBasic), never the SDK's: its List is a vertical
@@ -68,10 +71,19 @@ final class WidgetHost {
   /// the brain is, offered or not (desktop's widgets/host.ts `MADE`).
   static let made = "brain"
 
-  func surface(_ key: String) -> SurfaceViewModel? {
+  /// A placement's surface, under its id, its widget's tool called with its input; a new input is
+  /// its data again.
+  func surface(_ p: Placement) -> SurfaceViewModel? {
     _ = version
-    if let s = processor.surfaceGroupModel.surfacesMap[key] { return s }
-    if offered[key] != nil || key.hasPrefix("\(Self.made)/") { Task { await load(key) } }
+    let input = p.input.flatMap { $0.text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) }
+    let path = "widgets/\(p.widget)" + (input.map { "?input=\($0)" } ?? "")
+    let changed = paths[p.key] != nil && paths[p.key] != path
+    placed[p.key] = p.widget
+    if let s = processor.surfaceGroupModel.surfacesMap[p.key] {
+      if changed { Task { await load(p.key, from: path) } }
+      return s
+    }
+    if offered[p.widget] != nil || p.app == Self.made { Task { await load(p.key, from: path) } }
     return nil
   }
 
@@ -109,7 +121,7 @@ final class WidgetHost {
       watch(Array(Set(list.flatMap(\.refresh))).sorted())
     }
     // A placed widget whose extension hasn't connected yet: look again.
-    if let brain, brain.widgets.contains(where: { offered[$0.key] == nil }) {
+    if let brain, brain.widgets.contains(where: { offered[$0.widget] == nil }) {
       try? await Task.sleep(for: .seconds(3))
       await list()
     }
@@ -219,9 +231,9 @@ final class WidgetHost {
     if e.type.hasPrefix("widget."), offered["\(e.payload["app"].str)/\(e.payload["name"].str)"] == nil {
       Task { await list() }
     }
-    for w in offered.values where w.refreshes(on: e.type) && processor.surfaceGroupModel.surfacesMap[w.key] != nil {
-      guard due.insert(w.key).inserted else { continue }
-      let key = w.key
+    let refreshed = placed.filter { _, widget in offered[widget]?.refreshes(on: e.type) == true }
+    for key in refreshed.keys where processor.surfaceGroupModel.surfacesMap[key] != nil {
+      guard due.insert(key).inserted else { continue }
       Task {
         try? await Task.sleep(for: .milliseconds(100))
         due.remove(key)

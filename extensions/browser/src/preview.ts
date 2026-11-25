@@ -5,9 +5,10 @@
 // Signed in (`signedIn`), it's taken in the user's own browser instead, signed in as they are
 // there: a background tab of its own, through the extension's debugger, closed once it's taken.
 // Nothing of the session (cookies, tokens) is read or kept: the page is only pictured.
-// Each picture is kept in the core's blobs. A page has no change event, so each one asked for is
-// taken again on its own timer, `every` apart, for as long as someone keeps asking for it; a new
-// picture is said (`onShot`), which the widget refreshes on.
+// Each picture is kept in the core's blobs, only the latest of each page: a new one replaces the one
+// before, which is dropped, as is a page's no one asks for any more. A page has no change event, so
+// each one asked for is taken again on its own timer, `every` apart, for as long as someone keeps
+// asking for it; a new picture is said (`onShot`), which the widget refreshes on.
 import { spawn } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -121,14 +122,48 @@ let said: (shot: Shot) => void = () => {
   // Nobody listens until the extension's loop does.
 }
 
+const core = (route: string) => new URL(route, process.env.SWITCH_URL ?? "http://127.0.0.1:4871")
+const auth = () => {
+  const token = process.env.SWITCH_TOKEN
+  return token === undefined ? {} : { authorization: `Bearer ${token}` }
+}
+
+/**
+ * A picture no page shows any more, dropped from the core's blobs (only one stored replaceable that
+ * nothing else has goes); what goes wrong is said in the extension's log.
+ */
+const release = async (image: string) => {
+  if ([...kept.values()].some((k) => k.image === image)) {
+    return
+  }
+  const hash = core(image).pathname.split("/").at(-1) ?? ""
+  try {
+    const res = await fetch(core(`/blobs/${hash}`), {
+      method: "DELETE",
+      headers: auth(),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      console.error(`dropping picture ${hash}: ${res.status}`)
+    }
+  } catch (error) {
+    console.error(`dropping picture ${hash}: ${String(error)}`)
+  }
+}
+
 const save = () => {
   const now = Date.now()
+  const forgotten: string[] = []
   for (const [key, k] of kept) {
     if (now - k.askedAt > FORGOTTEN_MS) {
       kept.delete(key)
+      forgotten.push(k.image)
     }
   }
   writeFileAtomic(FILE, JSON.stringify([...kept.values()]))
+  for (const image of forgotten) {
+    void release(image)
+  }
 }
 
 const shotOf = (k: Kept): Shot => ({
@@ -310,15 +345,11 @@ const captureSignedIn = async (url: string, width: number) => {
 const capture = async (url: string, width: number, signedIn: boolean) =>
   signedIn ? await captureSignedIn(url, width) : await captureHeadless(url, width)
 
-/** A JPEG kept in the core's blobs: its link there. */
+/** A JPEG kept in the core's blobs, as one a newer picture replaces: its link there. */
 const keep = async (jpeg: Blob) => {
-  const token = process.env.SWITCH_TOKEN
-  const res = await fetch(new URL("/blobs", process.env.SWITCH_URL ?? "http://127.0.0.1:4871"), {
+  const res = await fetch(core("/blobs?replaceable=1"), {
     method: "PUT",
-    headers: {
-      "Content-Type": "image/jpeg",
-      ...(token !== undefined && { authorization: `Bearer ${token}` }),
-    },
+    headers: { "Content-Type": "image/jpeg", ...auth() },
     body: jpeg,
     signal: AbortSignal.timeout(60_000),
   })
@@ -365,6 +396,9 @@ const take = async (
     kept.set(key, made)
     save()
     said(shotOf(made))
+    if (was && was.image !== image) {
+      void release(was.image)
+    }
     return made
   }
   const done = line.then(work)

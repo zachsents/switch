@@ -183,7 +183,7 @@ impl Host {
                 h.placements(cx);
                 h.watch(cx);
                 cx.notify();
-                let missing = model(cx).read(cx).brain.placed.iter().any(|w| !h.offered.contains_key(&w.key()));
+                let missing = model(cx).read(cx).brain.placed.iter().any(|w| !h.offered.contains_key(&w.widget()));
                 if missing || !h.listed {
                     cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(Duration::from_secs(3)).await;
@@ -209,8 +209,8 @@ impl Host {
         let placed = model(cx).read(cx).brain.placed.clone();
         for w in placed {
             let key = w.key();
-            if self.offered.contains_key(&key) && !self.surfaces.contains_key(&key) && !self.loading.contains(&key) && !self.failed.contains_key(&key) {
-                self.sources.insert(key.clone(), Source { app: w.app.clone(), name: w.name.clone(), input: None });
+            if self.offered.contains_key(&w.widget()) && !self.surfaces.contains_key(&key) && !self.loading.contains(&key) && !self.failed.contains_key(&key) {
+                self.sources.insert(key.clone(), Source { app: w.app.clone(), name: w.name.clone(), input: w.input.clone() });
                 self.load(key, cx);
             }
         }
@@ -219,7 +219,7 @@ impl Host {
 
     /// The brain is told which high-rate events to send: those the widgets placed or loaded refresh on.
     fn watch(&mut self, cx: &mut Context<Self>) {
-        let placed: Vec<String> = model(cx).read(cx).brain.placed.iter().map(|w| w.key()).collect();
+        let placed: Vec<String> = model(cx).read(cx).brain.placed.iter().map(|w| w.widget()).collect();
         let shown = self.sources.values().map(Source::key);
         let mut types: Vec<String> =
             placed.into_iter().chain(shown).filter_map(|k| self.offered.get(&k)).flat_map(|o| o.refresh.iter().cloned()).collect::<HashSet<_>>().into_iter().collect();
@@ -340,9 +340,13 @@ impl Host {
             if e.kind.starts_with("widget.") && !self.offered.contains_key(&named) {
                 self.list(cx);
             }
-            // A placement's input may have changed: its data again.
-            if (e.kind == "widget.placed" || e.kind == "widget.moved") && self.surfaces.contains_key(&named) {
-                self.load(named.clone(), cx);
+            // A placement's input may have changed: its data again, called with the new one.
+            let placement = crate::items::placement_id(p);
+            if (e.kind == "widget.placed" || e.kind == "widget.moved") && self.surfaces.contains_key(&placement) {
+                if let Some(s) = self.sources.get_mut(&placement) {
+                    s.input = p.get("input").filter(|i| i.is_object()).cloned();
+                }
+                self.load(placement, cx);
             }
             // Every surface loaded, placed or in a chat, refreshes on the events its widget names.
             let keys: Vec<String> = self

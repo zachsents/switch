@@ -117,7 +117,7 @@ private struct Actions: View {
 
   var body: some View {
     let placed = phone.brain.widgetsIn(id)
-    let offered = phone.widgets.offered.values.sorted { $0.title < $1.title }.filter { w in !placed.contains { $0.key == w.key } }
+    let offered = phone.widgets.offered.values.sorted { $0.title < $1.title }.filter { w in !placed.contains { $0.widget == w.key } }
     Menu {
       Button("New space", systemImage: "plus.circle") { naming = true }
       Button("Memory", systemImage: "brain") { phone.open(.memory) }
@@ -131,8 +131,8 @@ private struct Actions: View {
             }
           }
           ForEach(placed, id: \.key) { w in
-            Button("Remove \(phone.widgets.offered[w.key]?.title ?? w.name)", role: .destructive) {
-              Task { try? await phone.command("widget.remove", ["app": .string(w.app), "name": .string(w.name)]) }
+            Button("Remove \(phone.widgets.offered[w.widget]?.title ?? w.name)", role: .destructive) {
+              Task { try? await phone.command("widget.remove", w.named) }
             }
           }
         }
