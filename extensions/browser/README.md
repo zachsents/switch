@@ -23,8 +23,15 @@ the Mac whose browser is signed in to what the user's extensions need, and that 
 
 ## Setup
 
-Once per Mac, after its first start writes its Chrome extension to `~/.switch/browser/extension`:
-`chrome://extensions`, Developer mode on, Load unpacked, that folder. It updates itself from then on.
+Once per Mac: add the Switch extension to the browser from the Chrome Web Store (its link is
+`STORE_URL` in `src/chrome.ts`, from `extension/ids.json`); the store keeps it up to date. To run
+the extension from this folder instead, after the first start writes it to
+`~/.switch/browser/extension`: `chrome://extensions`, Developer mode on, Load unpacked, that folder.
+That copy reloads itself whenever the files change. The native messaging host answers both ids in
+`extension/ids.json`.
+
+`sh scripts/store-zip.sh` makes the Chrome Web Store upload (the extension's files, without the
+manifest's `key`, which only fixes the unpacked copy's id).
 Accessibility belongs to the app the host runs under (for `sign_in` and `autofill`). The browser keeps no secrets: the vault seals each one to the browser's key for one fill, once the user has allowed the browser (its code shows in the Secrets app or the queue). The vault's `browser` import took in what the browser kept before.
 
 ## Develop

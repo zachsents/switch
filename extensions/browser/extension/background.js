@@ -6,6 +6,8 @@
 importScripts("hands.js")
 
 const HOST = "ax.switch.browser"
+/** Installed from the Chrome Web Store (the store adds update_url), not loaded unpacked from the Mac half's files. */
+const fromStore = "update_url" in chrome.runtime.getManifest()
 let port = null
 
 function connect() {
@@ -22,11 +24,13 @@ function connect() {
     setTimeout(connect, 10000)
   })
   // The Mac half asks for a reload when it has written newer files than these (it stamps their hash as version_name).
+  // A copy from the Chrome Web Store updates from the store instead, so it says it's one.
   const manifest = chrome.runtime.getManifest()
   port.postMessage({
     type: "hello",
     version: manifest.version_name ?? manifest.version,
     release: manifest.version,
+    store: fromStore,
   })
 }
 
@@ -77,6 +81,7 @@ chrome.windows.onFocusChanged.addListener(report)
 
 /** Reloads from the files on disk, at most once in ten minutes, so files that failed to update can't loop it. */
 async function reloadOnce() {
+  if (fromStore) return
   const { reloadedAt } = await chrome.storage.local.get("reloadedAt")
   if (reloadedAt && Date.now() - reloadedAt < 10 * 60_000) return
   await chrome.storage.local.set({ reloadedAt: Date.now() })

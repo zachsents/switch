@@ -1,0 +1,463 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: Geist;
+        src: url(geist.woff2) format("woff2-variations");
+        font-weight: 100 900;
+      }
+      :root {
+        --bg: oklch(0.982 0.004 85);
+        --fg: oklch(0.2 0.006 85);
+        --muted: oklch(0.49 0.012 85);
+        --card: oklch(0.963 0.006 85);
+        --line: oklch(0.2 0.006 85 / 12%);
+        --accent: oklch(0.6 0.14 68);
+        --purple: #8e5bd8;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        width: 1280px;
+        height: 800px;
+        overflow: hidden;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: Geist, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .scene {
+        display: none;
+        width: 1280px;
+        height: 800px;
+        padding: 64px 72px;
+      }
+      .scene.on {
+        display: grid;
+        grid-template-columns: 400px 1fr;
+        gap: 56px;
+        align-items: center;
+      }
+      .scene.wide.on {
+        gap: 0;
+        grid-template-columns: 1fr;
+        align-content: center;
+        justify-items: center;
+        text-align: center;
+      }
+      h1 {
+        font-size: 44px;
+        line-height: 1.08;
+        letter-spacing: -0.03em;
+        font-weight: 640;
+      }
+      p.lead {
+        margin-top: 20px;
+        font-size: 21px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 36px;
+        font-weight: 620;
+        font-size: 22px;
+        letter-spacing: -0.02em;
+      }
+      .brand img {
+        width: 44px;
+        height: 44px;
+      }
+      .win {
+        background: #fff;
+        border-radius: 14px;
+        box-shadow:
+          0 30px 60px -20px oklch(0.2 0.006 85 / 30%),
+          0 0 0 1px var(--line);
+        overflow: hidden;
+        height: 600px;
+        display: flex;
+        flex-direction: column;
+      }
+      .tabs {
+        background: #e9e7e2;
+        height: 46px;
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        padding: 0 12px;
+      }
+      .dots {
+        display: flex;
+        gap: 7px;
+        align-self: center;
+        margin-right: 10px;
+      }
+      .dots i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #d3d0c9;
+        display: block;
+      }
+      .tab {
+        height: 36px;
+        padding: 0 14px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        border-radius: 9px 9px 0 0;
+        color: #45423d;
+        max-width: 190px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .tab.active {
+        background: #fff;
+        color: #1d1b18;
+      }
+      .fav {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        flex: none;
+      }
+      .group {
+        align-self: center;
+        margin-bottom: 4px;
+        height: 26px;
+        padding: 0 11px;
+        border-radius: 8px;
+        background: var(--purple);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .group.open {
+        border-radius: 8px 8px 0 0;
+      }
+      .bar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        border-bottom: 1px solid #eee;
+      }
+      .url {
+        flex: 1;
+        height: 30px;
+        border-radius: 15px;
+        background: #f1efeb;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+        font-size: 13px;
+        color: #5d5a54;
+      }
+      .page {
+        flex: 1;
+        padding: 34px 40px;
+        position: relative;
+      }
+      .ph {
+        background: #efede8;
+        border-radius: 6px;
+        height: 12px;
+        margin-bottom: 12px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border-radius: 12px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        font-size: 14px;
+      }
+      .bubble {
+        position: absolute;
+        max-width: 360px;
+        padding: 14px 16px;
+        border-radius: 16px;
+        font-size: 15px;
+        line-height: 1.4;
+        box-shadow: 0 12px 30px -12px oklch(0.2 0.006 85 / 35%);
+      }
+      .me {
+        background: #2f6fe4;
+        color: #fff;
+        border-bottom-right-radius: 5px;
+      }
+      .agent {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-bottom-left-radius: 5px;
+      }
+      .who {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+        font-weight: 600;
+      }
+      .flow {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        margin-top: 56px;
+      }
+      .node {
+        width: 300px;
+        padding: 28px;
+        border-radius: 18px;
+        background: #fff;
+        border: 1px solid var(--line);
+        text-align: left;
+        box-shadow: 0 20px 40px -24px oklch(0.2 0.006 85 / 30%);
+      }
+      .node h3 {
+        font-size: 20px;
+        letter-spacing: -0.02em;
+        margin-bottom: 8px;
+      }
+      .node p {
+        font-size: 15px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .arrow {
+        font-size: 34px;
+        color: var(--accent);
+      }
+      .mac {
+        position: relative;
+        padding: 26px 30px 30px;
+        border-radius: 26px;
+        border: 2px dashed oklch(0.6 0.14 68 / 55%);
+        display: flex;
+        gap: 28px;
+        align-items: center;
+      }
+      .mac .label {
+        position: absolute;
+        top: -14px;
+        left: 26px;
+        background: var(--bg);
+        padding: 0 10px;
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .no {
+        margin-top: 40px;
+        font-size: 18px;
+        color: var(--muted);
+      }
+      .rowline {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 0;
+        border-bottom: 1px solid #f0eee9;
+        font-size: 14px;
+      }
+      .chip {
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: #efe8fb;
+        color: #6a3fb8;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="scene" id="s1">
+      <div>
+        <div class="brand"><img src="icon.png" alt="" />Switch</div>
+        <h1>Your agent works in background tabs</h1>
+        <p class="lead">
+          Switch opens what it needs in a collapsed tab group, signed in as you are. Your own tabs
+          and focus stay where they were.
+        </p>
+      </div>
+      <div class="win">
+        <div class="tabs">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <div class="tab active">
+            <span class="fav" style="background: #e8a33d"></span>Weekly plan
+          </div>
+          <div class="tab"><span class="fav" style="background: #4a8fe7"></span>Inbox</div>
+          <div class="tab"><span class="fav" style="background: #3fae6a"></span>Recipes</div>
+          <div class="group">Switch &middot; 3</div>
+        </div>
+        <div class="bar"><div class="url">docs.example.com/weekly-plan</div></div>
+        <div class="page">
+          <div
+            class="ph"
+            style="width: 46%; height: 22px; margin-bottom: 24px; background: #e6e3dd"
+          ></div>
+          <div class="ph" style="width: 92%"></div>
+          <div class="ph" style="width: 86%"></div>
+          <div class="ph" style="width: 74%"></div>
+          <div class="ph" style="width: 90%; margin-top: 26px"></div>
+          <div class="ph" style="width: 64%"></div>
+          <div
+            style="
+              position: absolute;
+              right: 40px;
+              bottom: 40px;
+              width: 380px;
+              background: #fff;
+              border: 1px solid var(--line);
+              border-radius: 16px;
+              padding: 18px 20px;
+              box-shadow: 0 18px 40px -18px oklch(0.2 0.006 85 / 35%);
+            "
+          >
+            <div class="who">In the Switch group, out of your way</div>
+            <div class="rowline">
+              <span class="fav" style="background: #d9534f"></span>Booking a table for Friday<span
+                class="chip"
+                style="margin-left: auto"
+                >working</span
+              >
+            </div>
+            <div class="rowline">
+              <span class="fav" style="background: #7a7a7a"></span>Checking an order's status<span
+                class="chip"
+                style="margin-left: auto"
+                >working</span
+              >
+            </div>
+            <div class="rowline" style="border: 0">
+              <span class="fav" style="background: #2f9ad6"></span>Renewing a library book<span
+                class="chip"
+                style="margin-left: auto"
+                >done</span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene" id="s2">
+      <div>
+        <div class="brand"><img src="icon.png" alt="" />Switch</div>
+        <h1>It knows which page you mean</h1>
+        <p class="lead">
+          When you ask Switch about "this", it knows the page in front of you, so you don't have to
+          paste links or explain.
+        </p>
+      </div>
+      <div class="win">
+        <div class="tabs">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <div class="tab active">
+            <span class="fav" style="background: #3fae6a"></span>Trail running shoes
+          </div>
+          <div class="tab"><span class="fav" style="background: #4a8fe7"></span>Inbox</div>
+          <div class="group">Switch</div>
+        </div>
+        <div class="bar"><div class="url">shop.example.com/trail-shoes/blue</div></div>
+        <div class="page">
+          <div style="display: flex; gap: 30px">
+            <div
+              style="
+                width: 300px;
+                height: 260px;
+                border-radius: 14px;
+                background: linear-gradient(135deg, #cfe0f7, #9dbbe6);
+              "
+            ></div>
+            <div style="flex: 1; padding-top: 6px">
+              <div class="ph" style="width: 80%; height: 22px; background: #e6e3dd"></div>
+              <div
+                class="ph"
+                style="width: 34%; height: 18px; margin: 16px 0 26px; background: #f3e3c7"
+              ></div>
+              <div class="ph" style="width: 96%"></div>
+              <div class="ph" style="width: 88%"></div>
+              <div class="ph" style="width: 70%"></div>
+              <div class="pill" style="margin-top: 20px">Size 10 &middot; In stock</div>
+            </div>
+          </div>
+          <div class="bubble me" style="right: 40px; top: 290px">
+            Is this one cheaper anywhere else? Same size.
+          </div>
+          <div class="bubble agent" style="left: 40px; top: 366px">
+            <div class="who">Switch</div>
+            The blue trail shoe in size 10 is $18 less at another store, with free returns. Want me
+            to put it in that cart?
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene wide" id="s3">
+      <div class="brand" style="justify-content: center"><img src="icon.png" alt="" />Switch</div>
+      <h1>Everything stays on your Mac</h1>
+      <p class="lead" style="max-width: 760px">
+        The extension talks only to the Switch app on your own Mac. No servers of ours, no tracking,
+        nothing sold.
+      </p>
+      <div class="flow">
+        <div class="mac">
+          <span class="label">Your Mac</span>
+          <div class="node">
+            <h3>Chrome + Switch extension</h3>
+            <p>Says which page is in front and works in the agent's background tabs.</p>
+          </div>
+          <div class="arrow">&#8644;</div>
+          <div class="node">
+            <h3>Switch app</h3>
+            <p>Your agent, its memory and its decisions, running on this Mac.</p>
+          </div>
+        </div>
+      </div>
+      <p class="no">
+        Connected through Chrome's native messaging, which only reaches apps installed on this
+        computer.
+      </p>
+    </section>
+
+    <section class="scene wide" id="tile" style="padding: 0">
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 18px">
+        <img src="icon.png" alt="" style="width: 120px; height: 120px" />
+        <div style="font-size: 40px; font-weight: 650; letter-spacing: -0.03em">Switch</div>
+        <div style="font-size: 19px; color: var(--muted)">Your agent's hands in Chrome</div>
+      </div>
+    </section>
+
+    <script>
+      const id = location.hash.slice(1) || "s1"
+      if (id !== "marquee") document.getElementById(id).classList.add("on")
+      if (id === "tile" || id === "marquee") {
+        const [w, h] = id === "tile" ? [440, 280] : [1400, 560]
+        for (const el of [
+          document.documentElement,
+          document.body,
+          document.getElementById("tile"),
+        ]) {
+          el.style.width = w + "px"
+          el.style.height = h + "px"
+        }
+        document.getElementById("tile").classList.add("on")
+      }
+    </script>
+  </body>
+</html>
