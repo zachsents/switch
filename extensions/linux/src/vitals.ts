@@ -1,6 +1,7 @@
-// A Linux machine's vitals, the same reading the macOS extension's widget draws: load, CPU, memory
-// and its pressure, swap and how fast it grows, the root filesystem's free space, and in the
-// battery's place the CPU's temperature. Read from /proc and /sys, so it needs nothing installed.
+// A Linux machine's vitals, the reading the vitals widget (vitals-widget) draws as a Mac's: load,
+// CPU, memory and its pressure, swap and how fast it grows, the root filesystem's free space, and
+// in the battery's place the CPU's temperature. Read from /proc and /sys, so it needs nothing
+// installed.
 // What the core's resource alarms read (core alarms.ts): free disk, swap's growth, pressure, load.
 import { readdirSync, readFileSync, statfsSync } from "node:fs"
 import { cpus, loadavg } from "node:os"

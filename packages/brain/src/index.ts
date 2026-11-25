@@ -1,4 +1,14 @@
 export { Brain } from "./brain.ts"
+export {
+  Fingerprints,
+  knowSecrets,
+  ownSecret,
+  ownShape,
+  redact,
+  redacting,
+  redactRecord,
+  redactValue,
+} from "./redact.ts"
 export { unheardTask } from "./heard.ts"
 export {
   ANSWERS_MS,

@@ -155,7 +155,10 @@ it was answered. `openSealed(secretKey, item, use, { enc, ct })` gives the secre
 
 Switch installs it from a git URL or package name: `extensions_install`, or Extensions in the desktop. A
 monorepo folder is installed at a commit from the core machine's `~/.switch/extensions.json`
-(`{ "source": "github:<owner>/<repo>#<commit>", "path": "<folder>" }`), packed from that folder.
+(`{ "source": "github:<owner>/<repo>#<commit>", "path": "<folder>" }`), packed from that folder. Code
+extensions share lives once in the repo, linked from each one's folder: a symlink out of the folder
+packs as what it points to at that commit (Switch's vitals widget, `packages/vitals`), so a change
+reaches each extension as it's pinned, with no release.
 
 ## Progress
 

@@ -80,7 +80,7 @@ const COMMAND_CHARS = 160
 
 /** A command as a person reads it: its program by name, cut short. */
 const short = (args: string) => {
-  const [program = "", ...rest] = args.split(" ")
+  const [program = "", ...rest] = args.replaceAll(/\s+/gu, " ").trim().split(" ")
   const shown = [path.basename(program), ...rest].join(" ")
   return shown.length > COMMAND_CHARS ? `${shown.slice(0, COMMAND_CHARS - 1)}…` : shown
 }

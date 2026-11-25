@@ -31,7 +31,8 @@ import * as strays from "./strays.ts"
 import { Device, deviceLooked, moreTools, watchDevice } from "./more.ts"
 import * as procs from "./procs.ts"
 import { diskEvents, diskLooked, diskTool, makeRoomTool, watchDisk } from "./upkeep.ts"
-import { ratio, vitalsPage } from "./vitals-page.ts"
+import { picture } from "./picture.ts"
+import { ratio, vitalsPage } from "./vitals-widget/page.ts"
 import { alerting, alerts, notable, read, reading } from "./vitals.ts"
 import type { Reading } from "./vitals.ts"
 
@@ -217,7 +218,7 @@ const stateChanged = (
 // widget's page is made as the extension starts: Bun runs no macros from an installed package.
 
 const mac = await thisMac()
-const page = vitalsPage(mac.name, mac.look, mac.battery)
+const page = vitalsPage(mac.name, picture(mac.look), mac.battery)
 
 let latest: Reading | null = null
 

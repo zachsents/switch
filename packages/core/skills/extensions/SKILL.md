@@ -52,6 +52,9 @@ switch-ext-kit's README (`node_modules/switch-ext-kit/README.md`).
   drawing. Labels and data only: no captions, no empty states (hide).
   An extension never suggests or makes a space: a new widget is on no board until the user adds it
   (or asks you to place it).
+- **Shared code** (a widget two extensions draw, as the vitals widget in `packages/vitals`) lives
+  once in the repo, symlinked from each extension's `src`; the pack holds what the link points to at
+  its commit, so a change reaches every extension pinned past it, with no release.
 - **State** lives in its folder (its working directory), which moves with it: its own records in
   the kit's `Log`, any other file written with `writeFileAtomic`, never in place. What it emits waits
   in its outbox until the core has it. It reads the brain through `brain_query`, never brain.db.

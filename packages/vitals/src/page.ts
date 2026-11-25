@@ -1,14 +1,12 @@
 // The vitals widget's page, one HTML document with its script bundled in (an MCP App view loads
-// nothing from outside): this Mac's picture between its meters, on the cell's own background, in
+// nothing from outside): a machine's picture between its meters, on the cell's own background, in
 // Switch's inks and type, which a host's theme variables of the same names replace. Everything is
 // in hundredths of its width, so it scales with its frame's width (never its height, which it sets
-// itself through size-changed), and its height is exactly what it draws:
-// its taller side, top-aligned. Its plate holds the Mac's whole name, its type made smaller to fit.
+// itself through size-changed), and its height is exactly what it draws: its taller side,
+// top-aligned. Its plate holds the machine's whole name, its type made smaller to fit. Each
+// extension with a vitals widget serves this page from its own folder (its src/vitals-widget).
 import path from "node:path"
 import { view } from "switch-ext-kit"
-
-import type { Look } from "./look.ts"
-import { picture } from "./picture.ts"
 
 // Its parts' heights, in hundredths of its width: its padding, a meter, the gap between, the plate.
 const PAD = 2.6
@@ -17,16 +15,16 @@ const GAP = 2.4
 const PLATE = 4.4
 
 /** Its height in hundredths of its width: the plate and three meters on the left; memory's three
- * on the right, and the battery's if this Mac has one. */
-const height = (battery: boolean) => {
-  const right = battery ? 4 : 3
+ * on the right, and a fourth (a battery, the CPU's temperature) if the machine has one. */
+const height = (fourth: boolean) => {
+  const right = fourth ? 4 : 3
   return 2 * PAD + Math.max(PLATE + 3 * (GAP + METER), right * METER + (right - 1) * GAP)
 }
 
-/** Its shape for a Mac with or without a battery: width over height. */
-export const ratio = (battery: boolean) => 100 / height(battery)
+/** Its shape with or without a fourth meter on the right: width over height. */
+export const ratio = (fourth: boolean) => 100 / height(fourth)
 
-const style = (battery: boolean) => `
+const style = (fourth: boolean) => `
 :root{color-scheme:light dark;
 --ink:var(--color-ink,light-dark(#0a0a0a,#ededed));--ink2:var(--color-ink2,light-dark(#555555,#a1a1a1));
 --off:var(--color-line-1,light-dark(#c8c8c8,#2c2c2c));--red:var(--color-red,#d42a1f);
@@ -36,10 +34,10 @@ const style = (battery: boolean) => `
 :root[data-theme=dark]{--shadow:.8}
 html,body{margin:0;height:100%;overflow:hidden;background:transparent}
 body{visibility:hidden;font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;-webkit-user-select:none;user-select:none;cursor:default}
-.vitals{box-sizing:border-box;width:100%;overflow:hidden;height:calc(${height(battery)}*var(--u));display:grid;grid-template-columns:28fr 44fr 28fr;align-items:start;padding:calc(${PAD}*var(--u)) calc(3*var(--u))}
+.vitals{box-sizing:border-box;width:100%;overflow:hidden;height:calc(${height(fourth)}*var(--u));display:grid;grid-template-columns:28fr 44fr 28fr;align-items:start;padding:calc(${PAD}*var(--u)) calc(3*var(--u))}
 .side{display:flex;flex-direction:column;gap:calc(${GAP}*var(--u));min-width:0}
-.mac{position:relative;align-self:stretch;margin:0;min-width:0;min-height:0}
-.mac svg{position:absolute;inset:0;width:100%;height:100%}
+.machine{position:relative;align-self:stretch;margin:0;min-width:0;min-height:0}
+.machine svg{position:absolute;inset:0;width:100%;height:100%}
 .cap{stroke:var(--rim);stroke-width:1px;vector-effect:non-scaling-stroke}
 .plate{align-self:flex-start;background:#000;color:#fff;font:700 calc(2.9*var(--u)) var(--sign);line-height:calc(2.9*var(--u));height:calc(${PLATE}*var(--u));text-transform:uppercase;letter-spacing:.03em;padding:calc(.9*var(--u)) calc(1.2*var(--u)) calc(.6*var(--u));box-sizing:border-box;white-space:nowrap}
 .meter[hidden]{display:none}
@@ -59,10 +57,11 @@ body{visibility:hidden;font-family:var(--sans);color:var(--ink);-webkit-font-smo
 const escape = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 
-/** The page for a Mac named `name` that looks like `look`. */
-export const vitalsPage = (name: string, look: Look, battery: boolean) =>
-  view(path.join(import.meta.dir, "vitals-view.ts"), {
+/** The page for a machine named `name`, drawn as `picture` (SVG markup), with or without a fourth
+ * meter on the right. */
+export const vitalsPage = (name: string, picture: string, fourth: boolean) =>
+  view(path.join(import.meta.dir, "view.ts"), {
     head: '<meta name="color-scheme" content="light dark">',
-    style: style(battery),
-    body: `<main class="vitals"><section class="side" id="left"><span class="plate"><span>${escape(name)}</span></span></section><figure class="mac">${picture(look)}</figure><section class="side" id="right"></section></main>`,
+    style: style(fourth),
+    body: `<main class="vitals"><section class="side" id="left"><span class="plate"><span>${escape(name)}</span></span></section><figure class="machine">${picture}</figure><section class="side" id="right"></section></main>`,
   })

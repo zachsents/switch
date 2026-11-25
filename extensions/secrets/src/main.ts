@@ -10,6 +10,7 @@ import { Models, serveStdio } from "switch-ext-kit"
 
 import { announce, heartbeat, secretsApp } from "./app.ts"
 import { approveCode, serial, touched } from "./ops.ts"
+import { redactions } from "./redactions.ts"
 import { devices, dir, extensions, grantAllowed, openDb, openVault, seedGrants } from "./store.ts"
 import type { Vault } from "./store.ts"
 
@@ -85,6 +86,7 @@ const background = Layer.effectDiscard(
   Effect.gen(function* starting() {
     yield* Effect.forkScoped(announce)
     yield* Effect.forkScoped(heartbeat(vault))
+    yield* Effect.forkScoped(redactions(vault))
     yield* Effect.forkScoped(
       Effect.forever(Effect.andThen(approvals(vault), Effect.sleep("1 second"))).pipe(
         Effect.ignore,

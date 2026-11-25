@@ -23,8 +23,12 @@ import {
   bypassOf,
   EventId,
   eventFromJsonSchema,
+  Fingerprints,
+  knowSecrets,
   placedInput,
   placements,
+  redact,
+  redactRecord,
   spaceFor,
   WidgetInput,
 } from "@switch/brain"
@@ -371,6 +375,8 @@ const followAsked = Schema.toStandardSchemaV1(
     after: Schema.optionalKey(Schema.Finite),
   }),
 )
+
+const fingerprints = Schema.toStandardSchemaV1(Fingerprints)
 
 /** A name against an extension's declared names: exact, or a prefix ending in `*`. */
 const allowed = (declared: readonly string[], name: string) =>
@@ -912,6 +918,13 @@ export class Gateway extends Context.Service<
                 relaying("follow", relay(from, before, through))
                 return { types: [...following] }
               })
+              // The fingerprints of the secrets it holds (the vault's), in place of the last it gave:
+              // every event, log line, tool result and send is matched against them (brain's
+              // redact.ts), the values never leaving it. Kept while it's away.
+              client.setRequestHandler("redactions/set", { params: fingerprints }, (p) => {
+                knowSecrets(plug.name, p)
+                return {}
+              })
               client.setRequestHandler(
                 "models/decide",
                 decideRequest,
@@ -1258,6 +1271,28 @@ const search = (tools: readonly Tool[], query: string) => {
     .map((s) => s.t)
 }
 
+type Block = CallToolResult["content"][number]
+
+const redactedBlock = (c: Block): Block => {
+  if (c.type === "text") {
+    return { ...c, text: redact(c.text) }
+  }
+  if (c.type === "resource" && "text" in c.resource) {
+    return { ...c, resource: { ...c.resource, text: redact(c.resource.text) } }
+  }
+  return c
+}
+
+/** A result with its secrets redacted: its words and data, not its pictures or sound (yet). */
+const redacted = (result: CallToolResult): CallToolResult => {
+  const data: unknown = result.structuredContent
+  return {
+    ...result,
+    content: result.content.map(redactedBlock),
+    ...(typeof data === "object" && data !== null && { structuredContent: redactRecord(data) }),
+  }
+}
+
 /** `look`: only the tools that look (read-only), for a session that only looks things up. */
 const agentServer = (gateway: typeof Gateway.Service, thread: string | null, look: boolean) => {
   const all = gateway
@@ -1265,9 +1300,12 @@ const agentServer = (gateway: typeof Gateway.Service, thread: string | null, loo
     .filter((l) => !appOnly(l.tool) && (!look || l.tool.annotations?.readOnlyHint === true))
     .map(exposed)
   const callable = new Set(all.map((t) => t.name))
-  // What would speak in the user's name is the guard's to let through, hold or send back.
+  // What would speak in the user's name is the guard's to let through, hold or send back. What a
+  // tool answers reaches the model with its secrets redacted.
   const call = async (name: string, args: Record<string, unknown>) =>
-    callable.has(name) ? await gateway.callAs(name, args, thread) : failed(`No tool ${name}`)
+    callable.has(name)
+      ? redacted(await gateway.callAs(name, args, thread))
+      : failed(`No tool ${name}`)
   const searching = all.length > LISTED_MAX
   const mcp = new McpServer({ name: "switch", version: "1" }, { capabilities: { tools: {} } })
   mcp.server.setRequestHandler("tools/list", () => ({

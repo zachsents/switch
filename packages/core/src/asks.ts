@@ -55,6 +55,7 @@ import {
   HOME,
   ItemId,
   react,
+  redactValue,
   saidBy,
   SpaceId,
   spaceMessages,
@@ -70,6 +71,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { CallToolResult } from "@modelcontextprotocol/server"
 
 import { CoreConfig } from "./config.ts"
+import { troubled } from "./trouble.ts"
 import { threadOf } from "./context.ts"
 
 // ——— The outbound gate ———
@@ -242,8 +244,34 @@ const CARD =
 export const outboundGuard = Effect.gen(function* guarding() {
   const brain = yield* Brain
   const models = yield* Models
+  const sessions = yield* Sessions
   const { readOnly } = yield* CoreConfig
   const run = yield* FiberSet.makeRuntimePromise()
+
+  /**
+   * A send that holds a secret goes nowhere, never with it blanked: the caller hears what it held,
+   * by name, and an extension's call (no turn hears its answer) wakes the agent.
+   */
+  const secretHeld = (call: Outbound) =>
+    Effect.gen(function* holdingSecret() {
+      const found: string[] = []
+      redactValue(call.args, found)
+      if (found.length === 0) {
+        return null
+      }
+      const names = [...new Set(found)].map((f) => `[${f}]`).join(", ")
+      if (call.thread === null) {
+        yield* troubled({
+          id: `secret-send:${call.app}:${call.tool}`,
+          space: HOME,
+          text: `${call.app} ${call.tool} wasn't sent: it held ${names}.`,
+        }).pipe(Effect.provideService(Sessions, sessions))
+      }
+      return said(
+        `Not sent: it holds ${names}. A secret never goes out in a message, a post or an email. Take it out, or ask the user how it should reach its reader.`,
+        true,
+      )
+    })
 
   /** Holds the call as an approval item, its words as drafts the user can edit; its id. */
   const hold = (call: Outbound, space: SpaceId, verdict: Verdict) =>
@@ -295,6 +323,10 @@ export const outboundGuard = Effect.gen(function* guarding() {
 
   const check = (call: Outbound) =>
     Effect.gen(function* checking() {
+      const secret = yield* secretHeld(call)
+      if (secret !== null) {
+        return secret
+      }
       if (readOnly) {
         return said("Not sent: Switch is read-only and sends nothing", true)
       }

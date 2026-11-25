@@ -1,0 +1,11 @@
+{
+  "name": "@switch/vitals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "switch-ext-kit": "^0.2.0"
+  }
+}

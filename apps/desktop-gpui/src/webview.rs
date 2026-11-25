@@ -789,20 +789,33 @@ pub fn start_frame(window: &mut Window, cx: &mut App) {
     let id = gpui::Window::window_handle(window).window_id();
     let mut held = pages.0.borrow_mut();
     held.retain(|p| p.strong_count() > 0);
-    let mine: Vec<Rc<WebView>> = held.iter().filter_map(std::rc::Weak::upgrade).filter(|p| p.window == id).collect();
+    let mine = held.iter().filter_map(std::rc::Weak::upgrade).any(|p| p.window == id);
     drop(held);
     // This frame's overlays say where they are as they're laid out.
     pages.1.borrow_mut().retain(|(w, ..)| *w != id);
-    if mine.is_empty() {
+    if !mine {
         return;
     }
-    // What this frame's prepaint wants is put on as the next frame starts, clear of its overlays.
+    // What this frame's prepaint wants is put on as the next frame starts, clear of its overlays:
+    // once, from the window's last render before then. A second render before the vsync (typing
+    // draws more often than the screen shows) would find what the first took and hide every page
+    // for a frame: the widgets flickered as keys came fast.
+    if !PLACING.with(|p| p.borrow_mut().insert(id)) {
+        return;
+    }
     window.on_next_frame(move |_, cx| {
+        PLACING.with(|p| p.borrow_mut().remove(&id));
         let covers: Vec<(u64, Bounds<Pixels>, bool)> = cx.try_global::<Pages>().map(|p| p.1.borrow().iter().filter(|(w, ..)| *w == id).map(|(_, o, b, cut)| (*o, *b, *cut)).collect()).unwrap_or_default();
-        for p in &mine {
+        let held = cx.try_global::<Pages>().map(|p| p.0.borrow().iter().filter_map(std::rc::Weak::upgrade).filter(|p| p.window == id).collect::<Vec<_>>()).unwrap_or_default();
+        for p in &held {
             p.apply(&covers);
         }
     });
+}
+
+thread_local! {
+    /// The windows whose pages are to be placed as the next frame starts.
+    static PLACING: RefCell<std::collections::HashSet<gpui::WindowId>> = RefCell::default();
 }
 
 /// The app's own view takes the keyboard back: gpui's focus moved to one of its own fields while a

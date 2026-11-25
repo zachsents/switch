@@ -131,6 +131,7 @@ import { web } from "./web.ts"
 import { backupRoute, backupWorker } from "./backup.ts"
 import { measured } from "./measure.ts"
 import { stallsConfig, stallsWatch } from "./stalls.ts"
+import { ownCredentials, sweepRoute } from "./redaction.ts"
 
 /** Everything the core's brain knows, for any process that opens the same file. */
 export const brainParts: readonly {
@@ -172,15 +173,17 @@ export const brainParts: readonly {
 
 const layerBrain = Layer.unwrap(
   CoreConfig.pipe(
-    Effect.map((c) =>
-      Brain.layer({
+    Effect.map((c) => {
+      // Known before anything is stored.
+      ownCredentials(c.dir)
+      return Brain.layer({
         path: c.brain,
         events: brainParts.flatMap((p) => p.events),
         projections: brainParts.flatMap((p) => p.projections),
         commands: brainParts.flatMap((p) => p.commands),
         upcasts: brainParts.flatMap((p) => p.upcasts ?? []),
-      }),
-    ),
+      })
+    }),
   ),
 )
 
@@ -545,6 +548,7 @@ const layerRoutes = HttpRouter.serve(
     peersRoute,
     pauseRoute,
     backupRoute,
+    sweepRoute,
     hooksRoute,
     hostsRoute,
     buildRoute,

@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect"
 import { CoreConfig, osName } from "./config.ts"
 import { dial, makeHost } from "./host.ts"
 import { credential } from "./paired.ts"
+import { redactLogs } from "./redaction.ts"
 import { layerServer, prepare } from "./server.ts"
 
 const host = Effect.gen(function* hosting() {
@@ -63,6 +64,8 @@ const admin = (verb: string, arg: string) =>
   }).pipe(Effect.provide(CoreConfig.layer))
 
 export const run = (command: string | undefined) => {
+  // What it logs (the core's, a host's, a prepare's) never holds a secret.
+  redactLogs()
   if (command === "host") {
     BunRuntime.runMain(host)
   } else if (

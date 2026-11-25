@@ -35,6 +35,7 @@ import {
   EventId,
   HOME,
   installedExtensions,
+  ownSecret,
   prefs,
   ItemId,
   spaceFor,
@@ -1300,7 +1301,9 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
           }
           const c = (yield* connected).find((x) => x.id === id)
           const held = parseJson(keychain.read(SERVICE, id))
+          // What it hands out is known to redaction by value from then on (brain's redact.ts).
           if (c !== undefined && held.kind === "key" && str(held.secret) !== "") {
+            ownSecret(str(held.secret), `${c.provider} key`)
             return { token: str(held.secret), expires: Date.now() + 60 * MINUTE }
           }
           if (c === undefined || str(held.refresh_token) === "") {
@@ -1315,6 +1318,8 @@ export class Connections extends Context.Service<Connections, ConnectionsShape>(
           if (fresh.refresh !== "" && fresh.refresh !== str(held.refresh_token)) {
             keychain.write(id, JSON.stringify({ ...held, refresh_token: fresh.refresh }))
           }
+          ownSecret(fresh.token, `${c.provider} token`)
+          ownSecret(fresh.refresh || str(held.refresh_token), `${c.provider} token`)
           const out = { token: fresh.token, expires: fresh.expires }
           cache.set(id, out)
           return out

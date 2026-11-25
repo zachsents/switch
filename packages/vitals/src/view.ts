@@ -1,12 +1,21 @@
 /// <reference lib="dom" />
 
-// The vitals widget's meters, around the machine's picture (picture.ts), as an MCP App's script,
-// as the macOS extension's widget draws them: each reading the host sends changes them in place. Nothing shows until the first reading is drawn. It
+// The vitals widget's meters, around the machine's picture (page.ts), as an MCP App's script: each
+// reading the host sends changes them in place. Nothing shows until the first reading is drawn. It
 // speaks MCP Apps' few messages itself: the SDK's App would add 580 KB for them.
-import type { Reading } from "./vitals.ts"
-
-/** What the `vitals` tool answers that its widget reads. */
-interface Vitals extends Reading {
+/** What the `vitals` tool answers that its widget reads: each extension's reading (its vitals.ts),
+ * with a battery or a CPU temperature when its machine has one. */
+interface Vitals {
+  readonly load: number
+  readonly cores: number
+  readonly cpu: number
+  readonly memoryPct: number
+  readonly pressure: "normal" | "warn" | "critical"
+  readonly swapGb: number
+  readonly diskFreeGb: number
+  readonly diskUsedPct?: number
+  readonly battery?: { readonly pct: number }
+  readonly temp?: { readonly c: number; readonly critC: number }
   readonly alerting: readonly string[]
 }
 
@@ -22,7 +31,7 @@ interface MeterDef {
   readonly key: string
   readonly name: string
   readonly cells: number
-  /** What it shows now; null when this machine has none (a temperature sensor). */
+  /** What it shows now; null when the machine has none (a battery, a temperature sensor). */
   readonly read: (v: Vitals) => Shown | null
 }
 
@@ -74,6 +83,13 @@ const SWAP: MeterDef = {
   cells: CELLS,
   read: (v) => ({ figure: short(v.swapGb), unit: "GB", fill: v.swapGb / SWAP_HIGH_GB }),
 }
+const BATTERY: MeterDef = {
+  key: "battery",
+  name: "Battery",
+  cells: CELLS,
+  read: (v) =>
+    v.battery ? { figure: `${v.battery.pct}`, unit: "%", fill: v.battery.pct / 100 } : null,
+}
 const TEMP: MeterDef = {
   key: "temp",
   name: "Temp",
@@ -84,9 +100,10 @@ const TEMP: MeterDef = {
       : null,
 }
 
-/** The machine's own on the left under its name; memory's and the CPU's temperature on the right. */
+/** The machine's own on the left under its name; memory's, and the battery's or the CPU's
+ * temperature, on the right. */
 const LEFT = [CPU, LOAD, DISK]
-const RIGHT = [MEMORY, PRESSURE, SWAP, TEMP]
+const RIGHT = [MEMORY, PRESSURE, SWAP, BATTERY, TEMP]
 
 const make = (tag: string, className: string, parent: Element) => {
   const e = document.createElement(tag)
@@ -275,7 +292,7 @@ post({
   id: 1,
   method: "ui/initialize",
   params: {
-    appInfo: { name: "linux", version: "1" },
+    appInfo: { name: "vitals", version: "1" },
     appCapabilities: {},
     protocolVersion: PROTOCOL,
   },

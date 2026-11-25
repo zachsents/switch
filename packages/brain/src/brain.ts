@@ -1,6 +1,7 @@
 // The write path follows T3 Code's orchestration-v2 (EventSink), MIT, Copyright (c) 2026 T3 Tools
 // Inc.: decide, then one transaction for events and projections, then publish. What reacts to an
-// event after commit is a reactor with a cursor in the brain (reactors.ts).
+// event after commit is a reactor with a cursor in the brain (reactors.ts). It's the one way in, so
+// every event's secrets are redacted on it (redact.ts).
 import { Database } from "bun:sqlite"
 import {
   Context,
@@ -19,6 +20,7 @@ import {
 import { Rejected } from "./defs.ts"
 import { EventId } from "./ids.ts"
 import { dependsOf, EVENTS, runQuery, sourceOf, touches } from "./query.ts"
+import { redactValue } from "./redact.ts"
 import type { Found, Query, QuerySource } from "./query.ts"
 import type { Check, CommandDef, EventDef, On, Projection, StoredEvent, Upcast } from "./defs.ts"
 
@@ -66,6 +68,11 @@ export interface BrainShape {
   /** Every event after `seq`: the log first, then live, with no gap and no repeat. */
   readonly changes: (seq: number) => Stream.Stream<StoredEvent>
   readonly read: <A>(f: (db: Database) => A) => Effect.Effect<A>
+  /**
+   * `f` changing the database in place, in one transaction between the other writes: a migration
+   * made live, a page at a time (redaction's sweep). What it frees is zeroed (`secure_delete`).
+   */
+  readonly migrate: <A>(f: (db: Database) => A) => Effect.Effect<A>
   readonly rebuild: (projection: string) => Effect.Effect<void>
   /** Adds an event type while running, as an app connects. Rejected if it's known at another version. */
   readonly register: (def: EventDef) => Effect.Effect<void, Rejected>
@@ -134,9 +141,12 @@ const checked = (
     return new Rejected({ reason: `Unknown type ${d.type}` })
   }
   const result = def.check(d.payload)
-  return Result.isSuccess(result)
-    ? { encoded: result.success, json: JSON.stringify(result.success) }
-    : new Rejected({ reason: `${d.type}: ${result.failure}` })
+  if (Result.isFailure(result)) {
+    return new Rejected({ reason: `${d.type}: ${result.failure}` })
+  }
+  // Every secret in it is its name before it's stored, projected or published (redact.ts).
+  const encoded = redactValue(result.success)
+  return { encoded, json: JSON.stringify(encoded) }
 }
 
 const open = (path: string) => {
@@ -508,6 +518,17 @@ const makeBrain = Effect.fnUntraced(function* makeBrain(config: BrainConfig) {
     })),
     changes,
     read: (f) => Effect.sync(() => timed(f, db)),
+    migrate: (f) =>
+      lane.withPermit(
+        Effect.sync(() => {
+          db.run("PRAGMA secure_delete = ON")
+          try {
+            return db.transaction(f)(db)
+          } finally {
+            db.run("PRAGMA secure_delete = OFF")
+          }
+        }),
+      ),
     rebuild: (name) =>
       lane.withPermit(
         Effect.suspend(() => {

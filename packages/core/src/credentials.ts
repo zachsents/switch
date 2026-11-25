@@ -350,7 +350,15 @@ const random = (bytes: number) => {
 }
 
 export const newToken = () => `sw_${random(32)}`
+
 export const newId = () => random(9)
+
+/** The shapes this core's tokens take (a device's or host's, an extension's, a script's): never kept or shown. */
+export const TOKEN_SHAPES = [
+  /\bsw_[\w-]{43}(?![\w-])/gu,
+  /\bsws_[a-z0-9][a-z0-9-]{0,80}\.[\w-]{43}(?![\w-])/gu,
+  /\bsws-script_[a-z0-9][a-z0-9-]{0,80}\.[\w-]{43}(?![\w-])/gu,
+]
 
 /** A code a person reads off one screen and finds on another: `ABCD-EFGH`. */
 export const newCode = () => {

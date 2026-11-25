@@ -1,7 +1,7 @@
 // A Linux machine's vitals as a Switch extension: read every minute, an event every five or when
-// something worth a glance changes, and the widget the macOS extension draws for a Mac, with the
-// CPU's temperature in its battery's place. Its widget's page is made as the extension starts: Bun
-// runs no macros from an installed package.
+// something worth a glance changes, and the vitals widget the macOS extension draws too
+// (vitals-widget), with the CPU's temperature in a battery's place. Its widget's page is made as the
+// extension starts: Bun runs no macros from an installed package.
 import { hostname } from "node:os"
 import { Effect, Schema } from "effect"
 
@@ -9,7 +9,8 @@ import { AppEvents, defineApp, defineEvent, MCP_CATALOG, surface, tool } from "s
 import { beat, Heartbeat, kept, said, watch as watched } from "./health.ts"
 import { load } from "./load.ts"
 import { thisMachine } from "./look.ts"
-import { ratio, vitalsPage } from "./vitals-page.ts"
+import { picture } from "./picture.ts"
+import { ratio, vitalsPage } from "./vitals-widget/page.ts"
 import { alerting, alerts, hasTemp, notable, read, reading } from "./vitals.ts"
 import type { Reading } from "./vitals.ts"
 
@@ -19,7 +20,7 @@ export const Vitals = defineEvent("linux.vitals", 1, reading)
 
 const me = thisMachine(machine)
 const temp = hasTemp()
-const page = vitalsPage(me.name, me.look, temp)
+const page = vitalsPage(me.name, picture(me.look), temp)
 
 let latest: Reading | null = null
 

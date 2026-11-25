@@ -55,6 +55,8 @@ export interface Running {
   tagged: string | null
   /** What its end records when it was cut off from outside (a restart, its host gone, a limit); null when the user stopped it. */
   cutBy: string | null
+  /** Streamed text after its last whitespace, held for the next delta (`absorb`). */
+  held: string
 }
 
 export const newTurn = (thread: Thread): Running => ({
@@ -84,6 +86,7 @@ export const newTurn = (thread: Thread): Running => ({
   model: null,
   tagged: null,
   cutBy: null,
+  held: "",
 })
 
 /** Marks a message sent into the turn as the user's words: its step's text is owed to them. */
@@ -352,12 +355,15 @@ export const absorb = (t: Running, batch: readonly CliMessage[]) => {
     drafts.push(event(`${t.id}:${t.n}`, type, { thread: t.thread.thread, turn: t.id, ...payload }))
     t.n += 1
   }
-  // Text deltas in a row become one event.
-  let delta = ""
-  const flush = () => {
-    if (delta !== "") {
-      add(TurnDelta.type, { text: delta })
-      delta = ""
+  // Text deltas in a row become one event, ending on whitespace: a word (a key, a token) is never
+  // split between two, so each is stored with its secrets redacted whole. The rest waits for the
+  // next, or the block's end.
+  let delta = t.held
+  const flush = (whole: boolean) => {
+    const cut = whole ? delta.length : delta.search(/\S*$/u)
+    if (cut > 0) {
+      add(TurnDelta.type, { text: delta.slice(0, cut) })
+      delta = delta.slice(cut)
     }
   }
   const state: Batch = { ended: null, step: null }
@@ -368,11 +374,12 @@ export const absorb = (t: Running, batch: readonly CliMessage[]) => {
         delta += m.event.delta.text ?? ""
       }
     } else if (own) {
-      flush()
+      flush(true)
       absorbMessage(t, m, add, state)
     }
   }
-  flush()
+  flush(false)
+  t.held = delta
   const { ended, step } = state
   if (step) {
     reply(t, step)
