@@ -235,6 +235,33 @@ const pageError = (details: Json) => {
   return first.startsWith("Error: ") ? first.slice(7) : first
 }
 
+/** The handles an agent's script leaves, let go once its value is copied out. */
+const SCRIPT_GROUP = "switch-script"
+
+/** A debugger reply's result, or what stopped it: a dialog the page opened, or the page's error. */
+const settled = (reply: Json): Json => {
+  if (reply.dialog === true) {
+    throw new Error(
+      "The page opened a dialog, which holds its scripts until it's answered (op dialog)",
+    )
+  }
+  if (isJson(reply.exceptionDetails)) {
+    throw new Error(pageError(reply.exceptionDetails))
+  }
+  return isJson(reply.result) ? reply.result : {}
+}
+
+/** A result's value copied out: null for undefined, its description when it can't be copied. */
+const copied = (result: Json): unknown => {
+  if ("value" in result) {
+    return result.value
+  }
+  if (result.type === "undefined") {
+    return null
+  }
+  return str(result.description) || "(a value that can't be copied out)"
+}
+
 const clamp = (v: number, hi: number) => Math.min(Math.max(v, 0), hi)
 
 /** A session's tab, with its gate held: every op on it goes through here. */
@@ -349,30 +376,42 @@ export class Tab {
   }
 
   private async evaluate(context: number | null, expression: string, ms = CDP_MS, repl = false) {
-    const params: Json = { expression, returnByValue: true, awaitPromise: true, userGesture: true }
+    const params: Json = { expression, returnByValue: !repl, awaitPromise: true, userGesture: true }
     if (context !== null) {
       params.contextId = context
     }
-    if (repl) {
-      params.replMode = true
+    if (!repl) {
+      return copied(settled(await this.cdp("Runtime.evaluate", params, ms)))
     }
-    const reply = await this.cdp("Runtime.evaluate", params, ms)
-    if (reply.dialog === true) {
-      throw new Error(
-        "The page opened a dialog, which holds its scripts until it's answered (op dialog)",
-      )
+    // REPL mode awaits a top-level `await`, but not a promise the code ends on (an async IIFE), so
+    // the result stays a handle: a promise is awaited, anything else copied out, then let go.
+    params.replMode = true
+    params.objectGroup = SCRIPT_GROUP
+    try {
+      const result = settled(await this.cdp("Runtime.evaluate", params, ms))
+      const id = str(result.objectId)
+      if (id === "") {
+        return copied(result)
+      }
+      const reply =
+        result.subtype === "promise"
+          ? await this.cdp("Runtime.awaitPromise", { promiseObjectId: id, returnByValue: true }, ms)
+          : await this.cdp(
+              "Runtime.callFunctionOn",
+              {
+                objectId: id,
+                functionDeclaration: "function () { return this }",
+                returnByValue: true,
+              },
+              ms,
+            )
+      return copied(settled(reply))
+    } finally {
+      if (this.log.dialog === null) {
+        // Not waited on: a page still busy past the timeout mustn't hold the answer longer.
+        this.cdp("Runtime.releaseObjectGroup", { objectGroup: SCRIPT_GROUP }).catch(() => {})
+      }
     }
-    if (isJson(reply.exceptionDetails)) {
-      throw new Error(pageError(reply.exceptionDetails))
-    }
-    const result = isJson(reply.result) ? reply.result : {}
-    if ("value" in result) {
-      return result.value
-    }
-    if (result.type === "undefined") {
-      return null
-    }
-    return str(result.description) || "(a value that can't be copied out)"
   }
 
   /** The page script's world in the current document, made and installed if the document changed. */
