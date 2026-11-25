@@ -1,12 +1,12 @@
 //! Switch's look (DESIGN.md, `index.css`, `ui/theme.ts`): one background, the three
 //! lines, the words' three inks worked out from the background, the lamps, the green key, and the
 //! text size. The theme (`theme.rs`: the brain's `pref theme`, this Mac's copy until it comes) sets
-//! it, in the system's appearance when the theme follows the system.
+//! it, its side for the appearance shown (the system's when the theme follows the system).
 
 use gpui::{App, Global, Hsla, Rems, rems, rgb};
 
 use crate::derive::{Station, hex};
-use crate::theme::{Appearance, Theme, section_of, zoom_of};
+use crate::theme::{Appearance, Theme, zoom_of};
 
 #[derive(Clone, Copy)]
 pub struct Look {
@@ -110,24 +110,29 @@ impl Look {
             Appearance::Light => false,
             Appearance::System => system_dark,
         };
-        let pick = |light: &str, night: &str| hex(if dark { night } else { light }).unwrap_or(0);
-        let bg = pick(&t.bg.light, &t.bg.dark);
-        let line1 = pick(&t.line1.light, &t.line1.dark);
-        let line2 = pick(&t.line2.light, &t.line2.dark);
-        let section = section_of(t);
+        Look::of_side(t, dark)
+    }
+
+    /// The theme in an appearance, its side for it.
+    pub fn of_side(t: &Theme, dark: bool) -> Self {
+        let s = t.side(dark);
+        let bg = hex(&s.bg).unwrap_or(0);
+        let line1 = hex(&s.line1.color).unwrap_or(0);
+        let line2 = hex(&s.line2.color).unwrap_or(0);
+        let section = s.section_line();
         let (ink, ink2, ink3) = inks(bg);
-        let go = hex(&t.go).unwrap_or(0x1f8a5e);
+        let go = hex(&s.go).unwrap_or(0x1f8a5e);
         let on_dark = luminance(bg) <= 0.18;
         Look {
             dark,
             bg: h(bg),
             hover: h(mix(bg, ink, 0.08)),
             line1: h(line1),
-            line_section: h(pick(&section.light, &section.dark)),
+            line_section: h(hex(&section.color).unwrap_or(0)),
             line2: h(line2),
-            w1: t.line1.w,
+            w1: s.line1.w,
             w_section: section.w,
-            w2: t.line2.w,
+            w2: s.line2.w,
             ink: h(ink),
             ink2: h(ink2),
             ink3: h(ink3),
@@ -140,9 +145,9 @@ impl Look {
             go_press: h(mix(go, 0, 0.2)),
             go_border: h(mix(go, 0, 0.45)),
             go_drop: h(mix(go, 0, 0.6)),
-            yellow: h(hex(&t.needs).unwrap_or(0xffc000)),
-            orange: h(hex(&t.running).unwrap_or(0xf26419)),
-            red: h(hex(&t.danger).unwrap_or(0xd42a1f)),
+            yellow: h(hex(&s.needs).unwrap_or(0xffc000)),
+            orange: h(hex(&s.running).unwrap_or(0xf26419)),
+            red: h(hex(&s.danger).unwrap_or(0xd42a1f)),
             white: h(0xffffff),
             black: h(0x000000),
             zoom: zoom_of(t.size),

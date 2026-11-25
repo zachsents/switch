@@ -9,6 +9,7 @@ import { Brain, ownSecret, ownShape, redact, redacting, redactValue } from "@swi
 import { Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
+import { CoreConfig } from "./config.ts"
 import { TOKEN_SHAPES } from "./credentials.ts"
 
 const METHODS = [
@@ -268,11 +269,13 @@ const asked = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ logs: Schema.Array(Schema.String) })),
 )
 
-// Admin only (auth.ts): the sweep, with the logs it reads (`{ logs: [paths] }`); answers with what
-// it found, by name and never a value, once it's done.
+// Admin only (auth.ts): the sweep, with the logs it reads (`{ logs: [paths] }`). Answers at once;
+// what it found, by name and never a value, is `redactions-swept.json` in the core's folder once
+// it's done.
 export const sweepRoute = Layer.unwrap(
   Effect.gen(function* routing() {
     const brain = yield* Brain
+    const { dir } = yield* CoreConfig
     return HttpRouter.add(
       "POST",
       "/redactions/sweep",
@@ -280,8 +283,18 @@ export const sweepRoute = Layer.unwrap(
         const request = yield* HttpServerRequest.HttpServerRequest
         const body = yield* request.text
         const logs = Option.match(asked(body), { onNone: () => [], onSome: (b) => b.logs })
-        const report = yield* sweep(logs).pipe(Effect.provideService(Brain, brain))
-        return HttpServerResponse.jsonUnsafe(report)
+        yield* Effect.forkDetach(
+          sweep(logs).pipe(
+            Effect.provideService(Brain, brain),
+            Effect.flatMap((report) =>
+              Effect.sync(() => {
+                writeFileSync(path.join(dir, "redactions-swept.json"), JSON.stringify(report))
+              }),
+            ),
+            Effect.ignore({ log: "Warn", message: "The redaction sweep stopped" }),
+          ),
+        )
+        return HttpServerResponse.text("Started", { status: 202 })
       }).pipe(Effect.orDie),
     )
   }),

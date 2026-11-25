@@ -171,23 +171,40 @@ const runAdd = (dir: string, source: string) =>
     }
   })
 
-/** Adds `source` to the project in `dir`, unless it's what's there. Fails with bun's last words. */
+/**
+ * Makes `dir` the project of `source` alone, unless it's what's there: added into a new project
+ * beside it, which takes its place once bun has it. Fails with bun's last words, `dir` as it was.
+ *
+ * Never added over the one there: bun kept every earlier source as a dependency of the same name
+ * (an old repository's pulling in its own kit), and kept a dependency whose version the new lock
+ * wanted, whatever it held (a kit built from git, `0.2.0` like the published one but without
+ * `Host`), so an update that imported something new exited at once.
+ */
 export const addPackage = (dir: string, source: string) =>
   Effect.gen(function* adding() {
     const mark = path.join(dir, ".source")
     const there = existsSync(mark) && readFileSync(mark, "utf-8") === source
     if (!there) {
-      mkdirSync(dir, { recursive: true })
-      const manifest = path.join(dir, "package.json")
-      if (!existsSync(manifest)) {
-        writeFileAtomic(manifest, '{ "private": true }\n')
-      }
-      const done = yield* runAdd(dir, source)
+      const next = `${dir}.next-${crypto.randomUUID()}`
+      mkdirSync(next, { recursive: true })
+      writeFileAtomic(path.join(next, "package.json"), '{ "private": true }\n')
+      // Gone however the add ends: failed, interrupted, or moved into place.
+      const done = yield* runAdd(next, source).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (!Exit.isSuccess(exit) || exit.value.code !== 0) {
+              rmSync(next, { recursive: true, force: true })
+            }
+          }),
+        ),
+      )
       if (done.code !== 0) {
         const last = done.err.trim().split("\n").at(-1)
         yield* Effect.fail(`Can't add ${source}: ${last ?? `bun exited ${done.code}`}`)
       }
-      writeFileAtomic(mark, source)
+      writeFileAtomic(path.join(next, ".source"), source)
+      rmSync(dir, { recursive: true, force: true })
+      renameSync(next, dir)
     }
   })
 

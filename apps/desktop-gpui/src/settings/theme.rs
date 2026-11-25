@@ -1,7 +1,8 @@
-//! Theme (the desktop's `ui/settings/theme-section.tsx` and `color-field.tsx`): a preset, the
-//! appearance, the background per appearance, the three lines (color per appearance, thickness),
-//! the state colors, text size. Every change shows at once in every window; nothing to apply. The
-//! fields start again from the theme when a preset is picked or the theme changes elsewhere.
+//! Theme (the desktop's `ui/settings/theme-section.tsx` and `color-field.tsx`): the appearance and
+//! text size, then one appearance's theme at a time, the one shown unless the other's picked: its
+//! preset, background, three lines (color, thickness) and state colors, its samples in its own
+//! look. Every change shows at once in every window; nothing to apply. The fields start again from
+//! the theme when a preset is picked or the theme changes elsewhere.
 
 use std::rc::Rc;
 
@@ -10,7 +11,7 @@ use ui_sdk::components::input::{Input, InputOptions, TextFieldStyle};
 
 use crate::kit::{self, Btn, W40};
 use crate::look::{Look, MONO, u};
-use crate::theme::{Appearance, Held, PRESET_KEYS, Size, Theme, preset, preset_name, preset_of, section_of};
+use crate::theme::{Appearance, Held, PRESET_KEYS, Side, Size, Theme, preset, preset_name, preset_of};
 
 const WIDTHS: [(&str, &str); 3] = [("0.5", "Hairline"), ("1", "1 pt"), ("2", "2 pt")];
 
@@ -32,29 +33,42 @@ fn width_key(w: f32) -> &'static str {
     }
 }
 
-/// A field changed: the theme with it, its section line written out as the form holds it.
-fn edit(f: impl FnOnce(&mut Theme), cx: &mut App) {
+/// A field of one side changed: the theme with it, the side's section line written out as the form
+/// holds it.
+fn edit(dark: bool, f: impl FnOnce(&mut Side), cx: &mut App) {
     let mut t = Held::theme(cx);
-    t.section = Some(section_of(&t));
-    f(&mut t);
+    let side = t.side_mut(dark);
+    side.section = Some(side.section_line());
+    f(side);
     if t.valid() {
         Held::set(t, cx);
     }
 }
 
-type Set = Rc<dyn Fn(&mut Theme, String)>;
+/// The theme as a whole changed (its appearance, its text size).
+fn edit_theme(f: impl FnOnce(&mut Theme), cx: &mut App) {
+    let mut t = Held::theme(cx);
+    f(&mut t);
+    Held::set(t, cx);
+}
+
+/// Which side the page edits: the one picked, else the one shown.
+struct Editing(Option<bool>);
+
+type Set = Rc<dyn Fn(&mut Side, String)>;
 
 fn hex_ok(v: &str) -> bool {
     v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
 }
 
 /// A color: a swatch that opens the system's color panel, and its hex.
-fn color_field(name: &str, label: &str, value: &str, set: Set, outside: u64, window: &mut Window, cx: &mut App) -> AnyElement {
+fn color_field(dark: bool, name: &str, label: &str, value: &str, set: Set, outside: u64, window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
     let swatch_value = value.to_string();
     let swatch_set = set.clone();
-    // Keyed by the value: a change from the panel or a preset starts it again.
-    let id = ElementId::Name(format!("hex-{name}-{value}-{outside}").into());
+    // Keyed by the value: a change from the panel or a preset starts it again; and by the ink it
+    // was made in, so another appearance's starts it again too.
+    let id = ElementId::Name(format!("hex-{dark}-{name}-{value}-{outside}-{}", l.dark).into());
     let s = set.clone();
     let input = window.use_keyed_state(id, cx, {
         let value = value.to_string();
@@ -67,7 +81,7 @@ fn color_field(name: &str, label: &str, value: &str, set: Set, outside: u64, win
                         let v = v.trim().to_lowercase();
                         if hex_ok(&v) {
                             let s = s.clone();
-                            cx.defer(move |cx| edit(move |t| s(t, v), cx));
+                            cx.defer(move |cx| edit(dark, move |t| s(t, v), cx));
                         }
                     }),
                 window,
@@ -82,7 +96,7 @@ fn color_field(name: &str, label: &str, value: &str, set: Set, outside: u64, win
         .gap(u(6.))
         .child(
             div()
-                .id(ElementId::Name(format!("swatch-{name}").into()))
+                .id(ElementId::Name(format!("swatch-{dark}-{name}").into()))
                 .aria_label(format!("{label} color"))
                 .tab_index(0)
                 .focus_visible(|s| s.border_color(l.ink3))
@@ -95,7 +109,7 @@ fn color_field(name: &str, label: &str, value: &str, set: Set, outside: u64, win
                     let set = swatch_set.clone();
                     crate::color_panel::open(&swatch_value, move |hex, cx| {
                         let set = set.clone();
-                        edit(move |t| set(t, hex), cx);
+                        edit(dark, move |t| set(t, hex), cx);
                     }, cx);
                 }),
         )
@@ -117,11 +131,11 @@ fn color_field(name: &str, label: &str, value: &str, set: Set, outside: u64, win
         .into_any_element()
 }
 
-fn width_seg(name: &str, label: &str, w: f32, set: impl Fn(&mut Theme, f32) + 'static, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
+fn width_seg(dark: bool, name: &str, label: &str, w: f32, set: impl Fn(&mut Side, f32) + 'static, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
     let set = Rc::new(set);
-    kit::segmented(format!("w-{name}"), label, &WIDTHS, width_key(w), l, move |v, _, cx| {
+    kit::segmented(format!("w-{dark}-{name}"), label, &WIDTHS, width_key(w), l, move |v, _, cx| {
         let (set, w) = (set.clone(), width_of(v));
-        edit(move |t| set(t, w), cx)
+        edit(dark, move |t| set(t, w), cx)
     }, window, cx)
 }
 
@@ -129,26 +143,24 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
     let t = Held::theme(cx);
     let outside = Held::outside(cx);
-    let section = section_of(&t);
-    let preset_now = preset_of(&t);
+    let editing = window.use_keyed_state(ElementId::Name("theme-editing".into()), cx, |_, _| Editing(None));
+    let dark = editing.read(cx).0.unwrap_or(l.dark);
+    let side = t.side(dark).clone();
+    // The side's own look, for its samples.
+    let sl = Look::of_side(&t, dark);
+    let section = side.section_line();
+    let preset_now = preset_of(&side, dark);
     let mut presets: Vec<(&str, &str)> = PRESET_KEYS.iter().map(|k| (*k, preset_name(k))).collect();
     if preset_now.is_none() {
         presets.push(("custom", "Custom"));
     }
     macro_rules! color {
         ($name:expr, $label:expr, $value:expr, |$t:ident, $v:ident| $body:expr) => {
-            color_field($name, $label, &$value, Rc::new(|$t: &mut Theme, $v: String| $body), outside, window, cx)
+            color_field(dark, $name, $label, &$value, Rc::new(|$t: &mut Side, $v: String| $body), outside, window, cx)
         };
     }
+    let sample = || div().flex().items_center().gap(u(8.)).px(u(8.)).py(u(4.)).rounded(u(4.)).bg(sl.bg);
     let theme_rows = vec![
-        kit::setting("Preset", W40, &l)
-            .child(kit::controls().child(kit::segmented("preset", "Preset", &presets, preset_now.unwrap_or("custom"), &l, |v, _, cx| {
-                if PRESET_KEYS.contains(&v) {
-                    Held::set(preset(v), cx);
-                    cx.global_mut::<Held>().outside += 1;
-                }
-            }, window, cx)))
-            .into_any_element(),
         kit::setting("Appearance", W40, &l)
             .child(kit::controls().child(kit::segmented(
                 "appearance", "Appearance",
@@ -165,83 +177,97 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
                         "dark" => Appearance::Dark,
                         _ => Appearance::System,
                     };
-                    edit(move |t| t.appearance = a, cx)
+                    edit_theme(move |t| t.appearance = a, cx)
                 },
                 window,
                 cx,
             )))
             .into_any_element(),
-        kit::setting("Background", W40, &l)
-            .child(kit::controls().child(color!("bg-light", "Light", t.bg.light, |t, v| t.bg.light = v)).child(color!("bg-dark", "Dark", t.bg.dark, |t, v| t.bg.dark = v)))
+        kit::setting("Text size", W40, &l)
+            .child(kit::controls().child(kit::segmented(
+                "size", "Text size",
+                &[("small", "Small"), ("default", "Default"), ("large", "Large")],
+                match t.size {
+                    Size::Small => "small",
+                    Size::Default => "default",
+                    Size::Large => "large",
+                },
+                &l,
+                |v, _, cx| {
+                    let s = match v {
+                        "small" => Size::Small,
+                        "large" => Size::Large,
+                        _ => Size::Default,
+                    };
+                    edit_theme(move |t| t.size = s, cx)
+                },
+                window,
+                cx,
+            )))
             .into_any_element(),
     ];
-    let line_rows = vec![
+    let pick = {
+        let editing = editing.clone();
+        kit::segmented("theme-side", "Theme", &[("light", "Light"), ("dark", "Dark")], if dark { "dark" } else { "light" }, &l, move |v, _, cx| {
+            editing.update(cx, |e, cx| {
+                e.0 = Some(v == "dark");
+                cx.notify();
+            })
+        }, window, cx)
+    };
+    let side_rows = vec![
+        kit::setting("Preset", W40, &l)
+            .child(kit::controls().child(kit::segmented(format!("preset-{dark}"), "Preset", &presets, preset_now.unwrap_or("custom"), &l, move |v, _, cx| {
+                if PRESET_KEYS.contains(&v) {
+                    let mut t = Held::theme(cx);
+                    *t.side_mut(dark) = preset(v, dark);
+                    Held::set(t, cx);
+                    cx.global_mut::<Held>().outside += 1;
+                }
+            }, window, cx)))
+            .into_any_element(),
+        kit::setting("Background", W40, &l).child(kit::controls().child(color!("bg", "Background", side.bg, |t, v| t.bg = v))).into_any_element(),
         kit::setting("Between panes", W40, &l)
             .child(
                 kit::controls()
-                    .child(color!("line1-light", "Light", t.line1.light, |t, v| t.line1.light = v))
-                    .child(color!("line1-dark", "Dark", t.line1.dark, |t, v| t.line1.dark = v))
-                    .child(width_seg("line1", "Between panes", t.line1.w, |t, w| t.line1.w = w, &l, window, cx)),
+                    .child(color!("line1", "Between panes", side.line1.color, |t, v| t.line1.color = v))
+                    .child(width_seg(dark, "line1", "Between panes", side.line1.w, |t, w| t.line1.w = w, &l, window, cx)),
             )
             .into_any_element(),
         kit::setting("Between sections", W40, &l)
             .child(
                 kit::controls()
-                    .child(color!("section-light", "Light", section.light, |t, v| if let Some(s) = t.section.as_mut() { s.light = v }))
-                    .child(color!("section-dark", "Dark", section.dark, |t, v| if let Some(s) = t.section.as_mut() { s.dark = v }))
-                    .child(width_seg("section", "Between sections", section.w, |t, w| if let Some(s) = t.section.as_mut() { s.w = w }, &l, window, cx)),
+                    .child(color!("section", "Between sections", section.color, |t, v| if let Some(s) = t.section.as_mut() { s.color = v }))
+                    .child(width_seg(dark, "section", "Between sections", section.w, |t, w| if let Some(s) = t.section.as_mut() { s.w = w }, &l, window, cx)),
             )
             .into_any_element(),
         kit::setting("Between rows", W40, &l)
             .child(
                 kit::controls()
-                    .child(color!("line2-light", "Light", t.line2.light, |t, v| t.line2.light = v))
-                    .child(color!("line2-dark", "Dark", t.line2.dark, |t, v| t.line2.dark = v))
-                    .child(width_seg("line2", "Between rows", t.line2.w, |t, w| t.line2.w = w, &l, window, cx)),
+                    .child(color!("line2", "Between rows", side.line2.color, |t, v| t.line2.color = v))
+                    .child(width_seg(dark, "line2", "Between rows", side.line2.w, |t, w| t.line2.w = w, &l, window, cx)),
             )
             .into_any_element(),
-    ];
-    let color_rows = vec![
-        kit::setting("Go", W40, &l).child(kit::controls().child(color!("go", "Go", t.go, |t, v| t.go = v)).child(kit::button("sample-go", Btn::Go, true, &l).aria_label("Send").child("Send"))).into_any_element(),
-        kit::setting("Needs you", W40, &l).child(kit::controls().child(color!("needs", "Needs you", t.needs, |t, v| t.needs = v))).into_any_element(),
-        kit::setting("Running", W40, &l).child(kit::controls().child(color!("running", "Running", t.running, |t, v| t.running = v))).into_any_element(),
-        kit::setting("Danger", W40, &l).child(kit::controls().child(color!("danger", "Danger", t.danger, |t, v| t.danger = v)).child(kit::button("sample-stop", Btn::Danger, true, &l).aria_label("Stop").child("Stop"))).into_any_element(),
-        kit::setting("Neutral", W40, &l).child(kit::controls().child(kit::button("sample-reply", Btn::Key, true, &l).aria_label("Reply").child("Reply"))).into_any_element(),
+        kit::setting("Go", W40, &l).child(kit::controls().child(color!("go", "Go", side.go, |t, v| t.go = v)).child(sample().child(kit::button("sample-go", Btn::Go, true, &sl).aria_label("Send").child("Send")))).into_any_element(),
+        kit::setting("Needs you", W40, &l).child(kit::controls().child(color!("needs", "Needs you", side.needs, |t, v| t.needs = v))).into_any_element(),
+        kit::setting("Running", W40, &l).child(kit::controls().child(color!("running", "Running", side.running, |t, v| t.running = v))).into_any_element(),
+        kit::setting("Danger", W40, &l).child(kit::controls().child(color!("danger", "Danger", side.danger, |t, v| t.danger = v)).child(sample().child(kit::button("sample-stop", Btn::Danger, true, &sl).aria_label("Stop").child("Stop")))).into_any_element(),
+        kit::setting("Neutral", W40, &l).child(kit::controls().child(sample().child(kit::button("sample-reply", Btn::Key, true, &sl).aria_label("Reply").child("Reply")))).into_any_element(),
         kit::setting("Text", W40, &l)
             .child(
-                kit::controls()
-                    .child(kit::ui(div()).text_color(l.ink).child("Read"))
-                    .child(kit::ui(div()).text_color(l.ink2).child("Supporting"))
-                    .child(kit::caption(div()).text_color(l.ink3).child("12:23")),
+                kit::controls().child(
+                    sample()
+                        .child(kit::ui(div()).text_color(sl.ink).child("Read"))
+                        .child(kit::ui(div()).text_color(sl.ink2).child("Supporting"))
+                        .child(kit::caption(div()).text_color(sl.ink3).child("12:23")),
+                ),
             )
             .into_any_element(),
     ];
-    let size_rows = vec![kit::setting("Text size", W40, &l)
-        .child(kit::controls().child(kit::segmented(
-            "size", "Text size",
-            &[("small", "Small"), ("default", "Default"), ("large", "Large")],
-            match t.size {
-                Size::Small => "small",
-                Size::Default => "default",
-                Size::Large => "large",
-            },
-            &l,
-            |v, _, cx| {
-                let s = match v {
-                    "small" => Size::Small,
-                    "large" => Size::Large,
-                    _ => Size::Default,
-                };
-                edit(move |t| t.size = s, cx)
-            },
-            window,
-            cx,
-        )))
-        .into_any_element()];
     kit::pane_scroll(
         "theme",
         None,
-        div().flex().flex_col().child(kit::group("Theme", None, theme_rows, &l)).child(kit::group("Lines", None, line_rows, &l)).child(kit::group("Colors", None, color_rows, &l)).child(kit::group("Size", None, size_rows, &l)),
+        div().flex().flex_col().child(kit::group("Theme", None, theme_rows, &l)).child(kit::group(if dark { "Dark theme" } else { "Light theme" }, Some(pick), side_rows, &l)),
         window,
         cx,
     )

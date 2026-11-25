@@ -28,7 +28,7 @@ gltf = { version = "1.4", default-features = false, features = ["import", "utils
 log = "0.4"
 lru = "0.16"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSMenu", "NSMenuItem", "NSEvent", "NSApplication", "NSColor", "NSColorPanel", "NSColorSpace", "NSPanel", "NSWindow", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSButton", "NSControl", "NSScreen", "block2", "objc2-core-foundation", "NSAccessibility", "NSPasteboard", "NSPasteboardItem", "libc"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSAppearance", "NSView", "NSMenu", "NSMenuItem", "NSEvent", "NSApplication", "NSColor", "NSColorPanel", "NSColorSpace", "NSPanel", "NSWindow", "NSGraphics", "NSRunningApplication", "NSWorkspace", "NSButton", "NSControl", "NSScreen", "block2", "objc2-core-foundation", "NSAccessibility", "NSPasteboard", "NSPasteboardItem", "libc"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSKeyValueCoding", "NSValue", "NSObject", "NSURL", "NSURLRequest", "NSError", "NSArray", "NSUserDefaults", "NSDate", "NSDateFormatter", "NSFormatter", "NSLocale", "NSNumberFormatter", "NSData"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKUserScript", "WKNavigation", "WKScriptMessage", "WKScriptMessageHandler", "WKFrameInfo", "WKNavigationDelegate", "WKNavigationAction", "WKUIDelegate", "WKSecurityOrigin", "WKContentRuleList", "WKContentRuleListStore", "WKWebsiteDataStore", "WKPreferences", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 rand = "0.9"

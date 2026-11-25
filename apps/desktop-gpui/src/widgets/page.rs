@@ -237,8 +237,8 @@ pub struct PageHost {
     sent_input: Option<String>,
     sent_result: Option<String>,
     sent_context: Option<Map<String, Value>>,
-    /// This Mac's appearance (the theme it's told is the system's, as a browser's media query says).
-    system_dark: bool,
+    /// The appearance this window shows (the theme it's told, as its media query says too).
+    dark: bool,
 }
 
 fn sig_of(html: &str) -> u64 {
@@ -268,7 +268,7 @@ impl PageHost {
             sent_input: None,
             sent_result: None,
             sent_context: None,
-            system_dark: false,
+            dark: false,
         }
     }
 
@@ -350,7 +350,7 @@ impl PageHost {
     fn context(&self) -> Map<String, Value> {
         let (w, h) = self.view.as_ref().map(|v| v.size()).unwrap_or((0., 0.));
         let v = json!({
-            "theme": if self.system_dark { "dark" } else { "light" },
+            "theme": if self.dark { "dark" } else { "light" },
             "displayMode": "inline",
             "availableDisplayModes": ["inline"],
             "locale": sys_locale::get_locale().unwrap_or_else(|| "en-US".into()),
@@ -781,7 +781,7 @@ pub fn draw(name: &str, c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App)
     let host = ctx.state(c, "page", window, cx, |_, _| PageHost::new(&key));
     let surface = ctx.scope.surface.clone();
     let in_window = ctx.in_window;
-    let system_dark = matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark);
+    let dark = crate::look::Look::get(cx).dark;
     let (height, width) = host.update(cx, |h, cx| {
         h.surface = Some(surface);
         h.paths = paths;
@@ -790,7 +790,7 @@ pub fn draw(name: &str, c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App)
         h.csp = csp;
         h.sandbox = sandbox;
         h.in_window = in_window;
-        h.system_dark = system_dark;
+        h.dark = dark;
         if html.is_empty() {
             // No page to show: its frame stays, empty.
             h.clear();

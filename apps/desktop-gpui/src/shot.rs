@@ -75,6 +75,22 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 }
                 continue;
             }
+            // `theme:<system|light|dark>`: the theme's appearance that, as Settings sets it (kept
+            // here only).
+            if let Some(a) = page.strip_prefix("theme:") {
+                let a = match a {
+                    "light" => crate::theme::Appearance::Light,
+                    "dark" => crate::theme::Appearance::Dark,
+                    _ => crate::theme::Appearance::System,
+                };
+                let _ = cx.update(|cx| {
+                    let mut t = crate::theme::Held::theme(cx);
+                    t.appearance = a;
+                    crate::theme::Held::set(t, cx);
+                });
+                cx.background_executor().timer(Duration::from_millis(1200)).await;
+                continue;
+            }
             for (step, pressed) in [("down:", true), ("drag:", true), ("up:", false)] {
                 let Some(rest) = page.strip_prefix(step) else { continue };
                 let mut xy = rest.split(':').map(|v| v.parse::<f32>().unwrap_or(0.));
@@ -180,7 +196,7 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                     // Where the focus went, as the key contexts down to it.
                     let at: Vec<String> = window.context_stack().iter().map(|c| format!("{c:?}")).collect();
                     // And AppKit's first responder, which the keyboard's keys go to.
-                    let responder = ns_window().and_then(|w| w.firstResponder()).map(|r| r.class().name().to_string_lossy().into_owned()).unwrap_or_default();
+                    let responder = crate::platform::appkit::ns_window(window).and_then(|w| w.firstResponder()).map(|r| r.class().name().to_string_lossy().into_owned()).unwrap_or_default();
                     eprintln!("focus: {:?} {} [{responder}]", window.focused(cx), at.join(" > "));
                     window.render_to_image()
                 });

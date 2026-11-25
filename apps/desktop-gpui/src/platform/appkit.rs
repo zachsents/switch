@@ -1,11 +1,11 @@
 //! What the app asks of AppKit itself, beyond gpui: a window's NSWindow, showing and hiding it at
 //! once with no animation (the desktop's `bun/still.ts`), keeping its bottom edge, whether it's on screen,
-//! and the app's own panels.
+//! the app's own panels, and the app's appearance.
 
 use gpui::Window;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSRunningApplication, NSView, NSWindow, NSWindowAnimationBehavior, NSWindowOcclusionState};
+use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSRunningApplication, NSView, NSWindow, NSWindowAnimationBehavior, NSWindowOcclusionState};
 use objc2_foundation::NSRect;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -76,6 +76,19 @@ pub fn about() {
     if let Some(mtm) = MainThreadMarker::new() {
         NSApplication::sharedApplication(mtm).orderFrontStandardAboutPanel(None);
     }
+}
+
+/// The app in the theme's appearance: light or dark, or none of its own (the system's). Every
+/// window takes it, and with it every web view's `prefers-color-scheme`, menu and panel.
+pub fn set_appearance(a: crate::theme::Appearance) {
+    let mtm = MainThreadMarker::new().expect("main thread");
+    // SAFETY: AppKit's own constant names, read on the main thread.
+    let name = match a {
+        crate::theme::Appearance::Light => Some(unsafe { NSAppearanceNameAqua }),
+        crate::theme::Appearance::Dark => Some(unsafe { NSAppearanceNameDarkAqua }),
+        crate::theme::Appearance::System => None,
+    };
+    NSApplication::sharedApplication(mtm).setAppearance(name.and_then(NSAppearance::appearanceNamed).as_deref());
 }
 
 /// Window ▸ Bring All to Front.

@@ -109,6 +109,9 @@ impl Root {
     fn restyle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pref = model(cx).read(cx).brain.prefs.get("theme").cloned();
         Held::from_brain(pref.as_ref(), cx);
+        // The app in the theme's appearance first, so the window's is the system's only when the
+        // theme follows it.
+        crate::platform::appkit::set_appearance(Held::theme(cx).appearance);
         let look = Look::of(&Held::theme(cx), dark(window.appearance()));
         let was = Look::get(cx);
         let same = was.bg == look.bg && was.zoom == look.zoom && was.dark == look.dark && was.line1 == look.line1 && was.line2 == look.line2 && was.line_section == look.line_section && was.w1 == look.w1 && was.w2 == look.w2 && was.w_section == look.w_section && was.go == look.go && was.yellow == look.yellow && was.orange == look.orange && was.red == look.red;

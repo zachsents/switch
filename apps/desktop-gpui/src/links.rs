@@ -115,7 +115,9 @@ pub fn open_link(url: &str, cx: &mut App) {
     let (first, id) = target_of(url);
     let b = &model(cx).read(cx).brain;
     if (first == "item" || first == "id") && b.items.open.contains_key(&id) {
-        cx.dispatch_action(&OpenItem(id));
+        // After this dispatch: a link followed from inside the window's own update (a click in a
+        // message, the menu's command) would find no window to go through, and be dropped.
+        cx.defer(move |cx| cx.dispatch_action(&OpenItem(id)));
     } else {
         let page = page_of_link(b, url);
         Nav::open(page, cx);

@@ -516,8 +516,8 @@ for the parent). `widgets/page.rs` answers the MCP Apps bridge.
   to its document (a link goes through `ui/open-link`), camera, microphone, location and clipboard
   only as its `permissions` say. It calls only the tools its `allowedTools` lists (an agent's page
   none), and its bridge is the catalog's whole (`widgets/page.rs`): the protocol version it asks
-  for when spoken, else the latest; its host context's changes alone (the theme the system's, as a
-  browser's media query says; the locale this Mac's first language); its bound data whole when it's
+  for when spoken, else the latest; its host context's changes alone (the appearance the app shows, as its media query says
+  too; the locale this Mac's first language); its bound data whole when it's
   ready, then what changes of it field by field, never its own writes back; the catalog's own
   functions (`widgets/functions.rs`: `updateDataModel`, `transformData` by JMESPath, `split`,
   `regexCapture` in the portable, safe subset, `callMcpTool` unconfigured as on the desktop), any

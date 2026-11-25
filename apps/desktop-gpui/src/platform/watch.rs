@@ -73,12 +73,44 @@ fn build() -> String {
     super::update::VERSION.to_string()
 }
 
-fn add(kind: &str, at: f64, summary: String, screen: String, trail: Vec<String>, report: Option<String>) {
-    let r = Report { id: uuid::Uuid::new_v4().to_string(), device: DEVICE.clone(), kind: kind.into(), build: build(), at, summary, screen, trail, report };
+fn add(kind: &str, at: f64, summary: String, screen: String, trail: Vec<String>, report: Option<String>) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let r = Report { id: id.clone(), device: DEVICE.clone(), kind: kind.into(), build: build(), at, summary, screen, trail, report };
     if let Ok(mut p) = PENDING.lock() {
         p.push(r);
         keep(&p);
     }
+    id
+}
+
+/// A section's panic (boundary.rs) not yet known to have left gpui whole: its report's id.
+static UNSURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// The section's panic left gpui whole: it stays an error.
+pub fn section_whole() {
+    if let Ok(mut u) = UNSURE.lock() {
+        *u = None;
+    }
+}
+
+/// The section's panic left gpui mid-update, which nothing can mend: it's the app's crash, and the
+/// app ends now, before anything meets what it left.
+pub fn section_fatal() -> ! {
+    crash_from_section(None);
+    std::process::abort()
+}
+
+/// Makes the unsure section's report the crash, with what followed it (`then`) below its own.
+fn crash_from_section(then: Option<&str>) -> bool {
+    let Some(id) = UNSURE.lock().ok().and_then(|mut u| u.take()) else { return false };
+    let Ok(mut p) = PENDING.lock() else { return false };
+    let Some(r) = p.iter_mut().find(|r| r.id == id) else { return false };
+    r.kind = "crash".into();
+    if let Some(then) = then {
+        r.report = Some(clip(&format!("{}\n\nThen: {then}", r.report.clone().unwrap_or_default()), CLIP));
+    }
+    keep(&p);
+    true
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -173,7 +205,8 @@ fn flush(cx: &mut App) {
 
 /// From before the app runs: a panic is kept as a report (sent on the next launch, or once the
 /// brain is reached). On the main thread it's the app's crash; inside a section (boundary.rs), or on
-/// another thread while the app goes on, an error.
+/// another thread while the app goes on, an error, until a section's turns out to have left gpui
+/// mid-update.
 pub fn hook() {
     LazyLock::force(&PENDING);
     // The device's name now, not while panicking.
@@ -184,8 +217,16 @@ pub fn hook() {
         let (screen, trail) = SHOWN.lock().map(|s| (s.screen.clone(), s.trail.clone())).unwrap_or_default();
         let report = format!("{info}\n{}", std::backtrace::Backtrace::force_capture());
         let main = std::thread::current().name() == Some("main");
-        let kind = if crate::boundary::inside() || !main { "error" } else { "crash" };
-        add(kind, now_ms(), clip(&summary, 200), screen, trail, Some(clip(&report, CLIP)));
+        // A crash while a section's panic is unsure is most likely what it left (an entity still
+        // "being updated"): that panic is the cause, this one follows it.
+        if crate::boundary::inside() {
+            let id = add("error", now_ms(), clip(&summary, 200), screen, trail, Some(clip(&report, CLIP)));
+            if let Ok(mut u) = UNSURE.lock() {
+                u.get_or_insert(id);
+            }
+        } else if !(main && crash_from_section(Some(&report))) {
+            add(if main { "crash" } else { "error" }, now_ms(), clip(&summary, 200), screen, trail, Some(clip(&report, CLIP)));
+        }
         before(info);
     }));
 }

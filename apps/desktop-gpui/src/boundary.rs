@@ -4,14 +4,21 @@
 //! thread, the palette, each widget, a widget's window, Settings.
 //!
 //! What it catches is a panic while the section builds its elements (a view's `render`, a widget's
-//! surface): it's caught there, before gpui lays anything out, so the section's state and the
-//! window's are as they were. A panic while gpui lays out or paints is past every section, and
-//! is a crash (reported on the next launch).
+//! surface): it's caught there, before gpui lays anything out. A panic while gpui lays out or paints
+//! is past every section, and is a crash (reported on the next launch).
+//!
+//! Every section's building updates entities too (the model, a field, a part's state made with
+//! `use_keyed_state`), and a panic inside one of those updates unwinds through gpui's: that entity
+//! is never given back, and the update never ends, so nothing gpui holds back till then (notifies,
+//! observers, defers) runs again. Nothing mends that, so such a panic is the app's crash, with
+//! itself as the cause (`watch::section_fatal`); one in the section's own building is caught, and
+//! the section shows its fallback.
 
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::DerefMut;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 
 use gpui::{AnyElement, App, Context, Global, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div, px};
 
@@ -77,7 +84,8 @@ pub fn guard_in<C: DerefMut<Target = App>>(key: String, window: &mut Window, cx:
     match built {
         Ok(e) => e,
         Err(_) => {
-            // The panic hook (platform/watch.rs) has kept it as an error report.
+            // The panic hook (platform/watch.rs) has kept it as an error report, unsure till then.
+            settle(cx);
             if cx.try_global::<Failed>().is_none() {
                 cx.set_global(Failed::default());
             }
@@ -85,6 +93,23 @@ pub fn guard_in<C: DerefMut<Target = App>>(key: String, window: &mut Window, cx:
             fallback(key, cx)
         }
     }
+}
+
+/// Whether the panic left gpui mid-update: an update it unwound through never ends, and what's
+/// deferred runs only as the outermost one ends. A task runs only once every update on the stack is
+/// over, so by then the mark is there, unless one never will be.
+fn settle(cx: &mut App) {
+    let ended = Rc::new(Cell::new(false));
+    let mark = ended.clone();
+    cx.defer(move |_| mark.set(true));
+    cx.spawn(async move |_| {
+        if ended.get() {
+            crate::platform::watch::section_whole();
+        } else {
+            crate::platform::watch::section_fatal();
+        }
+    })
+    .detach();
 }
 
 /// A section whose first read failed (a query that throws, as the desktop's do into its boundary):

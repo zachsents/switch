@@ -15,11 +15,10 @@ import { historyItems } from "./store.ts"
 import type { Vault } from "./store.ts"
 
 // The core's fingerprints, as its redact.ts reads them: a form's `p` is Σ cᵢ·base^(WINDOW−1−i) mod
-// MOD over the code points at its first WINDOW UTF-16 indexes, mod BUCKETS; `n` its length in UTF-16
-// units; `h` the first 32 hex digits of SHA-256(salt ‖ its UTF-8). A number's digits alone go in
-// `digits`.
+// 2^32 over the code points at its first WINDOW UTF-16 indexes, mod BUCKETS, never negative; `n` its
+// length in UTF-16 units; `h` the first 32 hex digits of SHA-256(salt ‖ its UTF-8). A number's
+// digits alone go in `digits`.
 const WINDOW = 6
-const MOD = 2_147_483_647
 const BUCKETS = 2 ** 20
 /** Digits alone shorter than this are any number's (a PIN, a security code): known only by label. */
 const DIGITS_ALONE = 9
@@ -29,9 +28,10 @@ const NOTES_MIN = 12
 const prefixOf = (form: string, base: number) => {
   let h = 0
   for (let i = 0; i < WINDOW; i += 1) {
-    h = (h * base + (form.codePointAt(i) ?? 0)) % MOD
+    // `Math.imul(x, 1)`: x mod 2^32, as the core's integers are.
+    h = Math.imul(Math.imul(h, base) + (form.codePointAt(i) ?? 0), 1)
   }
-  return h % BUCKETS
+  return ((h % BUCKETS) + BUCKETS) % BUCKETS
 }
 
 const hashOf = (salt: Buffer, text: string) =>
@@ -95,7 +95,7 @@ const secretsOf = (item: Item): Secret[] => [
 /** Every secret the vault holds, its items' earlier versions' and the trash's too, as fingerprints. */
 const fingerprints = async (v: Vault) => {
   const salt = randomBytes(16)
-  const base = 65_536 + randomInt(2 ** 22 - 65_536)
+  const base = randomInt(2 ** 30) * 2 + 1
   const items = await Promise.all(
     [...v.items.values()].map(async (i) => {
       const earlier = await historyItems(v, i.id)

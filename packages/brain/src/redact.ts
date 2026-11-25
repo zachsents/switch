@@ -18,22 +18,20 @@ import gitleaks from "./gitleaks.toml"
 
 /** The rolling hash's window: no known form is shorter. */
 export const WINDOW = 6
-/** The rolling hash is mod this prime, 2^31 − 1; with a base under 2^22, no product passes 2^53. */
-export const MOD = 2_147_483_647
 /** A prefix's hash is kept mod this: enough to skip most windows, too little to name one. */
 export const BUCKETS = 2 ** 20
 
 /**
  * Known values, by fingerprint. For each form a value can take (itself, its base64, URL-encoded,
- * JSON-escaped): `p`, Σ cᵢ·base^(WINDOW−1−i) mod MOD over the code points at its first WINDOW
- * UTF-16 indexes (`codePointAt`), mod BUCKETS; `n`, its length in UTF-16 units; `h`, the first 32 hex
- * digits of SHA-256(salt ‖ its UTF-8). `digits`: a number written in groups, by its digits alone
- * (`n` of them, `h` the same way).
+ * JSON-escaped): `p`, Σ cᵢ·base^(WINDOW−1−i) mod 2^32 over the code points at its first WINDOW
+ * UTF-16 indexes (`codePointAt`), mod BUCKETS, never negative; `n`, its length in UTF-16 units; `h`,
+ * the first 32 hex digits of SHA-256(salt ‖ its UTF-8). `digits`: a number written in groups, by its
+ * digits alone (`n` of them, `h` the same way).
  */
 export const Fingerprints = Schema.Struct({
   /** Base64, random for each set. */
   salt: Schema.String,
-  /** Random for each set, from 2^16 up to 2^22. */
+  /** Odd, random for each set, below 2^31. */
   base: Schema.Int,
   entries: Schema.Array(
     Schema.Struct({ p: Schema.Int, n: Schema.Int, h: Schema.String, label: Schema.String }),
@@ -51,7 +49,7 @@ interface Entry {
 interface Known {
   readonly salt: Uint8Array
   readonly base: number
-  /** base^(WINDOW−1) mod MOD: what the character leaving the window weighed. */
+  /** base^(WINDOW−1) mod 2^32: what the character leaving the window weighed. */
   readonly top: number
   /** 1 for each prefix an entry has: most windows end here. */
   readonly seen: Uint8Array
@@ -66,13 +64,18 @@ const hashOf = (salt: Uint8Array, text: string) =>
 
 const codeAt = (text: string, i: number) => text.codePointAt(i) ?? 0
 
+/** `x` mod 2^32, as a signed 32-bit integer: the engine's own integer arithmetic, fast. */
+const wrap = (x: number) => Math.imul(x, 1)
+
+const bucketOf = (h: number) => ((h % BUCKETS) + BUCKETS) % BUCKETS
+
 /** A form's prefix. */
 const prefixOf = (form: string, base: number) => {
   let h = 0
   for (let i = 0; i < WINDOW; i += 1) {
-    h = (h * base + codeAt(form, i)) % MOD
+    h = wrap(Math.imul(h, base) + codeAt(form, i))
   }
-  return h % BUCKETS
+  return bucketOf(h)
 }
 
 const add = (known: Known, p: number, e: Entry) => {
@@ -91,7 +94,7 @@ const named = (label: string) => label.replaceAll(/["\\[\]\p{Cc}]/gu, "").trim()
 const compile = (set: Fingerprints): Known => {
   let top = 1
   for (let i = 1; i < WINDOW; i += 1) {
-    top = (top * set.base) % MOD
+    top = Math.imul(top, set.base)
   }
   const known: Known = {
     salt: Buffer.from(set.salt, "base64"),
@@ -128,7 +131,7 @@ const formsOf = (value: string) => [
 /** This process's own secrets, under its own salt and base. */
 const own = compile({
   salt: Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64"),
-  base: 65_536 + randomInt(2 ** 22 - 65_536),
+  base: randomInt(2 ** 30) * 2 + 1,
   entries: [],
   digits: [],
 })
@@ -424,14 +427,14 @@ const knownIn = (text: string, out: Span[]) => {
     if (k.buckets.size > 0 && text.length >= WINDOW) {
       let h = 0
       for (let i = 0; i < WINDOW - 1; i += 1) {
-        h = (h * k.base + codeAt(text, i)) % MOD
+        h = wrap(Math.imul(h, k.base) + codeAt(text, i))
       }
       for (let i = 0; i + WINDOW <= text.length; i += 1) {
         if (i > 0) {
-          h = (h + MOD - ((codeAt(text, i - 1) * k.top) % MOD)) % MOD
+          h = wrap(h - Math.imul(codeAt(text, i - 1), k.top))
         }
-        h = (h * k.base + codeAt(text, i + WINDOW - 1)) % MOD
-        const p = h % BUCKETS
+        h = wrap(Math.imul(h, k.base) + codeAt(text, i + WINDOW - 1))
+        const p = bucketOf(h)
         if (k.seen[p] === 1) {
           matchAt(k, text, i, k.buckets.get(p) ?? [], out)
         }
