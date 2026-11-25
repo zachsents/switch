@@ -107,13 +107,6 @@ const gate: Gate = {
     asked.push(id)
     return await Promise.resolve(id)
   },
-  close: async () => {
-    await Promise.resolve()
-  },
-  progress: async () => {
-    await Promise.resolve()
-  },
-  waitMs: 50,
 }
 
 const deployKey: Item = {

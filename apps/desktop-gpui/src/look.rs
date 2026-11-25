@@ -80,9 +80,10 @@ pub fn contrast(a: u32, b: u32) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// The words' three inks on a background: full, supporting and meta, each at least its contrast.
-fn inks(bg: u32) -> (u32, u32, u32) {
-    let ink = if luminance(bg) > 0.18 { 0x0a0a0a } else { 0xededed };
+/// The words' three inks on a background: full (the theme's own, else near black or white),
+/// supporting and meta, each at least its contrast.
+pub fn inks(bg: u32, own: Option<u32>) -> (u32, u32, u32) {
+    let ink = own.unwrap_or(if luminance(bg) > 0.18 { 0x0a0a0a } else { 0xededed });
     let toward = |least: f32| {
         let mut best = ink;
         let mut t = 0.;
@@ -120,7 +121,7 @@ impl Look {
         let line1 = hex(&s.line1.color).unwrap_or(0);
         let line2 = hex(&s.line2.color).unwrap_or(0);
         let section = s.section_line();
-        let (ink, ink2, ink3) = inks(bg);
+        let (ink, ink2, ink3) = inks(bg, s.ink.as_deref().and_then(hex));
         let go = hex(&s.go).unwrap_or(0x1f8a5e);
         let on_dark = luminance(bg) <= 0.18;
         Look {

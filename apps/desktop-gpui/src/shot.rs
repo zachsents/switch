@@ -91,6 +91,17 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 cx.background_executor().timer(Duration::from_millis(1200)).await;
                 continue;
             }
+            // `preset:<key>`: both sides of the theme that preset's, as Settings picks it (kept here
+            // only).
+            if let Some(k) = page.strip_prefix("preset:") {
+                let k = k.to_string();
+                let _ = cx.update(|cx| {
+                    let t = crate::theme::preset_theme(&k, &crate::theme::Held::theme(cx));
+                    crate::theme::Held::set(t, cx);
+                });
+                cx.background_executor().timer(Duration::from_millis(1200)).await;
+                continue;
+            }
             for (step, pressed) in [("down:", true), ("drag:", true), ("up:", false)] {
                 let Some(rest) = page.strip_prefix(step) else { continue };
                 let mut xy = rest.split(':').map(|v| v.parse::<f32>().unwrap_or(0.));

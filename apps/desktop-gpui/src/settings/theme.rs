@@ -6,12 +6,12 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div};
+use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder};
 use ui_sdk::components::input::{Input, InputOptions};
 
 use crate::kit::{self, Btn, W40};
 use crate::look::{Look, MONO, u};
-use crate::theme::{Appearance, Held, PRESET_KEYS, Side, Size, Theme, preset, preset_name, preset_of};
+use crate::theme::{Appearance, Held, PRESET_KEYS, Side, Size, Theme, preset_name, preset_of, preset_theme};
 
 const WIDTHS: [(&str, &str); 3] = [("0.5", "Hairline"), ("1", "1 pt"), ("2", "2 pt")];
 
@@ -139,6 +139,35 @@ fn width_seg(dark: bool, name: &str, label: &str, w: f32, set: impl Fn(&mut Side
     }, window, cx)
 }
 
+/// A preset as a key in its own look: its name in its ink on its background, its four state
+/// colors under it; the one the theme is ringed in its ink.
+fn tile(key: &'static str, t: &Theme, picked: bool, l: &Look) -> AnyElement {
+    let p = Look::of_side(&preset_theme(key, t), l.dark);
+    let dot = |c: gpui::Hsla| div().size(u(6.)).rounded_full().bg(c);
+    let ring = gpui::BoxShadow { color: p.ink, offset: gpui::point(gpui::px(0.), gpui::px(0.)), blur_radius: gpui::px(0.), spread_radius: gpui::px(2.), inset: true };
+    kit::button(ElementId::Name(format!("preset-{key}").into()), Btn::Bare, true, l)
+        .aria_label(preset_name(key))
+        .aria_toggled(if picked { gpui::Toggled::True } else { gpui::Toggled::False })
+        .flex_col()
+        .items_start()
+        .justify_between()
+        .w(u(96.))
+        .h(u(40.))
+        .px(u(8.))
+        .py(u(6.))
+        .rounded(u(4.))
+        .bg(p.bg)
+        .when(picked, |d| d.shadow(vec![ring]))
+        .child(kit::small(div()).font_weight(gpui::FontWeight::MEDIUM).text_color(p.ink).child(preset_name(key)))
+        .child(div().flex().gap(u(4.)).child(dot(p.go)).child(dot(p.yellow)).child(dot(p.orange)).child(dot(p.red)))
+        .on_click(move |_, _, cx| {
+            let t = preset_theme(key, &Held::theme(cx));
+            Held::set(t, cx);
+            cx.global_mut::<Held>().outside += 1;
+        })
+        .into_any_element()
+}
+
 pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
     let t = Held::theme(cx);
@@ -149,11 +178,8 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     // The side's own look, for its samples.
     let sl = Look::of_side(&t, dark);
     let section = side.section_line();
-    let preset_now = preset_of(&side, dark);
-    let mut presets: Vec<(&str, &str)> = PRESET_KEYS.iter().map(|k| (*k, preset_name(k))).collect();
-    if preset_now.is_none() {
-        presets.push(("custom", "Custom"));
-    }
+    // The preset the theme is, both sides of it.
+    let now = preset_of(&t.light, false).filter(|k| preset_of(&t.dark, true) == Some(*k));
     macro_rules! color {
         ($name:expr, $label:expr, $value:expr, |$t:ident, $v:ident| $body:expr) => {
             color_field(dark, $name, $label, &$value, Rc::new(|$t: &mut Side, $v: String| $body), outside, window, cx)
@@ -161,6 +187,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     }
     let sample = || div().flex().items_center().gap(u(8.)).px(u(8.)).py(u(4.)).rounded(u(4.)).bg(sl.bg);
     let theme_rows = vec![
+        div().flex().flex_wrap().gap(u(8.)).p(u(8.)).border_b(gpui::px(l.w2)).border_color(l.line2).children(PRESET_KEYS.into_iter().map(|k| tile(k, &t, now == Some(k), &l))).into_any_element(),
         kit::setting("Appearance", W40, &l)
             .child(kit::controls().child(kit::segmented(
                 "appearance", "Appearance",
@@ -216,16 +243,6 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
         }, window, cx)
     };
     let side_rows = vec![
-        kit::setting("Preset", W40, &l)
-            .child(kit::controls().child(kit::segmented(format!("preset-{dark}"), "Preset", &presets, preset_now.unwrap_or("custom"), &l, move |v, _, cx| {
-                if PRESET_KEYS.contains(&v) {
-                    let mut t = Held::theme(cx);
-                    *t.side_mut(dark) = preset(v, dark);
-                    Held::set(t, cx);
-                    cx.global_mut::<Held>().outside += 1;
-                }
-            }, window, cx)))
-            .into_any_element(),
         kit::setting("Background", W40, &l).child(kit::controls().child(color!("bg", "Background", side.bg, |t, v| t.bg = v))).into_any_element(),
         kit::setting("Between panes", W40, &l)
             .child(
@@ -255,7 +272,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
         kit::setting("Neutral", W40, &l).child(kit::controls().child(sample().child(kit::button("sample-reply", Btn::Key, true, &sl).aria_label("Reply").child("Reply")))).into_any_element(),
         kit::setting("Text", W40, &l)
             .child(
-                kit::controls().child(
+                kit::controls().child(color!("ink", "Text", side.ink_color(), |t, v| t.ink = Some(v))).child(
                     sample()
                         .child(kit::ui(div()).text_color(sl.ink).child("Read"))
                         .child(kit::ui(div()).text_color(sl.ink2).child("Supporting"))

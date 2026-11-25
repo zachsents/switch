@@ -3,7 +3,7 @@
 // rest are for the user's devices and other extensions, which only ever get ciphertext: called
 // through the core (`/widgets/secrets/<tool>`), never offered to the agent.
 import { Effect, Queue, Schema } from "effect"
-import { AppEvents, Asks, defineApp, defineEvent, Progress, tool } from "switch-ext-kit"
+import { AppEvents, Asks, defineApp, defineEvent, tool } from "switch-ext-kit"
 
 import * as approvals from "./approvals.ts"
 import type { Gate } from "./approvals.ts"
@@ -86,13 +86,9 @@ export const announce = Effect.gen(function* announcing() {
   }
 })
 
-/** How long a use of a locked item waits for the user's passkey within one call. */
-const WAIT_MS = 4 * 60_000
-
-/** Waiting for approvals from the tool call running now: its asks, and its progress. */
+/** Asking for approvals from the tool call running now. */
 const gateOf = Effect.gen(function* gating() {
   const asks = yield* Asks
-  const progress = yield* Progress
   const gate: Gate = {
     open: async (a) => {
       const opened = await Effect.runPromise(
@@ -109,13 +105,6 @@ const gateOf = Effect.gen(function* gating() {
       )
       return opened.id
     },
-    close: async (id, status) => {
-      await Effect.runPromise(Effect.ignore(asks.close(id, status)))
-    },
-    progress: async (message) => {
-      await Effect.runPromise(progress(message))
-    },
-    waitMs: WAIT_MS,
   }
   return gate
 })
@@ -199,7 +188,7 @@ export const secretsApp = (v: Vault) => {
   const runTool = tool(
     "run",
     {
-      description: `Runs a command on the vault's Mac with secrets in it by reference, never seen by you: env {"API_TOKEN": "openai"} (a reference: an item's name for its main secret, or name.field like card/main.number or github.totp for the code now; or a template with {{ref}} in it), files [{name, content}] made for the run in $SECRETS_FILES (0600, removed after), and stdin, both templates. command is a shell line or an argv; never a secret in it. Output comes back with every vault value hidden. why says what it's for (kept in the audit); space is the one you're working in. An item that requires approval waits for the user's passkey (a few minutes); if they haven't approved by then, it says which item to wait on: make the same call again once it's approved.`,
+      description: `Runs a command on the vault's Mac with secrets in it by reference, never seen by you: env {"API_TOKEN": "openai"} (a reference: an item's name for its main secret, or name.field like card/main.number or github.totp for the code now; or a template with {{ref}} in it), files [{name, content}] made for the run in $SECRETS_FILES (0600, removed after), and stdin, both templates. command is a shell line or an argv; never a secret in it. Output comes back with every vault value hidden. why says what it's for (kept in the audit); space is the one you're working in. An item that requires approval needs the user's passkey for this use: the call answers at once with the item in their queue to wait on (expect's item); make the same call again once it closes.`,
       input: ops.RunInput,
       speaks: true,
     },

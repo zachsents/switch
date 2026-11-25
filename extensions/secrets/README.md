@@ -144,8 +144,8 @@ An item marked `requires_approval` (save's, kept in the `locks` table beside the
 device's edit can't drop it) is used for nothing (`env`, `file`, `http`, an extension's `release`)
 until the user approves that use with their passkey. The call opens an approval in their queue
 (`passkey: "passkey"`, which the core links to `/p/passkey/<token>` on the pages' public address)
-and waits up to four minutes; past that it answers which item to wait on, and the same call again
-finds the approval once it's given. On the page Face ID or Touch ID signs a challenge this
+and answers at once with that item: the caller waits on it (nothing here waits or polls), and the
+same call again finds the approval once it's given. On the page Face ID or Touch ID signs a challenge this
 extension issued (`passkey { step: "options" | "verify" }`); it checks the signature, origin,
 relying party and user verification against the passkey it keeps (`src/passkeys.ts`) before the
 use goes ahead. An approval is for one request (its digest), used once within 15 minutes, or for

@@ -139,14 +139,16 @@ The band, then one layout, the same on every space and on Home, nothing in it la
 
 Settings › Theme (`ui/theme.ts`) sets the tokens: the appearance (System, Light, Dark) and the text
 size (every window zoomed with it), then a theme for each appearance, edited one at a time under
-its name (the one shown first): its background; its three lines (between panes, between sections,
+its name (the one shown first): its background; its text's ink; its three lines (between panes, between sections,
 between rows), each a color and a thickness (a theme without its own section line has one worked
 out between the other two); what each state color is
 (Go: Send, Approve, Done, Connect; Needs you: the hand; Running: the runner; Danger: Stop,
 Remove, Revoke; Neutral keys are the background's own edges), its samples drawn in its own look.
-Inks are worked out from the background, each kept at its contrast (7, 4.5).
-Presets: Default, Paper, Contrast, Slate, each with a side per appearance; picking one sets only
-the theme being edited; Custom once anything differs. Kept in the brain (`pref theme`, beside the
+The text's ink is the theme's own or worked out from the background; the supporting and meta inks
+are worked out from it, each kept at its contrast (7, 4.5).
+Presets: Default, Paper, Contrast, Slate, Phosphor, Solarized, Synthwave, Nord, Gruvbox and Tokyo
+Night, each with a side per appearance, shown as keys in their own look (name, ink, state colors)
+in the appearance shown; picking one sets both sides, and the current one is ringed in its ink. Kept in the brain (`pref theme`, beside the
 one theme it was before, which the rollback app reads) and on the Mac, so a window paints it on
 its first frame; a change shows in every window at once. The app takes the appearance shown, so
 every web view, menu and panel does too. Every key and mark takes its color from its meaning: `look="go"`, `look="danger"`.

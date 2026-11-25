@@ -47,6 +47,10 @@ pub struct Side {
     pub section: Option<Edge>,
     /// Between rows, and between the chat and its box.
     pub line2: Edge,
+    /// The words' ink, the full one (the others are worked out from it); none has it worked out
+    /// from the background.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ink: Option<String>,
     pub go: String,
     pub needs: String,
     pub running: String,
@@ -98,43 +102,109 @@ struct Stored {
     size: Size,
 }
 
-pub const PRESET_KEYS: [&str; 4] = ["default", "paper", "contrast", "slate"];
+pub const PRESET_KEYS: [&str; 10] = ["default", "paper", "contrast", "slate", "phosphor", "solarized", "synthwave", "nord", "gruvbox", "tokyo"];
 
 pub fn preset_name(key: &str) -> &'static str {
     match key {
         "paper" => "Paper",
         "contrast" => "Contrast",
         "slate" => "Slate",
+        "phosphor" => "Phosphor",
+        "solarized" => "Solarized",
+        "synthwave" => "Synthwave",
+        "nord" => "Nord",
+        "gruvbox" => "Gruvbox",
+        "tokyo" => "Tokyo Night",
         _ => "Default",
+    }
+}
+
+/// A preset's side.
+struct Spec {
+    bg: &'static str,
+    /// Between panes, then between rows.
+    line1: &'static str,
+    line2: &'static str,
+    w2: f32,
+    /// The words' ink, if it has its own.
+    ink: Option<&'static str>,
+    /// Go, needs you, running, danger.
+    states: [&'static str; 4],
+}
+
+const STATES: [&str; 4] = ["#1f8a5e", "#ffc000", "#f26419", "#d42a1f"];
+const PAPER: [&str; 4] = ["#2f7d4f", "#e0a100", "#d1561c", "#b3261e"];
+const CONTRAST: [&str; 4] = ["#00a86b", "#ffd400", "#ff7a1a", "#ff3b30"];
+
+const fn s(bg: &'static str, line1: &'static str, line2: &'static str, w2: f32, ink: Option<&'static str>, states: [&'static str; 4]) -> Spec {
+    Spec { bg, line1, line2, w2, ink, states }
+}
+
+fn spec(key: &str, dark: bool) -> Spec {
+    let pick = |light: Spec, night: Spec| if dark { night } else { light };
+    match key {
+        "paper" => pick(s("#f3eee3", "#c9bfa9", "#e3dccc", 0.5, None, PAPER), s("#1b1915", "#3a352b", "#27241e", 0.5, None, PAPER)),
+        "contrast" => pick(s("#ffffff", "#000000", "#767676", 1., None, CONTRAST), s("#000000", "#ffffff", "#8a8a8a", 1., None, CONTRAST)),
+        "slate" => pick(s("#f4f6f8", "#c3cbd3", "#e1e6eb", 0.5, None, STATES), s("#11161c", "#2a3440", "#1b232c", 0.5, None, STATES)),
+        // A green-screen terminal: phosphor on black, and its printout.
+        "phosphor" => pick(
+            s("#eef4e6", "#9dbb98", "#d2e2cc", 0.5, Some("#0b3315"), ["#1d7a3a", "#e0a800", "#e2640f", "#c62828"]),
+            s("#050a06", "#1d4426", "#10261a", 0.5, Some("#4dff7c"), ["#1a8c3e", "#ffd23f", "#ff8a1f", "#ff4a3d"]),
+        ),
+        // Solarized: its cream page and its deep teal one.
+        "solarized" => pick(
+            s("#fdf6e3", "#d3cbb2", "#eee8d5", 0.5, Some("#073642"), ["#5f7c00", "#b58900", "#cb4b16", "#dc322f"]),
+            s("#002b36", "#1b5563", "#0b3d49", 0.5, Some("#eee8d5"), ["#6f8f00", "#d4a300", "#e2581b", "#f2413d"]),
+        ),
+        // Neon dusk: a violet night, and a pink sunset.
+        "synthwave" => pick(
+            s("#fff0f6", "#e9a3c8", "#f7d6e6", 0.5, Some("#2a0b3d"), ["#0b8a78", "#c99200", "#f2651b", "#e0234e"]),
+            s("#1a0f2e", "#5a2a6e", "#33204f", 0.5, Some("#ffe8f8"), ["#0b8a78", "#fede5d", "#ff8b39", "#fe4450"]),
+        ),
+        // Arctic: Nord's snow and its polar night.
+        "nord" => pick(
+            s("#eceff4", "#b9c2d1", "#d8dee9", 0.5, Some("#242933"), ["#4c7a41", "#d9a320", "#c8643a", "#b0444e"]),
+            s("#2e3440", "#4c566a", "#3b4252", 0.5, Some("#eceff4"), ["#5c8c4c", "#ebcb8b", "#e8893a", "#e5484d"]),
+        ),
+        // A forest: Gruvbox's warm parchment and its dark wood.
+        "gruvbox" => pick(
+            s("#fbf1c7", "#c9b99a", "#ebdbb2", 0.5, Some("#282828"), ["#79740e", "#d79921", "#d65d0e", "#cc241d"]),
+            s("#282828", "#5a524c", "#3c3836", 0.5, Some("#ebdbb2"), ["#79740e", "#fabd2f", "#fe8019", "#fb4934"]),
+        ),
+        // A metro at night: Tokyo Night's indigo, and its day.
+        "tokyo" => pick(
+            s("#e6e7ed", "#a8aecb", "#cfd1dc", 0.5, Some("#1f2335"), ["#2f7d6d", "#d4a72c", "#e0701d", "#e0294f"]),
+            s("#1a1b26", "#3b4261", "#24283b", 0.5, Some("#c0caf5"), ["#2f7d6d", "#f7d046", "#ff9e64", "#ff4f5e"]),
+        ),
+        _ => pick(s("#ffffff", "#c8c8c8", "#e8e8e8", 0.5, None, STATES), s("#0d0d0d", "#2c2c2c", "#1c1c1c", 0.5, None, STATES)),
     }
 }
 
 /// A preset's side for one appearance.
 pub fn preset(key: &str, dark: bool) -> Side {
+    let p = spec(key, dark);
     let edge = |color: &str, w| Edge { color: color.into(), w };
-    let side = |(bg, line1, line2): (&str, &str, &str), w2, states: [&str; 4]| Side {
-        bg: bg.into(),
-        line1: edge(line1, 1.),
+    Side {
+        bg: p.bg.into(),
+        line1: edge(p.line1, 1.),
         section: None,
-        line2: edge(line2, w2),
-        go: states[0].into(),
-        needs: states[1].into(),
-        running: states[2].into(),
-        danger: states[3].into(),
-    };
-    let pick = |light, night| if dark { night } else { light };
-    const STATES: [&str; 4] = ["#1f8a5e", "#ffc000", "#f26419", "#d42a1f"];
-    match key {
-        "paper" => side(pick(("#f3eee3", "#c9bfa9", "#e3dccc"), ("#1b1915", "#3a352b", "#27241e")), 0.5, ["#2f7d4f", "#e0a100", "#d1561c", "#b3261e"]),
-        "contrast" => side(pick(("#ffffff", "#000000", "#767676"), ("#000000", "#ffffff", "#8a8a8a")), 1., ["#00a86b", "#ffd400", "#ff7a1a", "#ff3b30"]),
-        "slate" => side(pick(("#f4f6f8", "#c3cbd3", "#e1e6eb"), ("#11161c", "#2a3440", "#1b232c")), 0.5, STATES),
-        _ => side(pick(("#ffffff", "#c8c8c8", "#e8e8e8"), ("#0d0d0d", "#2c2c2c", "#1c1c1c")), 0.5, STATES),
+        line2: edge(p.line2, p.w2),
+        ink: p.ink.map(Into::into),
+        go: p.states[0].into(),
+        needs: p.states[1].into(),
+        running: p.states[2].into(),
+        danger: p.states[3].into(),
     }
+}
+
+/// A theme of a preset's two sides.
+pub fn preset_theme(key: &str, t: &Theme) -> Theme {
+    Theme { light: preset(key, false), dark: preset(key, true), ..t.clone() }
 }
 
 /// The preset a side is, if it's one.
 pub fn preset_of(s: &Side, dark: bool) -> Option<&'static str> {
-    let whole = |s: &Side| Side { section: Some(s.section_line()), ..s.clone() };
+    let whole = |s: &Side| Side { section: Some(s.section_line()), ink: Some(s.ink_color()), ..s.clone() };
     PRESET_KEYS.into_iter().find(|k| whole(&preset(k, dark)) == whole(s))
 }
 
@@ -156,10 +226,15 @@ impl Side {
         })
     }
 
+    /// The words' ink: its own, else worked out from the background.
+    pub fn ink_color(&self) -> String {
+        self.ink.clone().unwrap_or_else(|| format!("#{:06x}", crate::look::inks(crate::derive::hex(&self.bg).unwrap_or(0), None).0))
+    }
+
     /// Whether it holds to the theme's schema: every color `#rrggbb`, every width 0.5, 1 or 2.
     fn valid(&self) -> bool {
         let e = |x: &Edge| hex_ok(&x.color) && [0.5, 1., 2.].contains(&x.w);
-        hex_ok(&self.bg) && e(&self.line1) && e(&self.line2) && self.section.as_ref().is_none_or(e) && [&self.go, &self.needs, &self.running, &self.danger].iter().all(|c| hex_ok(c))
+        hex_ok(&self.bg) && e(&self.line1) && e(&self.line2) && self.section.as_ref().is_none_or(e) && self.ink.as_deref().is_none_or(hex_ok) && [&self.go, &self.needs, &self.running, &self.danger].iter().all(|c| hex_ok(c))
     }
 
     /// One appearance's side of a theme from before each had its own; its section line kept only
@@ -171,6 +246,7 @@ impl Side {
             line1: Edge { color: pick(&h.line1.light, &h.line1.dark), w: h.line1.w },
             section: None,
             line2: Edge { color: pick(&h.line2.light, &h.line2.dark), w: h.line2.w },
+            ink: None,
             go: h.go.clone(),
             needs: h.needs.clone(),
             running: h.running.clone(),

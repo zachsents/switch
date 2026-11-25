@@ -25,15 +25,10 @@ export const WINDOW_MS = 15 * 60_000
 const CHALLENGE_MS = 10 * 60_000
 /** How long a request waiting for its approval is the same one asked again. */
 const PENDING_MS = 30 * 60_000
-const POLL_MS = 500
 
-/** What waiting for an approval needs of the extension's host: its asks, and saying how it goes. */
+/** What asking for an approval needs of the extension's host: its asks. */
 export interface Gate {
   readonly open: (ask: { title: string; body: string; space: string }) => Promise<string>
-  readonly close: (id: string, status: "done" | "dismissed") => Promise<void>
-  readonly progress: (message: string) => Promise<void>
-  /** How long a call waits for the user before it answers that it's still waiting. */
-  readonly waitMs: number
 }
 
 export interface Request {
@@ -175,9 +170,9 @@ export class WaitingError extends Error {
 }
 
 /**
- * Resolves once the user has approved this request with their passkey: at once when an approval
- * stands for it, else after asking them, for up to `gate.waitMs`. Throws `WaitingError` (the item to
- * wait on) when they haven't by then, and an error when they declined.
+ * Resolves when an approval the user gave with their passkey stands for this request. Otherwise
+ * asks them (once per request) and throws `WaitingError` with the item to wait on: nothing here
+ * waits, the caller comes back when the item closes.
  */
 export const approved = async (v: Vault, gate: Gate, r: Request): Promise<void> => {
   const now = Date.now()
@@ -197,27 +192,10 @@ export const approved = async (v: Vault, gate: Gate, r: Request): Promise<void> 
       [id, r.digest, r.items.map((i) => i.id).join(","), r.who, r.space, r.what, now],
     )
   }
-  await gate.progress("Waiting for the user's passkey")
-  const deadline = Date.now() + gate.waitMs
-  for (;;) {
-    const at = row(v, id)
-    if (at?.status === "approved") {
-      if (at.until === 0) {
-        setStatus(v, id, "used")
-      }
-      return
-    }
-    if (at?.status === "declined" || !at) {
-      throw new Error(`The user didn't approve it (item ${id})`)
-    }
-    if (Date.now() >= deadline) {
-      throw new WaitingError(
-        id,
-        `Waiting for the user to approve it with their passkey (item ${id}). It stays approved for ${ONCE_MS / 60_000} minutes once they do: make the same call again then.`,
-      )
-    }
-    await Bun.sleep(POLL_MS)
-  }
+  throw new WaitingError(
+    id,
+    `It needs the user's passkey approval: it's in their queue as item ${id}. Hang a wait on that item (expect's item) and make this same call again once it closes; an approval stands for ${ONCE_MS / 60_000} minutes.`,
+  )
 }
 
 // The page's two steps, through the core.
