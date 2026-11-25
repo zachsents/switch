@@ -131,7 +131,7 @@ import { web } from "./web.ts"
 import { backupRoute, backupWorker } from "./backup.ts"
 import { measured } from "./measure.ts"
 import { stallsConfig, stallsWatch } from "./stalls.ts"
-import { ownCredentials, sweepRoute } from "./redaction.ts"
+import { ownCredentials, pictureRedaction, sweepRoute } from "./redaction.ts"
 
 /** Everything the core's brain knows, for any process that opens the same file. */
 export const brainParts: readonly {
@@ -433,9 +433,14 @@ const layerRuntime = Layer.unwrap(
   ),
 )
 
+// None in a canary: its folder's host would start again what the live one runs (a restore's
+// rehearsal, from the copy's want.json, ran every script beside the live ones, for hours).
 const layerLocalHost = Layer.effectDiscard(
   Effect.gen(function* localHost() {
     const c = yield* CoreConfig
+    if (c.canary) {
+      return
+    }
     const runtime = yield* Runtime
     const host = yield* makeHost({
       dir: c.dir,
@@ -652,6 +657,7 @@ export const layerServer = (
     layerAbilities,
     layerDraftCopies,
     layerBrainApp,
+    pictureRedaction,
     layerScriptsApp,
     layerWorkers,
     stallsWatch,

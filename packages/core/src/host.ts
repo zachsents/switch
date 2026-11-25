@@ -21,7 +21,7 @@ import {
 import { appendFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { localMachine } from "@switch/agent"
+import { localMachine, startedBy } from "@switch/agent"
 import { writeFileAtomic } from "@switch/brain/files"
 import type { Login, Proc } from "@switch/agent"
 import { chain, isJson, readOnly, switchboard } from "switch-ext-kit"
@@ -117,18 +117,22 @@ const gone = (p: Proc, ms: number) =>
     Effect.map(Option.isSome),
   )
 
-/** Its stdin closed, as an MCP server ends; then asked, then killed, with what it started. */
+/**
+ * Its stdin closed, as an MCP server ends; then asked, then killed, with what it started. What it
+ * started and left behind goes too: a child that ignores its parent's end would otherwise run on
+ * beside the next run's, till the host's own end.
+ */
 const stop = (p: Proc) =>
   Effect.gen(function* stopping() {
+    const started = startedBy(p.pid)
     p.end()
-    if (yield* gone(p, 2000)) {
-      return
+    if (!(yield* gone(p, 2000))) {
+      p.kill("SIGTERM")
+      if (!(yield* gone(p, STOP_GRACE_MS))) {
+        p.kill("SIGKILL")
+      }
     }
-    p.kill("SIGTERM")
-    if (yield* gone(p, STOP_GRACE_MS)) {
-      return
-    }
-    p.kill("SIGKILL")
+    started.end(STOP_GRACE_MS)
   })
 
 /** JSON with its keys in order, so a spec read back from want.json reads as the one the core sent. */
@@ -590,12 +594,17 @@ export const makeHost = Effect.fnUntraced(function* making(options: HostOptions)
 
   const stopTurns = () => {
     const all = [...turns.values()]
+    const started = all.map((p) => startedBy(p.pid))
     for (const p of all) {
       p.kill("SIGTERM")
     }
     setTimeout(() => {
       for (const p of all) {
         p.kill("SIGKILL")
+      }
+      // What a turn started that its end left to launchd.
+      for (const s of started) {
+        s.end(STOP_GRACE_MS)
       }
     }, STOP_GRACE_MS)
   }

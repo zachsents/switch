@@ -287,6 +287,14 @@ const allowOf = (a: typeof AllowToml.Type): Allow => ({
   elsewhere: (a.paths ?? []).length > 0 || (a.commits ?? []).length > 0,
 })
 
+/**
+ * What a link's parameter is called when it holds a credential (`token`, `access_token`, `api_key`,
+ * `client_secret`, `password`). Any other (a shared page's `key`, Google's `authuser`, Dropbox's
+ * `rlkey`) opens what it links to for whoever it's sent to, which is what sending it is for.
+ */
+const LINK_CREDENTIAL = /(?:[\w-]*[_-])?(?:token|api_?key|client_?secret|secret|password|passwd)/u
+const LINK_NAME = new RegExp(`^${LINK_CREDENTIAL.source}$`, "iu")
+
 const RUN = String.raw`[\w.-]{0,50}?`
 const NAME_CHAR = /[\w.-]/u
 
@@ -326,15 +334,16 @@ const loadShapes = () => {
     }
   }
   // A credential in a link (`?token=…&`), which the generic rule, ended by a quote, a space or the
-  // line, misses: its words, entropy and allowlists, ended by `&` or `#` as well.
+  // line, misses: a parameter a credential is named by, with the generic rule's entropy and
+  // allowlists, ended by `&` or `#` as well.
   const generic = shapes.find((s) => s.id === "generic-api-key")
   if (generic !== undefined) {
     shapes.push({
       ...generic,
       id: "link-token",
       re: regexOf(
-        String.raw`(?i)[?&#;](?:[\w.-]{0,50}?(?:access|auth|(?-i:[Aa]pi|API)|credential|creds|key|passw(?:or)?d|secret|token)[\w.-]{0,20})=([\w.~%+/=-]{10,300})(?:[&#;\s'"\x60<>)\]]|$)`,
-        "gd",
+        String.raw`[?&#;](?:${LINK_CREDENTIAL.source})=([\w.~%+/=-]{10,300})(?:[&#;\s'"\x60<>)\]]|$)`,
+        "gdi",
       ),
     })
   }
@@ -548,6 +557,10 @@ const secretGroup = (s: Shape, m: RegExpExecArray) => {
   return 0
 }
 
+/** A generic rule's match that's a link's parameter not named for a credential (LINK_CREDENTIAL). */
+const sharedLink = (s: Shape, text: string, start: number, match: string) =>
+  s.generic && "?&#;".includes(text[start - 1] ?? " ") && !LINK_NAME.test(match.split("=")[0] ?? "")
+
 const shapesIn = (text: string, out: Span[]) => {
   for (const s of rulesFor(text)) {
     let floor = 0
@@ -566,7 +579,10 @@ const shapesIn = (text: string, out: Span[]) => {
         const lineEnd = text.indexOf("\n", end)
         const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
         const match = text.slice(start, end)
-        if (!s.allow.some((a) => allowed(a, secret, match, line))) {
+        if (
+          !s.allow.some((a) => allowed(a, secret, match, line)) &&
+          !sharedLink(s, text, start, match)
+        ) {
           out.push({ start: at[0], end: at[1], label: s.id, rank: s.generic ? 2 : 1 })
         }
       }
@@ -580,6 +596,10 @@ const owned: { readonly label: string; readonly re: RegExp }[] = []
 export const ownShape = (label: string, re: RegExp) => {
   owned.push({ label, re })
 }
+
+/** Each secret in `text`: where it is (UTF-16) and its name. */
+export const secretsIn = (text: string): readonly { start: number; end: number; label: string }[] =>
+  spansIn(text)
 
 const spansIn = (text: string) => {
   const spans: Span[] = []
@@ -672,3 +692,34 @@ export const redactValue = (value: unknown, found: string[] = []): unknown => {
 /** A record's values redacted, as `redactValue` does. */
 export const redactRecord = (record: object, found: string[] = []): Record<string, unknown> =>
   Object.fromEntries(Object.entries(record).map(([k, v]) => [k, redactValue(v, found)]))
+
+// ——— Pictures ———
+
+/** A picture with the secrets it shows filled; its own bytes when it shows none. */
+export type PictureRedactor = (picture: Uint8Array) => Promise<Uint8Array>
+
+let pictures: PictureRedactor | null = null
+
+/** How this process redacts pictures (the core's, through a Mac's text reader). */
+export const redactPicturesWith = (redactor: PictureRedactor) => {
+  pictures = redactor
+}
+
+const MAGIC: readonly (readonly [number, readonly (number | null)[]])[] = [
+  [0, [0x89, 0x50, 0x4e, 0x47]],
+  [0, [0xff, 0xd8, 0xff]],
+  [0, [0x49, 0x49, 0x2a, 0x00]],
+  [0, [0x4d, 0x4d, 0x00, 0x2a]],
+  [0, [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]],
+  [4, [0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69]],
+  [4, [0x66, 0x74, 0x79, 0x70, 0x6d, 0x69, 0x66, 0x31]],
+  [4, [0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]],
+]
+
+/** Whether its bytes are a picture text can be read in: PNG, JPEG, TIFF, WebP, HEIC or AVIF. */
+export const isPicture = (bytes: Uint8Array) =>
+  MAGIC.some(([at, sig]) => sig.every((b, i) => b === null || bytes[at + i] === b))
+
+/** A picture with each secret it shows filled solid; the same bytes when none, or nothing here reads pictures. */
+export const redactPicture = async (picture: Uint8Array) =>
+  pictures === null || !isPicture(picture) ? picture : await pictures(picture)

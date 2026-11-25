@@ -159,14 +159,27 @@ const startedAt = (pid: number) =>
     .stdout.toString()
     .trim()
 
-const descendants = (root: number) => {
-  const rows = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid="]).stdout.toString().trim().split("\n")
-  const children = new Map<number, number[]>()
-  for (const row of rows) {
-    const [pid, ppid] = row.trim().split(/\s+/u).map(Number)
-    if (pid !== undefined && ppid !== undefined) {
-      children.set(ppid, [...(children.get(ppid) ?? []), pid])
+/** Every process's parent and start (as `ps` says it), by pid. */
+const table = () => {
+  const out = new Map<number, { readonly ppid: number; readonly started: string }>()
+  for (const row of Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,lstart="])
+    .stdout.toString()
+    .split("\n")) {
+    const m = /^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<started>.+?)\s*$/u.exec(row)
+    if (m?.groups) {
+      out.set(Number(m.groups.pid), {
+        ppid: Number(m.groups.ppid),
+        started: m.groups.started ?? "",
+      })
     }
+  }
+  return out
+}
+
+const descendantsIn = (procs: ReturnType<typeof table>, root: number) => {
+  const children = new Map<number, number[]>()
+  for (const [pid, p] of procs) {
+    children.set(p.ppid, [...(children.get(p.ppid) ?? []), pid])
   }
   const out: number[] = []
   const walk = (pid: number) => {
@@ -178,6 +191,8 @@ const descendants = (root: number) => {
   walk(root)
   return out
 }
+
+const descendants = (root: number) => descendantsIn(table(), root)
 
 const parentOf = (pid: number) =>
   Number(
@@ -193,6 +208,28 @@ const signal = (pids: readonly number[], sig: NodeJS.Signals) => {
     } catch {
       // Already gone.
     }
+  }
+}
+
+/**
+ * What `root` started, as it stands now. Once `root` is gone they're launchd's, out of its tree, so
+ * a child that ignores its parent's end would run on: `end` asks those still running to stop, then
+ * kills what's left after `graceMs`. Each by its pid and start, so a pid given again is never it.
+ */
+export const startedBy = (root: number) => {
+  const now = table()
+  const was = descendantsIn(now, root).map((pid) => [pid, now.get(pid)?.started] as const)
+  const still = () => {
+    const then = table()
+    return was.filter(([pid, started]) => then.get(pid)?.started === started).map(([pid]) => pid)
+  }
+  return {
+    end: (graceMs: number) => {
+      signal(still(), "SIGTERM")
+      setTimeout(() => {
+        signal(still(), "SIGKILL")
+      }, graceMs)
+    },
   }
 }
 

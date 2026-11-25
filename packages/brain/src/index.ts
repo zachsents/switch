@@ -3,12 +3,17 @@ export {
   Fingerprints,
   knowSecrets,
   ownSecret,
+  isPicture,
   ownShape,
+  redactPicture,
+  redactPicturesWith,
   redact,
   redacting,
   redactRecord,
   redactValue,
+  secretsIn,
 } from "./redact.ts"
+export type { PictureRedactor } from "./redact.ts"
 export { unheardTask } from "./heard.ts"
 export {
   ANSWERS_MS,

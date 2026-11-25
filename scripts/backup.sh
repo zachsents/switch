@@ -10,9 +10,9 @@
 #   backup.sh <label> [brain]   brain: a copy to back up instead of the live one (the deploy's,
 #                               taken before its migration)
 # A deploy's (its label a commit) is skipped while the last snapshot is under an hour old: deploys
-# come minutes apart, and each keeps its own copy in ~/.switch/backups meanwhile. Any backup waits
-# (fails, and says so) while this disk has less than twice the brain's size free: the brain's copy
-# on its way to the image needs up to one brain's size here.
+# come minutes apart, and each keeps its own copy in ~/.switch/backups meanwhile (compressed by the
+# deploy's tidy, <brain>.zst, which is taken as it is once the copy is). Nothing of the brain's size
+# lands on this disk: its consistent copy is made in the image, beside the snapshot.
 # The core runs it (POST /backup, and nightly) at background priority under ~/.switch/backup.lock:
 # it has the disk access.
 # The last line of a failure says what's wrong; the core raises it to the agent.
@@ -70,7 +70,7 @@ if [ "$label" = serve ]; then
   # shellcheck disable=SC2086
   exec /usr/sbin/taskpolicy -b lockf -t 3600 "$S/backup.lock" "$(command -v rsync)" ${cmd#rsync }
 fi
-[ -f "$brain" ] || fail "No brain at $brain"
+[ -f "$brain" ] || [ -f "$brain.zst" ] || fail "No brain at $brain"
 # Deploys come minutes apart: one an hour reaches the image.
 if printf %s "$label" | grep -qE '^[0-9a-f]{40}$' && [ -f "$S/backup-last" ]; then
   ago=$(($(date +%s) - $(cat "$S/backup-last" 2>/dev/null || echo 0)))
@@ -79,16 +79,9 @@ if printf %s "$label" | grep -qE '^[0-9a-f]{40}$' && [ -f "$S/backup-last" ]; th
     exit 0
   fi
 fi
-# A run killed outright leaves its work folder (a brain's copy among it); backup.lock means none
-# other is running.
+# A run killed outright leaves its work folder (lists, and a deploy's brain held by a link) and the
+# brain's copy in the image; backup.lock means none other is running.
 rm -rf "${TMPDIR:-/tmp}"/switch-backup.*
-# Room for the brain's copy (one brain's size at most), and as much again for everything else.
-need=$(($(stat -f %z "$brain") / 1024 * 2))
-room=$(df -k "${TMPDIR:-/tmp}" | awk 'NR == 2 { print $4 }')
-if [ "$room" -lt "$need" ]; then
-  say "$label: $((room / 1048576)) GB free, $((need / 1048576)) GB needed"
-  fail "Too little free disk for a backup (under twice the brain's size)"
-fi
 
 t0=$(date +%s)
 say "$label: start"
@@ -131,6 +124,7 @@ trap 'exit 1' INT TERM HUP
 
 SNAP=$MNT/snapshots
 mkdir -p "$SNAP"
+rm -f "$SNAP"/.brain.db*
 # What a run cut short (a deploy restarts the core that runs it) copied is carried on from.
 partial=$(ls -1d "$SNAP"/*.partial 2>/dev/null | sort | tail -1)
 if [ -n "$partial" ]; then
@@ -265,22 +259,29 @@ while read -r db; do
     cp -p "$db" "$new/files/$rel" || fail "Can't copy $rel: $(tail -1 "$work/db.err")"
   }
 done <"$work/dbs"
-# The brain, compressed straight from one consistent copy beside it: the most room it takes is one
-# brain's size. A deploy's copy (taken at rest, checkpointed) is cloned as it is, an instant that
-# costs nothing while it shares its blocks; the deploy's tidy may compress the original meanwhile.
-# The live brain, or a copy with a WAL beside it, is compacted (VACUUM INTO reads one transaction).
-copy=$work/brain.db
-if [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ]; then
-  cp -c "$brain" "$copy" || fail "Can't clone $brain"
+# The brain, compressed into the snapshot, the image the only place a copy of it is made. A deploy's
+# copy (taken at rest, checkpointed) is held by a hard link first, an instant that costs nothing,
+# since the deploy's tidy compresses it meanwhile: it's compressed as it is, or once tidy has,
+# its .zst taken as it is (read through a copy in the image). The live brain, or a copy with a WAL
+# beside it, is compacted into the image first (VACUUM INTO reads one transaction).
+copy=$SNAP/.brain.db
+if [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ] && ln "$brain" "$work/brain.db" 2>/dev/null; then
+  read=$work/brain.db
+  zstd -q -T0 -10 "$read" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
+elif [ "$brain" != "$S/brain.db" ] && [ ! -s "$brain-wal" ] && ln "$brain.zst" "$work/brain.db.zst" 2>/dev/null; then
+  cp "$work/brain.db.zst" "$new/files/brain.db.zst" || fail "Can't copy $brain.zst"
+  zstd -q -d "$work/brain.db.zst" -o "$copy" || fail "Can't decompress $brain.zst"
+  read=$copy
 else
   sqlite3 "$brain" "VACUUM INTO '$(sq "$copy")';" 2>"$work/db.err" ||
     fail "Can't copy the brain: $(tail -1 "$work/db.err")"
+  read=$copy
+  zstd -q -T0 -10 "$copy" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
 fi
 # Read as immutable: nothing (no -shm, no WAL) is written beside it.
-head=$(sqlite3 -readonly "file:$copy?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;") ||
+head=$(sqlite3 -readonly "file:$read?immutable=1" "SELECT coalesce(max(seq), 0) FROM events;") ||
   fail "Can't read the brain's copy"
-zstd -q -T0 -10 "$copy" -o "$new/files/brain.db.zst" || fail "Can't compress the brain"
-rm -f "$copy"
+rm -f "$copy" "$work"/brain.db*
 
 # What a restore checks itself against.
 {

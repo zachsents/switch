@@ -7,6 +7,7 @@ import path from "node:path"
 import { Context, Effect, Layer } from "effect"
 
 import { BlobHash, kindOf, safeName, typeOf } from "./attachment.ts"
+import { redactPicture } from "./redact.ts"
 import type { Attachment } from "./attachment.ts"
 
 export interface BlobsConfig {
@@ -21,6 +22,8 @@ export interface Stored {
 const GiB = 1024 ** 3
 /** One file, at most. */
 export const BLOB_MAX = 4 * GiB
+/** A picture larger is kept as it is, unread: none so big is a screenshot or a photo. */
+const PICTURE_MAX = 64 * 1024 ** 2
 /** Free disk a new file must leave. */
 const LAST_GIB = GiB
 
@@ -75,21 +78,40 @@ const make = (config: BlobsConfig): BlobsShape => {
       catch: (e) => (e instanceof Error ? e.message : String(e)),
     })
 
+  // Up to PICTURE_MAX is held whole before any of it is written: a picture is kept only with its
+  // secrets filled (redact.ts), so what it showed is never on the disk.
   const put = (body: ReadableStream<Uint8Array>) =>
     keep(async (out, hasher) => {
       const sink = Bun.file(out).writer()
       let size = 0
+      const write = (chunk: Uint8Array) => {
+        size += chunk.byteLength
+        if (size > BLOB_MAX) {
+          throw new Error("Too big")
+        }
+        if (size % (256 * 1024 * 1024) < chunk.byteLength && freeOn(dir) < LAST_GIB) {
+          throw new Error("Disk full")
+        }
+        hasher.update(chunk)
+        void sink.write(chunk)
+      }
+      const held: Uint8Array[] = []
+      let holding = 0
       try {
         for await (const chunk of body) {
-          size += chunk.byteLength
-          if (size > BLOB_MAX) {
-            throw new Error("Too big")
+          if (holding >= 0 && holding + chunk.byteLength <= PICTURE_MAX) {
+            held.push(chunk)
+            holding += chunk.byteLength
+          } else {
+            for (const h of held.splice(0)) {
+              write(h)
+            }
+            holding = -1
+            write(chunk)
           }
-          if (size % (256 * 1024 * 1024) < chunk.byteLength && freeOn(dir) < LAST_GIB) {
-            throw new Error("Disk full")
-          }
-          hasher.update(chunk)
-          void sink.write(chunk)
+        }
+        if (holding >= 0) {
+          write(await redactPicture(Buffer.concat(held)))
         }
       } finally {
         await sink.end()

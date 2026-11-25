@@ -20,6 +20,7 @@ import {
   tool,
 } from "switch-ext-kit"
 import { decode } from "./barcodes.ts"
+import { fillBoxes, readText } from "./pictures.ts"
 import { capture, hands } from "./hands.ts"
 import * as vault from "./vault.ts"
 import { load, noteDisk } from "./load.ts"
@@ -647,6 +648,38 @@ const barcodes = tool(
     }),
 )
 
+// The core's redaction reads every picture before it's kept or shown (pictures.ts): never the agent's.
+const pictureText = tool(
+  "picture_text",
+  {
+    description: "A picture's lines of text (base64 `data`), each word with its place.",
+    readOnly: true,
+    appOnly: true,
+    input: Schema.Struct({ data: Schema.String }),
+  },
+  (input) => task(async () => await readText(Buffer.from(input.data, "base64"))),
+)
+
+const pictureFill = tool(
+  "picture_fill",
+  {
+    description:
+      "A picture (base64 `data`) with `boxes` ([x, y, w, h] of it, top-left) filled solid.",
+    readOnly: true,
+    appOnly: true,
+    input: Schema.Struct({
+      data: Schema.String,
+      boxes: Schema.Array(Schema.Array(Schema.Finite)),
+    }),
+  },
+  (input) =>
+    task(async () => ({
+      data: Buffer.from(await fillBoxes(Buffer.from(input.data, "base64"), input.boxes)).toString(
+        "base64",
+      ),
+    })),
+)
+
 const screenshot = tool(
   "screenshot",
   {
@@ -820,6 +853,8 @@ export const macosApp = defineApp({
     listFiles,
     statFile,
     barcodes,
+    pictureText,
+    pictureFill,
     vitals,
     loadTool,
     attention,

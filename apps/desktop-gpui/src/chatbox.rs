@@ -165,12 +165,9 @@ impl ChatBox {
                         .auto_resize(true)
                         .submit_shortcut(TextareaSubmitShortcut::Enter)
                         .field_style(field_style(&l))
-                        // A field's change runs inside the field's update: what reads it waits till after.
                         .on_value_change(move |value, _, window, cx| {
-                            let (value, change) = (value.to_string(), change.clone());
-                            window.defer(cx, move |window, cx| {
-                                change.update(cx, |b, cx| b.changed(value, window, cx)).ok();
-                            });
+                            let value = value.to_string();
+                            change.update(cx, |b, cx| b.changed(value, window, cx)).ok();
                         })
                         .on_submit(move |_, _, window, cx| {
                             let submit = submit.clone();
@@ -561,13 +558,10 @@ impl ChatBox {
                                     .submit_shortcut(TextareaSubmitShortcut::Enter)
                                     .field_style(field_style(&l))
                                     .on_value_change(move |v, _, _, cx| {
-                                        let (s, which, v) = (s.clone(), which.clone(), v.to_string());
-                                        cx.defer(move |cx| {
-                                            let now = replying::replying_to(&s, cx);
-                                            if let Some(at) = now.iter().position(|x| x.same(&which)) {
-                                                replying::answer(&s, at, v, cx);
-                                            }
-                                        });
+                                        let now = replying::replying_to(&s, cx);
+                                        if let Some(at) = now.iter().position(|x| x.same(&which)) {
+                                            replying::answer(&s, at, v.to_string(), cx);
+                                        }
                                     })
                                     .on_submit(move |_, _, window, cx| {
                                         let submit = submit.clone();

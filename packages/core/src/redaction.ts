@@ -4,8 +4,19 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { formatWithOptions } from "node:util"
-import type { Database } from "bun:sqlite"
-import { Brain, ownSecret, ownShape, redact, redacting, redactValue } from "@switch/brain"
+import { Database } from "bun:sqlite"
+import {
+  Brain,
+  ownSecret,
+  ownShape,
+  redact,
+  redacting,
+  redactPicturesWith,
+  redactValue,
+  secretsIn,
+} from "@switch/brain"
+import { Gateway } from "@switch/gateway"
+import type { PictureReader } from "@switch/gateway"
 import { Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
@@ -76,6 +87,80 @@ export const ownCredentials = (dir: string) => {
     }
   }
 }
+
+// ——— Pictures ———
+
+const PictureText = Schema.Struct({
+  lines: Schema.Array(
+    Schema.Struct({ text: Schema.String, words: Schema.Array(Schema.Array(Schema.Finite)) }),
+  ),
+})
+const decodeText = Schema.decodeUnknownOption(PictureText)
+const decodeFilled = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.String }))
+
+/** The boxes of the words each secret in the picture's text lies in, its lines read as one text. */
+const boxesOf = (lines: typeof PictureText.Type.lines) => {
+  const spans = secretsIn(lines.map((l) => l.text).join("\n"))
+  const starts = lines.map((_, i) => lines.slice(0, i).reduce((n, l) => n + l.text.length + 1, 0))
+  return lines.flatMap((line, i) => {
+    const at = starts[i] ?? 0
+    return line.words
+      .filter(([start = 0, end = 0]) => spans.some((s) => s.start < at + end && at + start < s.end))
+      .map((word) => word.slice(2))
+  })
+}
+
+/** The picture redacted by the first of `readers` that reads it; as it is when none does. */
+const redactedBy = async (
+  gateway: Gateway["Service"],
+  readers: readonly PictureReader[],
+  picture: Uint8Array,
+  data: string,
+): Promise<Uint8Array> => {
+  const [r, ...rest] = readers
+  if (r === undefined) {
+    return picture
+  }
+  const read = await gateway.call(`${r.app}_${r.read}`, { data }).catch(() => null)
+  const lines = Option.getOrUndefined(decodeText(read?.structuredContent))?.lines
+  if (read?.isError === true || lines === undefined) {
+    return await redactedBy(gateway, rest, picture, data)
+  }
+  const boxes = boxesOf(lines)
+  if (boxes.length === 0) {
+    return picture
+  }
+  const filled = await gateway.call(`${r.app}_${r.fill}`, { data, boxes })
+  const out = Option.getOrUndefined(decodeFilled(filled.structuredContent))
+  if (filled.isError === true || out === undefined) {
+    throw new Error("A secret in this picture couldn't be filled")
+  }
+  return Buffer.from(out.data, "base64")
+}
+
+/**
+ * Pictures redacted as text is: a Mac's reader (Vision, in its own process, off this thread) reads
+ * the picture's lines, the matcher finds the secrets in them, and the reader fills their words'
+ * boxes. This machine's reader first. With none reached, a picture is kept and shown as it is,
+ * unread; one whose secret can't be filled isn't kept or shown at all.
+ */
+export const pictureRedaction = Layer.effectDiscard(
+  Effect.gen(function* picturing() {
+    const gateway = yield* Gateway
+    const { machine } = yield* CoreConfig
+    redactPicturesWith(
+      async (picture) =>
+        await redactedBy(
+          gateway,
+          gateway
+            .pictureReaders()
+            .toSorted((a, b) => Number(b.machine === machine) - Number(a.machine === machine)),
+          picture,
+          Buffer.from(picture).toString("base64"),
+        ),
+    )
+  }),
+)
 
 // ——— The sweep ———
 
@@ -265,32 +350,141 @@ const sweep = (logs: readonly string[]) =>
     return report
   })
 
-const asked = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ logs: Schema.Array(Schema.String) })),
-)
+/** A row's columns by name, as `SELECT rowid AS _row, *` reads it. */
+type Row = Record<string, unknown>
 
-// Admin only (auth.ts): the sweep, with the logs it reads (`{ logs: [paths] }`). Answers at once;
-// what it found, by name and never a value, is `redactions-swept.json` in the core's folder once
-// it's done.
+/**
+ * The sweep again, from `from` (a copy of the brain from before it), as the rules read now: each
+ * event it changed, its payload from the copy redacted afresh; each row of a table it changed that
+ * nothing else has changed since (every other cell as the copy has it, each changed one holding a
+ * name the sweep put in), the same. What the copy doesn't hold is left as it is.
+ */
+const resweep = (from: string, swept: typeof Swept.Type) =>
+  Effect.gen(function* resweeping() {
+    const brain = yield* Brain
+    const copy = new Database(from, { readonly: true })
+    const marks = Object.keys(swept.found).map((f) => `[${f}]`)
+    const rows: Record<string, number> = {}
+    const found: Record<string, number> = {}
+    let events = 0
+    const original = copy.query<{ payload: string }, [number]>(
+      "SELECT payload FROM events WHERE seq = ?",
+    )
+    for (let i = 0; i < swept.changed.length; i += PAGE) {
+      const page = swept.changed.slice(i, i + PAGE)
+      events += yield* brain.migrate((db) => {
+        const now = db.query<{ payload: string }, [number]>(
+          "SELECT payload FROM events WHERE seq = ?",
+        )
+        const update = db.query("UPDATE events SET payload = ? WHERE seq = ?")
+        let n = 0
+        for (const c of page) {
+          const was = original.get(c.seq)?.payload
+          if (was !== undefined) {
+            const names: string[] = []
+            const payload: unknown = JSON.parse(was)
+            const out = redactValue(payload, names)
+            const json = out === payload ? was : JSON.stringify(out)
+            if (json !== now.get(c.seq)?.payload) {
+              update.run(json, c.seq)
+              n += 1
+            }
+            for (const f of names) {
+              bump(found, f)
+            }
+          }
+        }
+        return n
+      })
+    }
+    for (const t of tablesOf(copy).filter((x) => (swept.tables[x.name] ?? 0) > 0)) {
+      const columns = t.columns.map((c) => c.name)
+      const select = `SELECT rowid AS _row, ${columns.map(quoted).join(", ")} FROM ${quoted(t.name)}`
+      const pageOf = copy.query<Row, [number, number]>(
+        `${select} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+      )
+      let at = 0
+      let more = true
+      while (more) {
+        const page = pageOf.all(at, PAGE)
+        yield* brain.migrate((db) => {
+          const live = db.query<Row, [number]>(`${select} WHERE rowid = ?`)
+          for (const was of page) {
+            const now = live.get(Number(was._row))
+            const changed = columns.filter((c) => now !== null && now[c] !== was[c])
+            const bySweep = changed.every((c) => {
+              const cell = now?.[c]
+              return (
+                typeof cell === "string" &&
+                typeof was[c] === "string" &&
+                marks.some((n) => cell.includes(n))
+              )
+            })
+            if (now !== null && changed.length > 0 && bySweep) {
+              const sets = changed.map((c): [string, string] => [c, cellOf(String(was[c]))])
+              db.query(
+                `UPDATE ${quoted(t.name)} SET ${sets.map(([c]) => `${quoted(c)} = ?`).join(", ")} WHERE rowid = ?`,
+              ).run(...sets.map(([, v]) => v), Number(was._row))
+              bump(rows, t.name)
+            }
+          }
+        })
+        at = Number(page.at(-1)?._row ?? at)
+        more = page.length === PAGE
+      }
+    }
+    copy.close()
+    yield* brain.migrate((db) => {
+      for (const name of ["found", "memories_fts"].filter((n) => (rows[n] ?? 0) > 0)) {
+        db.run(`INSERT INTO ${quoted(name)} (${quoted(name)}) VALUES ('optimize')`)
+      }
+    })
+    yield* brain.read((db) => db.run("PRAGMA wal_checkpoint(TRUNCATE)"))
+    return { events, rows, found }
+  })
+
+const asked = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ logs: Schema.Array(Schema.String), from: Schema.optionalKey(Schema.String) }),
+  ),
+)
+/** What a sweep found, as much as sweeping it again reads. */
+const Swept = Schema.Struct({
+  found: Schema.Record(Schema.String, Schema.Number),
+  tables: Schema.Record(Schema.String, Schema.Number),
+  changed: Schema.Array(Schema.Struct({ seq: Schema.Number })),
+})
+const sweptBefore = Schema.decodeUnknownOption(Schema.fromJsonString(Swept))
+
+// Admin only (auth.ts): the sweep, with the logs it reads (`{ logs: [paths] }`), or with `from` (a
+// copy of the brain from before it) the sweep made again as the rules read now. Answers at once;
+// what it found, by name and never a value, is `redactions-swept.json` (`-reswept`) in the core's
+// folder once it's done.
 export const sweepRoute = Layer.unwrap(
   Effect.gen(function* routing() {
     const brain = yield* Brain
     const { dir } = yield* CoreConfig
+    const done = (name: string) => (report: unknown) =>
+      Effect.sync(() => {
+        writeFileSync(path.join(dir, name), JSON.stringify(report))
+      })
     return HttpRouter.add(
       "POST",
       "/redactions/sweep",
       Effect.gen(function* sweepingRoute() {
         const request = yield* HttpServerRequest.HttpServerRequest
-        const body = yield* request.text
-        const logs = Option.match(asked(body), { onNone: () => [], onSome: (b) => b.logs })
+        const body = Option.getOrUndefined(asked(yield* request.text))
+        const before = path.join(dir, "redactions-swept.json")
+        const swept = existsSync(before)
+          ? Option.getOrUndefined(sweptBefore(readFileSync(before, "utf-8")))
+          : undefined
+        const work =
+          body?.from !== undefined && swept !== undefined
+            ? resweep(body.from, swept).pipe(Effect.flatMap(done("redactions-reswept.json")))
+            : sweep(body?.logs ?? []).pipe(Effect.flatMap(done("redactions-swept.json")))
         yield* Effect.forkDetach(
-          sweep(logs).pipe(
+          work.pipe(
             Effect.provideService(Brain, brain),
-            Effect.flatMap((report) =>
-              Effect.sync(() => {
-                writeFileSync(path.join(dir, "redactions-swept.json"), JSON.stringify(report))
-              }),
-            ),
             Effect.ignore({ log: "Warn", message: "The redaction sweep stopped" }),
           ),
         )

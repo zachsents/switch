@@ -156,12 +156,8 @@ impl Palette {
                 InputOptions::default()
                     .placeholder("Find…")
                     .field_style(TextFieldStyle { text_color: Some(l.ink), placeholder_color: Some(l.ink3), caret_color: Some(l.ink), ..Default::default() })
-                    // A field's change runs inside the field's update: reading it waits till after.
-                    .on_value_change(move |_, _, window, cx| {
-                        let weak = weak.clone();
-                        window.defer(cx, move |_, cx| {
-                            weak.update(cx, |this, cx| this.typed(cx)).ok();
-                        });
+                    .on_value_change(move |_, _, _, cx| {
+                        weak.update(cx, |this, cx| this.typed(cx)).ok();
                     }),
                 window,
                 cx,

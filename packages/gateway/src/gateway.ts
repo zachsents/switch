@@ -28,6 +28,7 @@ import {
   placedInput,
   placements,
   redact,
+  redactPicture,
   redactRecord,
   spaceFor,
   WidgetInput,
@@ -377,6 +378,17 @@ const followAsked = Schema.toStandardSchemaV1(
 )
 
 const fingerprints = Schema.toStandardSchemaV1(Fingerprints)
+const ReaderOffer = Schema.Struct({
+  read: Schema.String,
+  fill: Schema.String,
+  machine: Schema.String,
+})
+const readerOffer = Schema.toStandardSchemaV1(ReaderOffer)
+
+/** A Mac's picture reader: its app, the tools that read a picture's text and fill boxes, its machine. */
+export interface PictureReader extends Readonly<typeof ReaderOffer.Type> {
+  readonly app: string
+}
 
 /** A name against an extension's declared names: exact, or a prefix ending in `*`. */
 const allowed = (declared: readonly string[], name: string) =>
@@ -543,6 +555,8 @@ export class Gateway extends Context.Service<
       name: string,
       input?: typeof WidgetInput.Type,
     ) => Promise<readonly unknown[] | null>
+    /** The Macs that read pictures for redaction (`redactions/pictures`), as they offered. */
+    readonly pictureReaders: () => readonly PictureReader[]
   }
 >()("switch/Gateway") {
   /**
@@ -567,6 +581,7 @@ export class Gateway extends Context.Service<
         const brain = yield* Brain
         const models = yield* Models
         const connected = new Map<string, Offered>()
+        const readers = new Map<string, PictureReader>()
         /** Apps whose session ended while they're still kept: what each offered, and since when. */
         const away = new Map<string, { readonly offered: Offered; readonly since: number }>()
         /** What each app offers: connected, or away for less than AWAY_MS. */
@@ -925,6 +940,12 @@ export class Gateway extends Context.Service<
                 knowSecrets(plug.name, p)
                 return {}
               })
+              // A Mac's text reader for pictures (Vision): the tools that read one and fill boxes in
+              // it, kept while it's away.
+              client.setRequestHandler("redactions/pictures", { params: readerOffer }, (p) => {
+                readers.set(plug.name, { app: plug.name, ...p })
+                return {}
+              })
               client.setRequestHandler(
                 "models/decide",
                 decideRequest,
@@ -1210,6 +1231,7 @@ export class Gateway extends Context.Service<
           callApproved,
           reach: connectedSoon,
           callAs,
+          pictureReaders: () => [...readers.values()],
         }
       }),
     )
@@ -1273,22 +1295,27 @@ const search = (tools: readonly Tool[], query: string) => {
 
 type Block = CallToolResult["content"][number]
 
-const redactedBlock = (c: Block): Block => {
+const redactedBlock = async (c: Block): Promise<Block> => {
   if (c.type === "text") {
     return { ...c, text: redact(c.text) }
   }
   if (c.type === "resource" && "text" in c.resource) {
     return { ...c, resource: { ...c.resource, text: redact(c.resource.text) } }
   }
+  if (c.type === "image") {
+    const picture = Buffer.from(c.data, "base64")
+    const filled = await redactPicture(picture)
+    return filled === picture ? c : { ...c, data: Buffer.from(filled).toString("base64") }
+  }
   return c
 }
 
-/** A result with its secrets redacted: its words and data, not its pictures or sound (yet). */
-const redacted = (result: CallToolResult): CallToolResult => {
+/** A result with its secrets redacted: its words, data and pictures, not its sound (yet). */
+const redacted = async (result: CallToolResult): Promise<CallToolResult> => {
   const data: unknown = result.structuredContent
   return {
     ...result,
-    content: result.content.map(redactedBlock),
+    content: await Promise.all(result.content.map(redactedBlock)),
     ...(typeof data === "object" && data !== null && { structuredContent: redactRecord(data) }),
   }
 }
@@ -1304,7 +1331,7 @@ const agentServer = (gateway: typeof Gateway.Service, thread: string | null, loo
   // tool answers reaches the model with its secrets redacted.
   const call = async (name: string, args: Record<string, unknown>) =>
     callable.has(name)
-      ? redacted(await gateway.callAs(name, args, thread))
+      ? await redacted(await gateway.callAs(name, args, thread))
       : failed(`No tool ${name}`)
   const searching = all.length > LISTED_MAX
   const mcp = new McpServer({ name: "switch", version: "1" }, { capabilities: { tools: {} } })

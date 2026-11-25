@@ -142,13 +142,10 @@ pub fn pick(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEleme
                                     s.values.insert(key.clone(), value.clone());
                                     cx.notify();
                                 });
-                                if value != typed.as_ref() {
-                                    let me = me.clone();
-                                    window.defer(cx, move |window, cx| {
-                                        if let Some(me) = me.upgrade() {
-                                            me.update(cx, |h, cx| h.set_value(value, Default::default(), window, cx));
-                                        }
-                                    });
+                                if value != typed.as_ref()
+                                    && let Some(me) = me.upgrade()
+                                {
+                                    me.update(cx, |h, cx| h.set_value(value, Default::default(), window, cx));
                                 }
                             })
                             .field_style(TextFieldStyle { text_color: Some(lk.ink), placeholder_color: Some(lk.ink3), caret_color: Some(lk.ink), ..Default::default() }),

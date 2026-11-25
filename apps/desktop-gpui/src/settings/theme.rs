@@ -81,7 +81,7 @@ fn color_field(dark: bool, name: &str, label: &str, value: &str, set: Set, outsi
                         let v = v.trim().to_lowercase();
                         if hex_ok(&v) {
                             let s = s.clone();
-                            cx.defer(move |cx| edit(dark, move |t| s(t, v), cx));
+                            edit(dark, move |t| s(t, v), cx);
                         }
                     }),
                 window,

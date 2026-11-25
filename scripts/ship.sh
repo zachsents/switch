@@ -141,18 +141,17 @@ deploy_backups() {
   ls -1 "$S/backups" 2>/dev/null | sort -r | grep -E -- '-([0-9a-f]{40}|rollback-from-[0-9a-f]{40})\.db(\.zst)?$' || true
 }
 
-# After a deploy: every backup but the newest compressed; then the last 3 backups and each of the
-# last 7 days' newest kept, the last 3 releases (and the live one and the previous, which a rollback
-# needs), the update feed and the one before it. The newest backup stays an APFS clone: the canary
-# copies it in an instant, and it costs only the pages the brain has changed since.
+# After a deploy: every backup compressed, the newest too (a clone left whole comes to hold every
+# page the brain changes until the next deploy); then the last 3 backups and each of the last 7
+# days' newest kept, the last 3 releases (and the live one and the previous, which a rollback
+# needs), the update feed and the one before it.
 # A backup is the brain at rest, checkpointed (the swap's), so it's compressed as it is, straight
 # from the file: no compacted copy beside it, and only its .zst is written. The .zst is tested
-# before the clone goes.
+# before the clone goes. The backup to the image may still be reading it: it holds the file itself.
 tidy() {
   # What a run cut short left (a compacted copy, a .zst half written).
   rm -f "$S/backups"/.*.vacuum "$S/backups"/.*.vacuum-journal "$S/backups"/.*.zst.part
-  newest=$(deploy_backups | head -1)
-  deploy_backups | grep '\.db$' | grep -vx "$newest" | while read -r b; do
+  deploy_backups | grep '\.db$' | while read -r b; do
     src=$S/backups/$b part=$S/backups/.$b.zst.part
     # A WAL someone left beside it folded in first, so the file alone is the whole backup.
     if [ -s "$src-wal" ]; then
@@ -623,9 +622,11 @@ ship() {
   CANARY_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   rm -rf "$canary" 2>/dev/null || true
   mkdir -p "$canary"
-  # The last deploy's backup, an instant clone; a consistent copy of the live brain without one.
-  last=$(deploy_backups | grep '\.db$' | head -1)
-  if [ -n "$last" ]; then
+  # The last deploy's backup, compressed by its tidy; a consistent copy of the live brain without one.
+  last=$(deploy_backups | head -1)
+  if [ -n "$last" ] && [ "${last%.zst}" != "$last" ]; then
+    zstd -q -d "$S/backups/$last" -o "$canary/brain.db"
+  elif [ -n "$last" ]; then
     cp -c "$S/backups/$last" "$canary/brain.db"
   elif [ -f "$S/brain.db" ]; then
     sqlite3 "$S/brain.db" "VACUUM INTO '$canary/brain.db';"

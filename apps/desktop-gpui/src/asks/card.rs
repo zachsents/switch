@@ -118,9 +118,9 @@ fn reply_options(weak: gpui::WeakEntity<AskCard>, l: &Look, read_only: bool) -> 
         .read_only(read_only)
         .submit_shortcut(TextareaSubmitShortcut::Enter)
         .field_style(field_style(l))
-        // Redrawn by its id, not updated: a value the card sets itself (inside its own update) comes
-        // through here too, and updating the card again then would be re-entrant.
-        .on_value_change(move |_, _, _, cx| cx.notify(w2.entity_id()))
+        .on_value_change(move |_, _, _, cx| {
+            w2.update(cx, |_, cx| cx.notify()).ok();
+        })
         .on_submit(move |value, _, window, cx| {
             let text = value.trim().to_string();
             weak.update(cx, |this, cx| this.send_reply(text, window, cx)).ok();
@@ -137,8 +137,9 @@ fn answer_options(weak: gpui::WeakEntity<AskCard>, l: &Look) -> TextareaOptions 
 
 /// The sealed field: a password's, labelled with what it's for.
 fn sealed_options(weak: gpui::WeakEntity<AskCard>, l: &Look, usage: &str) -> InputOptions {
-    InputOptions::default().kind(TextFieldKind::Password).placeholder(usage.to_string()).field_style(field_style(l))// Redrawn by its id, not updated: Send clears it inside the card's own update.
-    .on_value_change(move |_, _, _, cx| cx.notify(weak.entity_id()))
+    InputOptions::default().kind(TextFieldKind::Password).placeholder(usage.to_string()).field_style(field_style(l)).on_value_change(move |_, _, _, cx| {
+        weak.update(cx, |_, cx| cx.notify()).ok();
+    })
 }
 
 /// What went wrong, as the house shows an error (`safe-error.ts`): no addresses, tokens or secrets,
@@ -153,16 +154,12 @@ fn draft_field(start: String, l: &Look, window: &mut Window, cx: &mut Context<As
     let l = *l;
     cx.new(|cx| {
         Textarea::new(
-            TextareaOptions::default().default_value(start).rows(2).auto_resize(true).field_style(field_style(&l)).on_value_change(move |_, details, window, cx| {
+            TextareaOptions::default().default_value(start).rows(2).auto_resize(true).field_style(field_style(&l)).on_value_change(move |_, details, _, cx| {
                 // A value the card put in itself (the core's newer version) isn't typing.
                 if matches!(details.source, ui_sdk::kernel::ChangeSource::Programmatic) {
                     return;
                 }
-                // It runs inside the field's update; reading the fields waits till after.
-                let weak = weak.clone();
-                window.defer(cx, move |_, cx| {
-                    weak.update(cx, |this, cx| this.keep_edits(cx)).ok();
-                });
+                weak.update(cx, |this, cx| this.keep_edits(cx)).ok();
             }),
             window,
             cx,

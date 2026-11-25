@@ -44,6 +44,7 @@ export {
   NoHost,
   providerOf,
   sessionFile,
+  startedBy,
   workOn,
   yielding,
 } from "./hosts.ts"
