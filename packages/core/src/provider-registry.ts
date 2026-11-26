@@ -4,10 +4,11 @@ import type { Login } from "@switch/agent"
 import { RegistrySelection, installRegistryAgent } from "@switch/agent/acp-install"
 import { fetchRegistry, registryTarget } from "@switch/agent/acp-registry"
 import { Brain, defineRead, EventId } from "@switch/brain"
-import { SUBSCRIPTIONS } from "@switch/models"
+import { isLoginProvider, SUBSCRIPTIONS } from "@switch/models"
 import { Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/http"
 
+import { Accounts } from "./account-service.ts"
 import { CoreConfig } from "./config.ts"
 import { addedOf } from "./logins.ts"
 import { Profiles } from "./model-catalog.ts"
@@ -22,6 +23,7 @@ export const registryRoutes = Layer.unwrap(
     const hosts = yield* Hosts
     const profiles = yield* Profiles
     const brain = yield* Brain
+    const accounts = yield* Accounts
     // Recorded first, then a host: a login is the brain's (logins.ts).
     const addLogin = async (login: Login) => {
       const machine = hosts.all.find((host) => host.machine.id === config.machine)?.machine
@@ -60,6 +62,9 @@ export const registryRoutes = Layer.unwrap(
           return new Response(null, { status: 204 })
         }
         await addLogin({ id: provider, provider })
+        if (isLoginProvider(provider)) {
+          await Effect.runPromise(accounts.checkOwn(provider))
+        }
         await Effect.runPromise(profiles.refresh)
         return new Response(null, { status: 204 })
       }

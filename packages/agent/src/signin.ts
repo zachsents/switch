@@ -6,6 +6,7 @@
 // and the process ends by itself once the page has it. Nothing the terminal shows is kept but the
 // address and that code: it echoes what's typed.
 import { mkdirSync } from "node:fs"
+import { homedir } from "node:os"
 import type { LoginProvider } from "@switch/models"
 import { Data, Effect, Schema } from "effect"
 
@@ -104,11 +105,12 @@ export interface SignIn {
 }
 
 // No browser opens where nobody is at the keyboard; the address goes to the user instead.
-const env = (cli: Cli, home: string) =>
+// A login's home goes in its CLI's variable; null leaves the CLI in the one it uses by itself.
+const env = (cli: Cli, home: string | null) =>
   childEnv({ env: processEnv() }, cli.drop, {
     BROWSER: "/usr/bin/true",
     ...cli.env,
-    [cli.home]: home,
+    ...(home === null ? {} : { [cli.home]: home }),
   })
 
 // Waits until `check` holds or `ms` pass, looking every tenth of a second.
@@ -219,11 +221,16 @@ export const startSignIn = (
   })
 
 // Runs `provider`'s CLI with `args` on the login in `home`: what it said, and how it exited.
-const run = (provider: LoginProvider, home: string, command: string, args: readonly string[]) =>
+const run = (
+  provider: LoginProvider,
+  home: string | null,
+  command: string,
+  args: readonly string[],
+) =>
   Effect.promise(async () => {
     const cli = cliOf(provider)
     const proc = Bun.spawn([command, ...args], {
-      cwd: home,
+      cwd: home ?? homedir(),
       env: env(cli, home),
       stdin: "ignore",
       stdout: "pipe",
@@ -241,6 +248,16 @@ const run = (provider: LoginProvider, home: string, command: string, args: reado
 export const signedIn = (provider: LoginProvider, home: string, command: string) =>
   Effect.map(run(provider, home, command, cliOf(provider).status), ({ said, code }) =>
     cliOf(provider).signedIn(said, code),
+  )
+
+/**
+ * Whether the CLI's own login, in the home it uses by itself, is signed in, as the status it
+ * prints as JSON says: null when it printed none (it failed to run, or says it another way), so
+ * a login is never judged out on that.
+ */
+export const ownSignedIn = (provider: LoginProvider, command: string) =>
+  Effect.map(run(provider, null, command, cliOf(provider).status), ({ said, code }) =>
+    json(said)._tag === "None" ? null : cliOf(provider).signedIn(said, code),
   )
 
 /** Signs the login in `home` out, so its credentials go with it. */

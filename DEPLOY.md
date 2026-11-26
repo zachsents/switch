@@ -30,6 +30,11 @@ Deploys: `bun run deploy` on the workstation, or the hook when main moves
 Each host takes the core's release itself as it links (CONCEPTS: Loop); `scripts/install-host.sh`
 puts a first one on a machine.
 
+Releases (the dmg anyone can download, and the feed its copies update from): on the core machine,
+`sh apps/desktop-gpui/scripts/release.sh <version>` (like `0.1.0`) builds main as Switch.app with
+the core inside, signs, notarizes, signs `update.json` with `updateKey`, publishes the commit and
+puts all three on GitHub Releases of `releasesRepo` as the latest.
+
 ## Rollback
 
 A bad Switch deploy is rolled back by the watch on its own. By hand:

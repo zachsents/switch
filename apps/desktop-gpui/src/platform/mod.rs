@@ -21,6 +21,7 @@ pub mod oauth;
 pub mod pasteboard;
 pub mod quicklook;
 pub mod snapshot;
+pub mod standalone;
 pub mod timing;
 pub mod update;
 pub mod watch;
@@ -57,6 +58,8 @@ pub fn opened(window: &mut Window, cx: &mut App) {
     watch::start(cx);
     update::start(cx);
     extension::start(cx);
+    // A first run of a Mac of its own: Setup comes up beside the window.
+    crate::settings::setup::open_if_new(cx);
 }
 
 /// A quiet copy's data folder lasts its run: those of copies no longer running are removed.

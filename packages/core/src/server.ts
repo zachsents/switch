@@ -78,7 +78,7 @@ import { Effect, Layer } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 
 import { authLayer, authRoutes, generationRead, layerMove } from "./auth.ts"
-import { Accounts } from "./account-service.ts"
+import { Accounts, CoreMachine } from "./account-service.ts"
 import { accountsRoute } from "./account-routes.ts"
 import { accountsApp } from "./accounts.ts"
 import {
@@ -223,7 +223,7 @@ export const prepare = Layer.build(layerBrain).pipe(
   Effect.asVoid,
 )
 
-// The core's logins, as the brain records them (logins.ts).
+// The core's logins, as the brain records them (logins.ts), and its own machine.
 const layerHosts = Layer.unwrap(
   Effect.gen(function* hosting() {
     const c = yield* CoreConfig
@@ -237,7 +237,10 @@ const layerHosts = Layer.unwrap(
       ...local,
       env: { ...local.env, PATH: `${local.env.PATH ?? ""}:${cliDirectory(c.dir)}` },
     }
-    return Hosts.layer(hostsOf(yield* loadLogins(c), machine))
+    return Layer.merge(
+      Hosts.layer(hostsOf(yield* loadLogins(c), machine)),
+      Layer.succeed(CoreMachine, machine),
+    )
   }),
 )
 

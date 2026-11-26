@@ -69,6 +69,7 @@ icu_decimal = { version = "2.4", features = ["unstable"] }
 icu_locale_core = "2.4"
 fixed_decimal = "0.7"
 base64 = "0.22"
+ed25519-dalek = "2"
 regex = "1"
 rusqlite = { version = "0.37", features = ["bundled", "collation"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "stream"] }

@@ -1,0 +1,17 @@
+name: Bug
+description: Something doesn't work
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+  - type: input
+    attributes:
+      label: Switch version
+  - type: input
+    attributes:
+      label: macOS version

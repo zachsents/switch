@@ -14,6 +14,10 @@
 #   SWITCH_APP_SCHEME    a URL scheme it opens ("switchboard" once it's the live app; none beside it,
 #                        so links still open the live one)
 #   SWITCH_SIGN_IDENTITY a Developer ID to sign with, hardened (ad hoc without one)
+#   SWITCH_CORE_APP      a signed "Switch Host.app" to carry, for a Mac of its own: the app puts it
+#                        in and runs it (src/platform/standalone.rs)
+#   SWITCH_UPDATE_KEY    the feed's Ed25519 public key (baked in): update.json is checked with it
+#   SWITCH_EXTENSIONS_REPO, SWITCH_EXTENSIONS_HIDE  what Setup offers (baked in)
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 cd "$HERE"
@@ -31,6 +35,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$TARGET/release/switch-gpui" "$APP/Contents/MacOS/switch-gpui"
 cp "$TARGET/release/switch-dictation" "$TARGET/release/switch-quicklook" "$APP/Contents/MacOS/"
+if [ -n "${SWITCH_CORE_APP:-}" ]; then
+  ditto "$SWITCH_CORE_APP" "$APP/Contents/Resources/Switch Host.app"
+fi
 iconutil -c icns -o "$APP/Contents/Resources/icon.icns" ../desktop/assets/brand/icon.iconset
 URLS=""
 if [ -n "$SCHEME" ]; then

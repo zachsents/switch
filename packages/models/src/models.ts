@@ -287,6 +287,16 @@ const make = Effect.fnUntraced(function* making(profile: Profile | Effect.Effect
     Exit.isSuccess(exit) ? Duration.infinity : Duration.zero,
   )
   const claudeCode = yield* ClaudeCode
+  // Without a gateway key (an install on a Claude subscription alone), a gateway model's work goes
+  // to Claude Code: Haiku for a Haiku, Sonnet for the rest.
+  const routed = (model: Model): Effect.Effect<Model> =>
+    model.provider === "gateway"
+      ? Effect.map(Effect.exit(key), (exit) =>
+          Exit.isSuccess(exit)
+            ? model
+            : { provider: "claude-code", id: model.id.includes("haiku") ? "haiku" : "sonnet" },
+        )
+      : Effect.succeed(model)
 
   // A picture takes up to a few minutes, and is never asked for twice: each one costs.
   const post = (path: string, body: unknown, slow = false) =>
@@ -391,9 +401,9 @@ const make = Effect.fnUntraced(function* making(profile: Profile | Effect.Effect
 
   const decide: ModelsShape["decide"] = (input, questions, role = "decision") =>
     Effect.gen(function* deciding() {
-      const model = (yield* Effect.isEffect(profile) ? profile : Effect.succeed(profile)).roles[
-        role
-      ]
+      const model = yield* routed(
+        (yield* Effect.isEffect(profile) ? profile : Effect.succeed(profile)).roles[role],
+      )
       // On a subscription (a profile that runs everything on Codex, say), the questions go to the
       // model in one completion, and each choice comes back with the probability it gives it.
       if (model.provider === "claude-code" || SUBSCRIPTIONS.some((p) => p === model.provider)) {
@@ -415,8 +425,9 @@ const make = Effect.fnUntraced(function* making(profile: Profile | Effect.Effect
       return yield* completeOn(p.roles[role], system, prompt, images)
     })
 
-  const completeOn: ModelsShape["completeOn"] = (model, system, prompt, images = []) =>
+  const completeOn: ModelsShape["completeOn"] = (given, system, prompt, images = []) =>
     Effect.gen(function* completing() {
+      const model = yield* routed(given)
       // Subscriptions run through the session runner, whichever provider.
       if (model.provider === "claude-code" || SUBSCRIPTIONS.some((p) => p === model.provider)) {
         return yield* claudeCode.run({

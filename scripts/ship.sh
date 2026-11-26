@@ -36,7 +36,8 @@ SERVER=$(conf server)
 IDENTITY=$(conf identity)
 TEAM=$(conf team)
 # The host bundle's id: the old client's host id keeps its macOS permissions (PERMISSIONS.md).
-BUNDLE_ID=$(conf hostId)
+# A public release (apps/desktop-gpui/scripts/release.sh) names its own: SWITCH_HOST_ID.
+BUNDLE_ID=${SWITCH_HOST_ID:-$(conf hostId)}
 APP_ID=$(conf appId)
 SIGNING_KEYCHAIN=$(expand "$(conf keychain)")
 TAILSCALE=/Applications/Tailscale.app/Contents/MacOS/Tailscale

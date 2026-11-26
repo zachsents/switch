@@ -17,6 +17,7 @@ mod profiles;
 mod providers;
 mod qr;
 mod role_choices;
+pub mod setup;
 mod spaces;
 mod system;
 mod theme;
@@ -34,7 +35,8 @@ use crate::look::{Look, SANS, SIGN, u};
 use crate::model::model;
 use crate::nav::Beat;
 
-pub const SECTIONS: [(&str, &str); 11] = [
+pub const SECTIONS: [(&str, &str); 12] = [
+    ("setup", "Setup"),
     ("general", "General"),
     ("providers", "Providers"),
     ("profiles", "Profiles"),
@@ -147,6 +149,7 @@ fn open_section(section: &str, window: &mut Window, cx: &mut App) -> AnyElement 
         "notifications" => notifications::render(window, cx),
         "memory" => memory::render(window, cx),
         "system" => system::render(window, cx),
+        "setup" => setup::render(window, cx),
         _ => general::render(window, cx),
     }
 }
@@ -211,13 +214,13 @@ impl SettingsWindow {
                     .flex_1()
                     .min_h_0()
                     .child(
-                        div().id("settings-nav").role(gpui::Role::Navigation).aria_label("Settings").w(u(180.)).flex_none().h_full().border_r(px(l.w1)).border_color(l.line1).children(SECTIONS.iter().enumerate().map(|(i, (key, label))| {
+                        div().id("settings-nav").role(gpui::Role::Navigation).aria_label("Settings").w(u(180.)).flex_none().h_full().border_r(px(l.w1)).border_color(l.line1).children(SECTIONS.iter().filter(|(key, _)| *key != "setup" || setup::shown()).enumerate().map(|(i, (key, label))| {
                             let current = *key == open;
                             let key = *key;
                             kit::button(ElementId::Name(format!("section-{key}").into()), Btn::Row, true, &l)
                                 .aria_selected(current)
                                 .when(current, |d| d.bg(l.hover).font_weight(FontWeight::SEMIBOLD))
-                                .when(i + 1 < SECTIONS.len(), |d| d.border_b(px(l.w2)).border_color(l.line2))
+                                .when(i + 1 < SECTIONS.len() - usize::from(!setup::shown()), |d| d.border_b(px(l.w2)).border_color(l.line2))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.section = key;
                                     cx.notify();

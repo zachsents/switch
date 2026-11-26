@@ -14,6 +14,10 @@
 //! version, its commit, its zip (the app, as `ditto` packs it) and the zip's SHA-256. The feed's
 //! address, the version and the commit are the build's (`SWITCH_GPUI_UPDATES`, `SWITCH_APP_VERSION`,
 //! `SWITCH_BUILD_HASH`); a build without a feed is the dev channel, which never updates.
+//!
+//! A build for a public feed (GitHub Releases, scripts/release.sh) also carries the feed's public key
+//! (`SWITCH_UPDATE_KEY`, Ed25519): its update.json is then taken only with a good `sig` over what it
+//! names. Either way, an update goes in only when it's signed by the same team as the app running.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,6 +46,8 @@ const BACKOFF_MS: f64 = 10. * 60_000.;
 const BACKOFF_MAX_MS: f64 = 6. * 60. * 60_000.;
 
 pub const FEED: Option<&str> = option_env!("SWITCH_GPUI_UPDATES");
+/// The feed's Ed25519 public key, base64; none for a feed that isn't signed (the tailnet's).
+const KEY: Option<&str> = option_env!("SWITCH_UPDATE_KEY");
 /// The build's version; a build that names none is "0.0.1", as the desktop's.
 pub const VERSION: &str = match option_env!("SWITCH_APP_VERSION") {
     Some(v) if !v.is_empty() => v,
@@ -66,6 +72,41 @@ struct Info {
     hash: String,
     url: String,
     sha256: String,
+    #[serde(default)]
+    sig: String,
+}
+
+/// What the feed's key signs: every field the app acts on.
+fn signed_part(i: &Info) -> String {
+    format!("switch-update\n{}\n{}\n{}\n{}", i.version, i.hash, i.url, i.sha256)
+}
+
+/// The update.json is the feed's own, when the build names a key.
+fn verified(i: &Info) -> Result<(), String> {
+    let Some(key) = KEY.filter(|k| !k.is_empty()) else { return Ok(()) };
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let key: [u8; 32] = b64.decode(key).ok().and_then(|k| k.try_into().ok()).ok_or("the build's update key is bad")?;
+    let sig: [u8; 64] = b64.decode(&i.sig).ok().and_then(|s| s.try_into().ok()).ok_or("the update isn't signed")?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&key).map_err(|e| e.to_string())?;
+    key.verify_strict(signed_part(i).as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).map_err(|_| "the update's signature doesn't match".to_string())
+}
+
+/// The team a signed app is signed by.
+fn team(app: &std::path::Path) -> Option<String> {
+    let out = Command::new("/usr/bin/codesign").args(["-dv", "--verbose=2"]).arg(app).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    text.lines().find_map(|l| l.strip_prefix("TeamIdentifier=")).map(str::to_string).filter(|t| t != "not set")
+}
+
+/// The new app's signature holds, by the running app's team (when it has one).
+fn same_team(app: &std::path::Path) -> Result<(), String> {
+    let Some(mine) = bundle().and_then(|b| team(&b)) else { return Ok(()) };
+    let ok = Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(app).status().is_ok_and(|s| s.success());
+    if !ok || team(app).as_deref() != Some(mine.as_str()) {
+        return Err("the update isn't signed by this app's team".into());
+    }
+    Ok(())
 }
 
 /// The last version put in, when, how many in a row haven't taken, and whether this one's outcome is
@@ -258,6 +299,7 @@ async fn fetch(feed: &str) -> Result<Option<Ready>, String> {
     if info.hash.is_empty() || info.hash == HASH || info.version == VERSION {
         return Ok(None);
     }
+    verified(&info)?;
     // One tried already isn't fetched again.
     if tried().is_some_and(|t| t.hash == info.hash) {
         return Ok(None);
@@ -286,6 +328,7 @@ async fn fetch(feed: &str) -> Result<Option<Ready>, String> {
         return Err("the update didn't unpack".into());
     }
     let app = std::fs::read_dir(&unpacked).map_err(|e| e.to_string())?.flatten().map(|d| d.path()).find(|p| p.extension().is_some_and(|x| x == "app")).ok_or("the update holds no app")?;
+    same_team(&app)?;
     Ok(Some(Ready { info, app }))
 }
 
@@ -360,4 +403,25 @@ pub fn apply_now(cx: &mut App) {
     if entity(cx).read(cx).ready.is_some() && !crate::outbox::quiet() {
         put_in(true, cx);
     }
+}
+
+/// `--update`, without a window: the feed's newest fetched, checked and put in where this app is,
+/// then the core it carries (platform::standalone). Answers what it did.
+pub fn headless() -> Result<String, String> {
+    let feed = FEED.ok_or("this build has no feed")?.trim_end_matches('/').to_string();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let Some(ready) = rt.block_on(fetch(&feed))? else { return Ok(format!("{} is the newest", label(VERSION, HASH))) };
+    let live = bundle().ok_or("not in an app")?;
+    let aside = live.with_extension(format!("old-{}", std::process::id()));
+    std::fs::rename(&live, &aside).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&ready.app, &live) {
+        let _ = std::fs::rename(&aside, &live);
+        return Err(e.to_string());
+    }
+    let _ = std::fs::remove_dir_all(&aside);
+    let _ = Command::new("/usr/bin/xattr").args(["-dr", "com.apple.quarantine"]).arg(&live).status();
+    // The new app's own binary puts its core in.
+    let core = Command::new(live.join("Contents/MacOS/switch-gpui")).arg("--install-core").status().map_err(|e| e.to_string())?;
+    let put = label(&ready.info.version, &ready.info.hash);
+    if core.success() { Ok(format!("{put} put in; core serving")) } else { Err(format!("{put} put in; its core didn't start")) }
 }

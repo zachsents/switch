@@ -13,10 +13,12 @@ import {
   allLogins,
   canInstallClaude,
   cliCommand,
+  cliDirectory,
   cliVersion,
   Hosts,
   installClaude,
   lentHost,
+  ownSignedIn,
   ownedHost,
   providerOf,
   reportAccount,
@@ -24,7 +26,7 @@ import {
   signOut,
   startSignIn,
 } from "@switch/agent"
-import type { Host, SignIn } from "@switch/agent"
+import type { Host, Machine, SignIn } from "@switch/agent"
 import { Brain, defineRead, EventId } from "@switch/brain"
 import { isLoginProvider, LOGIN_PROVIDERS, PROVIDER_LAUNCHES, SUBSCRIPTIONS } from "@switch/models"
 import type { LoginProvider } from "@switch/models"
@@ -45,9 +47,14 @@ const label = (provider: LoginProvider) => PROVIDER_LAUNCHES[provider].label
 /** The core's logins, as recorded. */
 const loginsRead = defineRead("core/account-service/logins", allLogins)
 
+/** The core's own machine, where accounts added here sign in: there before any login is, as on a
+ * new Mac whose CLI Providers installs. */
+export class CoreMachine extends Context.Service<CoreMachine, Machine>()("switch/CoreMachine") {}
+
 const make = Effect.gen(function* making() {
   const c = yield* CoreConfig
   const hosts = yield* Hosts
+  const here = yield* CoreMachine
   const brain = yield* Brain
   const pending = new Map<string, Pending>()
   const locks = new Map<string, Semaphore.Semaphore>()
@@ -127,7 +134,6 @@ const make = Effect.gen(function* making() {
       yield* flow.signIn.cancel
     })
   const command = (provider: LoginProvider) => cliCommand(c.dir, provider)
-  const machineHere = () => hosts.all.find((h) => h.machine.id === c.machine)?.machine
   // An account added here that isn't signed in is a host that takes no turns until it is.
   yield* Effect.forEach(
     hosts.all.flatMap((h) => {
@@ -144,6 +150,31 @@ const make = Effect.gen(function* making() {
       }),
     { concurrency: 4, discard: true },
   )
+  // The CLI's own login on this machine, when the CLI is the one Providers installed (a new Mac):
+  // nothing signed it in but the CLI itself, so a turn on it before then would fail as signed out.
+  // A CLI the user installed keeps its login as it is: what it's run with (a token in the
+  // environment, say) may sign it in where its status alone doesn't.
+  const checkOwn = (provider: LoginProvider) =>
+    Effect.gen(function* checkingOwn() {
+      const cli = command(provider)
+      const own = hosts.get(provider)
+      if (
+        cli === null ||
+        path.dirname(cli) !== cliDirectory(c.dir) ||
+        own === undefined ||
+        own.machine.id !== c.machine ||
+        own.lent === true ||
+        own.configDir !== undefined ||
+        providerOf(own) !== provider
+      ) {
+        return
+      }
+      if ((yield* ownSignedIn(provider, cli)) === false) {
+        yield* hosts.limit(provider, Number.MAX_SAFE_INTEGER, "Signed out")
+        yield* report(provider)
+      }
+    })
+  yield* Effect.forEach(LOGIN_PROVIDERS, checkOwn, { discard: true })
   // Each account added here goes to every machine linked in, lent: its own home there, its login
   // the core's. hosts.add and hosts.remove lend again.
   yield* hosts.lend((machine) =>
@@ -179,10 +210,6 @@ const make = Effect.gen(function* making() {
         ) {
           return yield* fail("Name taken")
         }
-        const machine = machineHere()
-        if (machine === undefined) {
-          return yield* fail("Core host unavailable")
-        }
         yield* record(AccountAdded.type, addedOf({ id, provider, owned: true }))
         const root = addedDir(c.dir, provider)
         yield* Effect.try({
@@ -195,7 +222,9 @@ const make = Effect.gen(function* making() {
           },
           catch: () => new Error("Can't create account directory"),
         }).pipe(Effect.tapError(() => record(AccountRemoved.type, { host: id })))
-        yield* hosts.add(ownedHost({ id, machine, provider, configDir: ownedFolder(provider, id) }))
+        yield* hosts.add(
+          ownedHost({ id, machine: here, provider, configDir: ownedFolder(provider, id) }),
+        )
         yield* hosts.limit(id, Number.MAX_SAFE_INTEGER, "Signed out")
         yield* report(id)
         return { id }
@@ -406,10 +435,11 @@ const make = Effect.gen(function* making() {
           },
           catch: () => new Error("Claude CLI installation failed"),
         })
+        yield* checkOwn(provider)
         return { provider }
       }),
     )
-  return { add, start, finish, cancel, signout, remove, list, install }
+  return { add, start, finish, cancel, signout, remove, list, install, checkOwn }
 })
 
 export class Accounts extends Context.Service<Accounts, Effect.Success<typeof make>>()(

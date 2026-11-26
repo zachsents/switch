@@ -2,11 +2,12 @@
 # Publishes a commit of this repo (default main) to the public repo as one commit on top of the last
 # published one: its tree, and its subjects since then. The full history and its messages stay
 # here. Refuses a tree gitleaks or the denylist (scripts/denylist.sh) flags, and drops a subject
-# the denylist matches.
+# the denylist matches. Credits who a pull request came from (scripts/take.sh) and closes it.
 #   sh scripts/publish.sh [ref]
 set -eu
 cd "$(dirname "$0")/.."
 public=${SWITCH_PUBLIC:-https://github.com/zachsents/switch.git}
+repo=$(printf '%s' "$public" | sed -E 's#^https://github.com/##; s#\.git$##')
 sha=$(git rev-parse "${1:-main}^{commit}")
 list=${SWITCH_DENYLIST:-$HOME/.switch/denylist}
 
@@ -32,7 +33,12 @@ else
   last=$(git log -1 --format=%B FETCH_HEAD | sed -n 's/^Source: //p')
   git log --no-merges --format=%s "$last..$sha" | grep -v -i -E -f "$tmp/deny" >"$tmp/msg" || echo Switch >"$tmp/msg"
   printf '\nSource: %s\n' "$sha" >>"$tmp/msg"
+  git log --no-merges --format='%(trailers:key=Co-authored-by,valueonly)' "$last..$sha" |
+    grep -v -i -e '^[[:space:]]*$' -e '@anthropic\.com' | grep -v -i -E -f "$tmp/deny" | sort -u |
+    sed 's/^/Co-authored-by: /' >>"$tmp/msg" || true
+  prs=$(git log --no-merges --format='%(trailers:key=Public-PR,valueonly)' "$last..$sha" | grep -E '^[0-9]+$' | sort -un || true)
   commit=$(git commit-tree "$sha^{tree}" -p "$parent" -F "$tmp/msg")
 fi
 git push -q "$public" "$commit:refs/heads/main"
+for n in ${prs:-}; do gh pr close "$n" -R "$repo" -c "Landed in $commit." >/dev/null || true; done
 echo "$commit"

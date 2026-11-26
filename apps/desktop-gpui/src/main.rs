@@ -83,6 +83,36 @@ gpui::actions!(switch_app, [Quit]);
 fn main() {
     let started = Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // `--install-core`: the core this app carries put in and started, without a window.
+    if std::env::args().nth(1).as_deref() == Some("--install-core") {
+        match platform::standalone::ensure() {
+            Ok(()) => println!("core serving"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    // `--update`: the feed's newest put in where this app is, without a window.
+    if std::env::args().nth(1).as_deref() == Some("--update") {
+        match platform::update::headless() {
+            Ok(said) => println!("{said}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    // The core this app carries, put in or kept running, beside the window.
+    if !outbox::quiet() {
+        std::thread::spawn(|| {
+            if let Err(e) = platform::standalone::ensure() {
+                log::warn!("Core: {e}");
+            }
+        });
+    }
     let application = gpui_platform::application().with_assets(Assets);
     platform::before_run(&application);
     // `switchboard://` links the app is opened with, or sent while it runs.

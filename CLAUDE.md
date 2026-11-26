@@ -21,7 +21,7 @@ Design: CONCEPTS.md. Read it first.
 - `packages/core/skills`: the agent's skills (Claude Code's SKILL.md), listed in every turn, read with `skills_read`.
 - `packages/kit`: switch-ext-kit, the extension kit, published to npm; an installed extension resolves it there.
 - `extensions/<name>`: the public extensions, each a package with its own `bun run check`, installed alone (`github:zachsents/switch` with `path`). Root lint and format skip them and the kit.
-- Public: `sh scripts/publish.sh` puts main on GitHub as one commit, its tree only; history and messages stay on the core machine.
+- Public: `sh scripts/publish.sh` puts main on GitHub as one commit, its tree only; history and messages stay on the core machine. `sh scripts/take.sh <n>` takes a public pull request in, crediting its author; the publish that carries it closes it.
 
 ## Rust (`apps/desktop-gpui`)
 - Proven crates over hand-rolled code; UI SDK for gpui's components and behaviors before anything of the app's own.

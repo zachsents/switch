@@ -441,6 +441,11 @@ impl Model {
         self.call_checked("extensions", "install", json!({ "source": source }), cx)
     }
 
+    /// A folder of a monorepo, installed alone.
+    pub fn install_extension_at(&self, source: &str, path: &str, cx: &mut Context<Self>) -> Task<Result<Value, String>> {
+        self.call_checked("extensions", "install", json!({ "source": source, "path": path }), cx)
+    }
+
     pub fn update_extension(&self, extension: &str, cx: &mut Context<Self>) -> Task<Result<Value, String>> {
         self.call_checked("extensions", "update", json!({ "extension": extension }), cx)
     }
