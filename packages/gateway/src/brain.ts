@@ -20,7 +20,9 @@ import {
   Emoji,
   Tapback,
   ReactToMessage,
+  RemoveMessage,
   RemoveWidget,
+  RestoreMessage,
   SetSpaceFolder,
   SpaceId,
   userOf,
@@ -361,6 +363,27 @@ const move = tool(
     Effect.flatMap(named(input.space), (space) => command(MoveMessage.type, { ...input, space })),
 )
 
+const remove = tool(
+  "remove_message",
+  {
+    closed: true,
+    description:
+      "Take a message out of one space it shows in, where it doesn't belong (a mention that doesn't bear on that space, or the wrong space): it stays in the others, and never leaves its last. The user's own removals are hand labels triage and routing learn from. `undo` puts it back.",
+    input: Schema.Struct({
+      seq: Schema.Finite,
+      space: Schema.String,
+      undo: Schema.optionalKey(Schema.Boolean),
+    }),
+  },
+  (input) =>
+    Effect.flatMap(named(input.space), (space) =>
+      command(input.undo === true ? RestoreMessage.type : RemoveMessage.type, {
+        seq: input.seq,
+        space,
+      }),
+    ),
+)
+
 const widgets = tool(
   "widgets",
   {
@@ -624,6 +647,7 @@ export const brainApp = defineApp<Blobs | Brain | Gateway | Pages | Preview>({
     archive,
     react,
     move,
+    remove,
     widgets,
     place,
     unplace,

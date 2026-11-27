@@ -65,6 +65,10 @@ pub enum Command {
     Settings(String),
     /// A `switchboard://` link opened.
     Link(String),
+    /// A terminal in a window of its own.
+    Terminal,
+    /// A terminal pinned in a space: the one open (None), or the one right-clicked.
+    PinTerminal(Option<String>),
 }
 
 /// The one action every command rides on.
@@ -122,6 +126,10 @@ pub struct ReactPicked;
 #[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
 #[action(namespace = switch)]
 pub struct CopyPicked;
+/// The message picked, out of the space open, when it shows in others too.
+#[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
+#[action(namespace = switch)]
+pub struct RemovePicked;
 /// The message picked, whole, in its reading window (as its More).
 #[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
 #[action(namespace = switch)]
@@ -181,6 +189,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         c("General", "Smaller Text", &["cmd--"], Command::TextSize(-1)),
         c("General", "Actual Size", &["cmd-0"], Command::TextSize(0)),
         c("General", "Light or Dark", &["cmd-alt-t"], Command::Appearance),
+        c("General", "New Terminal", &["cmd-t"], Command::Terminal),
         own("General", "Close Window", "⌘W"),
         c("Go", "Home", &["cmd-shift-h", "cmd-1"], Command::Home),
         own("Go", "Spaces in Order", "⌘2–⌘9"),
@@ -192,7 +201,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         c("Go", "Sidebar", &["cmd-j"], Command::Sidebar),
         c("Go", "Widgets", &["cmd-shift-j"], Command::Widgets),
         c("Go", "New Message", &["cmd-n"], Command::Message),
-        s("Go", "To the Message Box", &["/"], Some("Switch && !TextField"), act!(crate::app::ToBox)),
+        s("Go", "To the Message Box", &["/"], Some("Switch && !TextField && !Terminal"), act!(crate::app::ToBox)),
         c("Go", "Chat", &["cmd-l"], Command::Chat),
         c("Space", "New Space", &["cmd-alt-n"], Command::NewSpace),
         c("Space", "Split Off", &["cmd-shift-n"], Command::Split(None)),
@@ -201,6 +210,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         c("Space", "Archive", &["ctrl-cmd-a"], Command::Archive(None)),
         c("Space", "Find in Chat", &["cmd-f"], Command::FindIn),
         c("Space", "Attach Files", &["cmd-shift-a"], Command::Attach),
+        c("Space", "Add Terminal", &["cmd-shift-t"], Command::PinTerminal(None)),
         c("Space", "Stop", &["cmd-."], Command::Stop),
         own("Messages", "Send", "↵"),
         own("Messages", "New Line", "⇧↵"),
@@ -216,6 +226,8 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s("Messages", "React", &["t", "e"], Some("Picking && !TextField"), act!(ReactPicked)),
         s("Messages", "Copy", &["c", "cmd-c"], Some("Picking && !TextField"), act!(CopyPicked)),
         s("Messages", "Read Whole", &["space", "o"], Some("Picking && !TextField"), act!(ReadPicked)),
+        s("Messages", "Remove from Space", &["backspace", "delete"], Some("Picking && !TextField"), act!(RemovePicked)),
+        s("Messages", "Undo Remove", &["cmd-z"], Some("Switch && !TextField"), act!(ui_sdk::native::text_field::Undo)),
         s("Lists", "Previous Row", &["up", "k"], Some("Row"), act!(PreviousRow)),
         s("Lists", "Next Row", &["down", "j"], Some("Row"), act!(NextRow)),
         s("Lists", "Previous Row", &["k"], Some("Thread && !TextField"), act!(PreviousRow)),
@@ -543,5 +555,15 @@ pub fn run(c: &Command, window: &mut Window, cx: &mut App) {
         Command::Move(id, to) => spaces::move_to(id, to.as_deref(), cx),
         Command::CopyLink(id) => spaces::copy_link(id.as_deref().unwrap_or(&space), cx),
         Command::Link(url) => crate::links::when_ready(url.clone(), cx),
+        Command::Terminal => {
+            crate::terminal::open(crate::terminal::session::Start::default(), cx);
+        }
+        Command::PinTerminal(id) => {
+            let to = id.clone().unwrap_or(space);
+            crate::terminal::pin(&to, crate::terminal::session::Start::default(), None, cx);
+            if !on_space {
+                Nav::open(Page::Space(to), cx);
+            }
+        }
     }
 }

@@ -63,6 +63,7 @@ mod shot;
 mod spaces;
 mod step_icons;
 mod tapback;
+mod terminal;
 mod steps;
 mod theme;
 mod thread;
@@ -143,6 +144,7 @@ fn main() {
         track::init(cx);
         widgets::host::Host::init(cx);
         cx.bind_keys(commands::bindings());
+        terminal::init(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         menu::init(cx);
         cx.set_menus(menu::build(&menu::model_of(cx)));

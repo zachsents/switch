@@ -270,6 +270,14 @@ impl ReactMenu {
         self.shut(true, window, cx);
     }
 
+    /// Out of one space it shows in: it leaves this chat when that's the one, and stays in the rest.
+    fn remove(&mut self, space: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.target.clone() {
+            model(cx).update(cx, |m, cx| m.remove_from(t.seq, &space, cx));
+        }
+        self.shut(true, window, cx);
+    }
+
     /// Words chosen go to the box as what it replies to.
     fn reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.target.clone()
@@ -420,20 +428,36 @@ impl Render for ReactMenu {
             .flex()
             .items_center();
         let search = div().flex().flex_col().gap(px(4.)).min_w(px(202.)).child(div().flex().items_center().gap(px(2.)).h(px(32.)).children(row)).child(field);
+        // The spaces it shows in, when more than one: each a row to take it out of, this one first.
+        let mut out = if words { vec![] } else { model(cx).read(cx).removable(t.seq) };
+        out.sort_by_key(|(id, _)| *id != t.space);
+        let rows: Vec<AnyElement> = {
+            let m = model(cx).read(cx);
+            out.iter()
+                .map(|(id, name)| {
+                    let st = m.derived.station(id);
+                    let to = id.clone();
+                    kit::button(SharedString::from(format!("remove-from-{id}")), Btn::Row, true, &l)
+                        .h(u(28.))
+                        .px(u(10.))
+                        .on_click(cx.listener(move |m, _, window, cx| m.remove(to.clone(), window, cx)))
+                        .child(crate::marks::ring(&st.code, l.ink_of(&st), l.z(14.), l.bg, l.ink, id == crate::brain::HOME))
+                        .child(SharedString::from(format!("Remove from {name}")))
+                        .into_any_element()
+                })
+                .collect()
+        };
         // Over what it's on, centred; under it when there's no room above.
-        let h = 74.;
+        let h = 74. + if rows.is_empty() { 0. } else { 1. + f32::from(u(28.).to_pixels(window.rem_size())) * rows.len() as f32 };
         let a = t.anchor;
         let above = a.top() - px(6. + h) > px(0.);
         let x = a.left() + a.size.width / 2.;
         let (corner, y) = if above { (Anchor::BottomCenter, a.top() - px(6.)) } else { (Anchor::TopCenter, a.bottom() + px(6.)) };
-        let body = kit::float(&l)
-            .id("react-menu")
+        let top = div()
             .flex()
             .items_start()
             .gap(px(2.))
             .p(px(4.))
-            .occlude()
-            .on_mouse_down_out(cx.listener(|m, _, window, cx| m.close(window, cx)))
             .when(words, |d| {
                 d.child(
                     kit::button("words-reply", Btn::Flat, true, &l)
@@ -446,6 +470,14 @@ impl Render for ReactMenu {
                 )
             })
             .child(search);
+        let body = kit::float(&l)
+            .id("react-menu")
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|m, _, window, cx| m.close(window, cx)))
+            .child(top)
+            .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().border_t(px(l.w1)).border_color(l.line1).children(rows)));
         deferred(anchored().anchor(corner).position(point(x, y)).snap_to_window_with_margin(px(8.)).child(div().relative().child(body).child(crate::webview::covering()))).with_priority(2).into_any_element()
     }
 }

@@ -12,7 +12,10 @@ import {
   EventId,
   HOME,
   ItemId,
+  labelsOf,
   on,
+  removalsOf,
+  removedFrom,
   SpaceId,
   SpaceTagged,
   SpaceUntagged,
@@ -219,7 +222,8 @@ interface Note {
 export const notesSince = (db: Database, space: SpaceId, since: number): Note[] =>
   db
     .query<Note, [string, number]>(
-      "SELECT seq, home, note, time FROM triage_notes WHERE space = ? AND seq > ? ORDER BY seq",
+      `SELECT seq, home, note, time FROM triage_notes n
+         WHERE space = ?1 AND seq > ?2 AND NOT ${removedFrom("n.seq", "?1")} ORDER BY seq`,
     )
     .all(space, since)
 
@@ -242,6 +246,8 @@ Answer with JSON only: {"e0": {"v": "ignore", "person": false, "acts": false, "n
 
 // Measured on the membership corpus (.experiments/autonomy): ten per call.
 const BATCH = 10
+/** Hand labels a batch reads: the user's latest removals of a mention. */
+const LABELS = 12
 const parseSeqs: (json: string) => readonly number[] = JSON.parse
 const parseModel: (json: string) => { readonly provider: "gateway"; readonly id: string } =
   JSON.parse
@@ -502,6 +508,8 @@ const context = (
   const resolving = allItems(db, { status: "open" }).filter(
     (i) => i.completion !== "owner" && i.resolveWhen !== undefined && !isQuery(i.resolveWhen),
   )
+  // The mentions the user took back: what not to mention again.
+  const labels = removalsOf(db, LABELS).filter((r) => !r.own)
   const listed = batch.map((t, i) => {
     const c = t.line.conversation
     const before =
@@ -536,6 +544,9 @@ const context = (
       : "",
     resolving.length > 0
       ? `Action items that close themselves:\n${resolving.map((i) => `- ${i.id} (${i.space}): ${i.resolveWhen ?? ""}`).join("\n")}`
+      : "",
+    labels.length > 0
+      ? `Mentions the user took out of a space, as not for it (hand labels):\n${labelsOf(labels, 160).join("\n")}`
       : "",
     `Events:\n${listed.join("\n")}`,
   ]

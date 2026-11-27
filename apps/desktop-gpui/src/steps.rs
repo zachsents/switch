@@ -398,6 +398,10 @@ fn own(tool: &str, i: &Value, output: &str) -> Option<Step> {
             vec![words(if yes(i, "undo") { format!("Opened {} again", space_in(i, "space")) } else { format!("Archived {}", space_in(i, "space")) })],
         ),
         "brain_move_exchange" => step("squares-four", vec![words(format!("Moved an exchange to {}", space_in(i, "space")))]),
+        "brain_remove_message" => step(
+            "squares-four",
+            vec![words(if yes(i, "undo") { format!("Put a message back in {}", space_in(i, "space")) } else { format!("Removed a message from {}", space_in(i, "space")) })],
+        ),
         "brain_widgets" => step("squares-four", vec![words("Listed the widgets")]),
         "brain_show_widget" => {
             let title = f(&["title"]);

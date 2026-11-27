@@ -388,6 +388,16 @@ impl Render for Root {
                 let b = chat.read(cx).chatbox.clone();
                 b.update(cx, |b, cx| b.pick_files(window, cx));
             }))
+            // ⌘Z, as AppKit keeps one stack: a field's own steps first; then the line last taken out
+            // of a space goes back.
+            .capture_action(|_: &ui_sdk::native::text_field::Undo, window, cx| {
+                if ui_sdk::native::text_field::focused_text_field(window).is_some_and(|f| f.read(cx).can_undo()) {
+                    return;
+                }
+                if model(cx).update(cx, |m, cx| m.undo_removal(cx)) {
+                    cx.stop_propagation();
+                }
+            })
             // A paste with nothing focused goes to the page's box, as one from its column does.
             .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| match this.boxed.clone() {
                 Some(Page::Space(space)) => {
@@ -413,7 +423,7 @@ impl Render for Root {
             }))
             // A key no field takes (nothing has the focus, or no field does) goes to the page's box.
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                let in_field = window.context_stack().iter().any(|c| c.contains("TextField"));
+                let in_field = window.context_stack().iter().any(|c| c.contains("TextField") || c.contains("Terminal"));
                 if in_field || Shell::entity(cx).read(cx).busy(None) {
                     return;
                 }

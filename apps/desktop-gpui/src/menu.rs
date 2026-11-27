@@ -57,6 +57,7 @@ pub fn space_items(m: &SpaceMenu) -> Vec<MenuItem> {
     vec![
         item("Rename…", Command::Rename(Some(m.id.clone()))),
         split,
+        item("Add Terminal", Command::PinTerminal(Some(m.id.clone()))),
         MenuItem::submenu(Menu { name: "Move To".into(), items: to, disabled: false }),
         copy,
         MenuItem::separator(),
@@ -80,6 +81,7 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 "Rename…" => Some(Command::Rename(None)),
                 "Copy Link" => Some(Command::CopyLink(None)),
                 "Archive" => Some(Command::Archive(None)),
+                "Add Terminal" => Some(Command::PinTerminal(None)),
                 _ => None,
             };
             if let Some(c) = open {
@@ -109,7 +111,7 @@ pub fn build(model: &MenuModel) -> Vec<Menu> {
                 MenuItem::action(format!("Quit {app}"), crate::Quit),
             ],
         ),
-        menu("File", vec![item("New Message", Command::Message), item("Chat", Command::Chat), item("New Space…", Command::NewSpace), MenuItem::separator(), MenuItem::action("Close Window", CloseWindow)]),
+        menu("File", vec![item("New Message", Command::Message), item("Chat", Command::Chat), item("New Space…", Command::NewSpace), item("New Terminal", Command::Terminal), MenuItem::separator(), MenuItem::action("Close Window", CloseWindow)]),
         menu(
             "Edit",
             vec![

@@ -22,6 +22,7 @@ import {
   MessagePosted,
   MessageRead,
   on,
+  removedFrom,
   sideOfThread,
   SpaceId,
   ThreadId,
@@ -232,9 +233,11 @@ const inSpace = (db: Database, space: SpaceId, query: string) => {
   return db
     .query<{ seq: number }, [string, string]>(
       `SELECT seq FROM messages WHERE space = ?1 AND widget IS NULL AND text LIKE ?2 ESCAPE '\\'
+         AND NOT ${removedFrom("seq", "?1")}
        UNION
        SELECT m.seq FROM mentions x JOIN messages m ON m.seq = x.seq
          WHERE x.space = ?1 AND m.widget IS NULL AND m.text LIKE ?2 ESCAPE '\\'
+           AND NOT ${removedFrom("m.seq", "?1")}
        ORDER BY seq`,
     )
     .all(space, like)

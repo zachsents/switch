@@ -56,6 +56,8 @@ pub struct Model {
     pub uploads: HashMap<String, Upload>,
     /// A line to bring into view in a space's chat, by seq: older pages come in until it's held.
     pub reach: HashMap<String, u64>,
+    /// The lines the user took out of a space, latest last: ⌘Z puts the latest back.
+    removed: Vec<(u64, String)>,
 }
 
 pub struct ModelHandle(pub Entity<Model>);
@@ -92,6 +94,7 @@ impl Model {
             first_snapshot: None,
             uploads: HashMap::new(),
             reach: HashMap::new(),
+            removed: vec![],
         };
         m.follow_outbox();
         m.refresh();
@@ -527,6 +530,62 @@ impl Model {
         })
         .detach();
         cx.notify();
+    }
+
+    /// The spaces line `seq` can be taken out of, each with its name: none when it shows in one.
+    pub fn removable(&self, seq: u64) -> Vec<(String, String)> {
+        let Some(line) = self.brain.find_line(seq) else { return vec![] };
+        let spaces = line.spaces();
+        if spaces.len() < 2 {
+            return vec![];
+        }
+        spaces.into_iter().filter_map(|id| self.brain.spaces.get(&id).map(|s| (id.clone(), s.name.clone()))).collect()
+    }
+
+    /// Takes line `seq` out of `space` at once, leaving it in the others; ⌘Z puts it back.
+    pub fn remove_from(&mut self, seq: u64, space: &str, cx: &mut Context<Self>) {
+        if !self.removable(seq).iter().any(|(id, _)| id == space) {
+            return;
+        }
+        self.brain.removed(seq, space);
+        self.removed.push((seq, space.to_string()));
+        self.refresh();
+        let answer = self.command("message.remove", json!({ "seq": seq, "space": space }), cx);
+        let at = space.to_string();
+        cx.spawn(async move |this, cx| {
+            if !matches!(answer.await, Ok(Ok(_))) {
+                this.update(cx, |m, cx| {
+                    m.brain.restored(seq, &at);
+                    m.removed.retain(|(s, x)| !(*s == seq && *x == at));
+                    m.refresh();
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Undo: the line last taken out of a space is back in it. False when there's none.
+    pub fn undo_removal(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((seq, space)) = self.removed.pop() else { return false };
+        self.brain.restored(seq, &space);
+        self.refresh();
+        let answer = self.command("message.restore", json!({ "seq": seq, "space": space }), cx);
+        cx.spawn(async move |this, cx| {
+            if !matches!(answer.await, Ok(Ok(_))) {
+                this.update(cx, |m, cx| {
+                    m.brain.removed(seq, &space);
+                    m.refresh();
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+        true
     }
 
     /// The user's last message, changed; the brain runs it again or sends it new.

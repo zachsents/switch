@@ -8,9 +8,15 @@
 //! - `notify`: a macOS notification about a space, held back while that space is in front, and
 //!   shown here only if the user sends them to this Mac and, while the app is in front, only if they
 //!   aren't quiet then (the brain's `pref notifications`).
+//! - `terminal_open`, `terminal_list`, `terminal_read`, `terminal_send`, `terminal_close`: the
+//!   terminals on this Mac (`crate::terminal`), and their events `terminal.opened` and
+//!   `terminal.exited`.
+//!
+//! A quiet copy dials no core; with `SWITCH_GPUI_MCP=<socket>` it serves the same tools on a Unix
+//! socket of its own (a JSON-RPC message a line), to try them without the core.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::{SinkExt, StreamExt};
@@ -38,6 +44,51 @@ enum Ask {
     Notify(Notice, oneshot::Sender<bool>),
     /// An extension's widget, in a window of its own.
     OpenView(crate::widgets::window::View, oneshot::Sender<bool>),
+    /// A terminal tool's call, by its name.
+    Terminal(String, Map<String, Value>, oneshot::Sender<Result<Value, String>>),
+}
+
+/// The core's subscriptions to this extension's events.
+#[derive(Default)]
+struct Events {
+    streams: Vec<(String, rmcp::service::Peer<RoleServer>)>,
+    rt: Option<tokio::runtime::Handle>,
+}
+
+static EVENTS_OUT: std::sync::LazyLock<std::sync::Mutex<Events>> = std::sync::LazyLock::new(Default::default);
+
+/// Emits one of this extension's events to the core's subscription to it, if it has one now.
+pub fn emit(name: &str, data: Value) {
+    let events = EVENTS_OUT.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(rt) = events.rt.clone() else { return };
+    let occurrence = json!({
+        "eventId": uuid::Uuid::new_v4().to_string(),
+        "name": name,
+        "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "data": data,
+        "cursor": Value::Null,
+    });
+    for (n, peer) in &events.streams {
+        if n != name {
+            continue;
+        }
+        let peer = peer.clone();
+        let note = rmcp::model::ServerNotification::CustomNotification(rmcp::model::CustomNotification::new("notifications/events/event", Some(occurrence.clone())));
+        rt.spawn(async move {
+            let _ = peer.send_notification(note).await;
+        });
+    }
+}
+
+fn event_list() -> Value {
+    let s = |props: Value| json!({ "type": "object", "properties": props, "required": ["id", "mac"] });
+    let text = json!({ "type": "string" });
+    json!({ "events": [
+        { "name": "terminal.opened", "description": "A terminal's shell started on this Mac.", "delivery": ["push"], "inputSchema": { "type": "object", "properties": {} },
+          "payloadSchema": s(json!({ "id": text, "mac": text, "cwd": text, "command": text, "space": text })), "_meta": { "ax.switch/version": 1 } },
+        { "name": "terminal.exited", "description": "A terminal's shell ended, with its exit code.", "delivery": ["push"], "inputSchema": { "type": "object", "properties": {} },
+          "payloadSchema": s(json!({ "id": text, "mac": text, "code": { "type": "number" }, "space": text })), "_meta": { "ax.switch/version": 1 } },
+    ] })
 }
 
 #[derive(Clone)]
@@ -81,6 +132,61 @@ fn tools() -> Vec<Tool> {
                     "input": { "type": "object" }
                 },
                 "required": ["app", "name"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(false)),
+        Tool::new(
+            "terminal_open",
+            "Opens a terminal on this Mac: the user's login shell in `cwd` (home by default), `command` typed into it once it starts. With `space`, it's pinned in that space's widgets (`rows` tall, 18 by default); else in a window of its own. Its `id` is what the other terminal tools take.",
+            object(json!({
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string" },
+                    "command": { "type": "string" },
+                    "space": { "type": "string" },
+                    "rows": { "type": "number" }
+                },
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(false)),
+        Tool::new("terminal_list", "The terminals on this Mac: each one's id, what's running in front, its folder, its space, and its exit code once its shell has ended.", object(json!({ "type": "object", "properties": {} })))
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            "terminal_read",
+            "A terminal's screen as text, the cursor, and up to `history` lines above the screen (40 by default).",
+            object(json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" }, "history": { "type": "number" } },
+                "required": ["id"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            "terminal_send",
+            "Types into a terminal, as the user would: `text` as typed (end a line with \\r to run it), then `keys` pressed in order (`enter`, `escape`, `tab`, `up`, `ctrl-c`, `ctrl-d`, `alt-b`, `f1`, …). Answers with its screen once its output has been quiet for 300 ms (at most `wait_ms`, 3000 by default; 0 answers at once). A terminal whose shell has ended starts a new one first.",
+            object(json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "text": { "type": "string" },
+                    "keys": { "type": "array", "items": { "type": "string" } },
+                    "wait_ms": { "type": "number" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(false)),
+        Tool::new(
+            "terminal_close",
+            "Ends a terminal's shell and closes it: its window, or its place in its space.",
+            object(json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
                 "additionalProperties": false
             })),
         )
@@ -139,15 +245,54 @@ impl ServerHandler for Desktop {
                 let v = json!({ "opened": rx.await.unwrap_or(false) });
                 answer(v.clone(), vec![ContentBlock::text(v.to_string())])
             }
+            name if name.starts_with("terminal_") => {
+                let (tx, rx) = oneshot::channel();
+                let _ = self.ui.unbounded_send(Ask::Terminal(name.to_string(), input.clone(), tx));
+                match rx.await {
+                    Ok(Ok(v)) => answer(v.clone(), vec![ContentBlock::text(v.to_string())]),
+                    Ok(Err(e)) => failed(&e),
+                    Err(_) => failed("No Switch window"),
+                }
+            }
             _ => return Err(McpError::method_not_found::<rmcp::model::CallToolRequestMethod>()),
         };
         Ok(result.into())
     }
 
-    async fn on_custom_request(&self, request: CustomRequest, _: RequestContext<RoleServer>) -> Result<CustomResult, McpError> {
-        // A plain extension's events: none.
+    async fn on_custom_request(&self, request: CustomRequest, ctx: RequestContext<RoleServer>) -> Result<CustomResult, McpError> {
         if request.method == "events/list" {
-            return Ok(CustomResult::new(json!({ "events": [] })));
+            return Ok(CustomResult::new(event_list()));
+        }
+        // A push subscription to one of its events: confirmed, then each one as it's emitted, a
+        // heartbeat when quiet, until the core cancels it or the socket closes.
+        if request.method == "events/stream" {
+            let name = request.params.as_ref().and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or_default().to_string();
+            if !event_list()["events"].as_array().is_some_and(|l| l.iter().any(|e| e["name"] == name.as_str())) {
+                return Err(McpError::new(rmcp::model::ErrorCode(-32_023), "NotFound", None));
+            }
+            let active = rmcp::model::CustomNotification::new("notifications/events/active", Some(json!({ "cursor": null, "truncated": false, "heartbeatMs": 30_000 })));
+            let _ = ctx.peer.send_notification(rmcp::model::ServerNotification::CustomNotification(active)).await;
+            {
+                let mut ev = EVENTS_OUT.lock().unwrap_or_else(|e| e.into_inner());
+                ev.rt = Some(tokio::runtime::Handle::current());
+                ev.streams.retain(|(_, p)| !p.is_transport_closed());
+                ev.streams.push((name.clone(), ctx.peer.clone()));
+            }
+            let mut beat = tokio::time::interval(Duration::from_secs(30));
+            beat.tick().await;
+            loop {
+                tokio::select! {
+                    () = ctx.ct.cancelled() => break,
+                    _ = beat.tick() => {
+                        let note = rmcp::model::CustomNotification::new("notifications/events/heartbeat", Some(json!({ "cursor": null })));
+                        if ctx.peer.send_notification(rmcp::model::ServerNotification::CustomNotification(note)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            EVENTS_OUT.lock().unwrap_or_else(|e| e.into_inner()).streams.retain(|(_, p)| !p.is_transport_closed());
+            return Ok(CustomResult::new(json!({})));
         }
         Err(McpError::new(rmcp::model::ErrorCode::METHOD_NOT_FOUND, request.method, None))
     }
@@ -183,6 +328,112 @@ fn heard(ask: Ask, cx: &mut App) {
             cx.activate(true);
             let _ = tx.send(true);
         }
+        Ask::Terminal(name, input, tx) => terminal_tool(&name, &input, tx, cx),
+    }
+}
+
+/// A terminal tool's call, on the main thread.
+fn terminal_tool(name: &str, input: &Map<String, Value>, tx: oneshot::Sender<Result<Value, String>>, cx: &mut App) {
+    use crate::terminal::{self, session};
+    let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string).filter(|v| !v.trim().is_empty());
+    let n = |k: &str| input.get(k).and_then(Value::as_f64);
+    if name == "terminal_list" {
+        let _ = tx.send(Ok(json!({ "mac": terminal::mac(), "terminals": terminal::list(cx) })));
+        return;
+    }
+    if name == "terminal_open" {
+        let start = session::Start { cwd: s("cwd").map(|c| session::folder(&c)), command: s("command"), space: None };
+        if let Some(c) = &start.cwd
+            && !c.is_dir()
+        {
+            let _ = tx.send(Err(format!("No folder {}", c.display())));
+            return;
+        }
+        let id = match s("space") {
+            Some(space) => {
+                let found = crate::model::model(cx).read(cx).brain.spaces.values().find(|sp| sp.id == space || sp.name.eq_ignore_ascii_case(&space)).map(|sp| sp.id.clone());
+                let Some(space) = found else {
+                    let _ = tx.send(Err(format!("No space {space}")));
+                    return;
+                };
+                terminal::pin(&space, start, n("rows").map(|r| r as usize), cx)
+            }
+            None => terminal::open(start, cx),
+        };
+        let _ = tx.send(Ok(json!({ "id": id, "mac": terminal::mac() })));
+        return;
+    }
+    let Some(id) = s("id") else {
+        let _ = tx.send(Err("id is required".into()));
+        return;
+    };
+    let Some(session) = terminal::session(&id, cx) else {
+        let _ = tx.send(Err(format!("No terminal {id}")));
+        return;
+    };
+    match name {
+        "terminal_read" => {
+            let history = n("history").map_or(40, |h| h.max(0.) as usize);
+            let _ = tx.send(Ok(session.read(cx).read(history)));
+        }
+        "terminal_close" => {
+            terminal::close(&id, cx);
+            let _ = tx.send(Ok(json!({ "closed": id })));
+        }
+        "terminal_send" => {
+            let mut keys = vec![];
+            for k in input.get("keys").and_then(Value::as_array).into_iter().flatten() {
+                let Some(k) = k.as_str() else { continue };
+                let Ok(ks) = gpui::Keystroke::parse_with_os(k, gpui::OperatingSystem::Mac) else {
+                    let _ = tx.send(Err(format!("No key {k}")));
+                    return;
+                };
+                keys.push(ks);
+            }
+            session.update(cx, |s, cx| {
+                if s.exited.is_some() {
+                    s.restart(cx);
+                }
+                if let Some(t) = input.get("text").and_then(Value::as_str) {
+                    s.typed(t.as_bytes().to_vec());
+                }
+                for ks in &keys {
+                    // A key that isn't one of the terminal's own is its letter.
+                    let bytes = terminal::keys::bytes(ks, s.mode()).or_else(|| ks.key_char.clone().map(String::into_bytes)).unwrap_or_else(|| ks.key.clone().into_bytes());
+                    s.typed(bytes);
+                }
+            });
+            // Its screen once its output has been quiet a moment: each word it draws starts the
+            // quiet again, up to the wait.
+            let wait = Duration::from_millis(n("wait_ms").map_or(3000, |w| w.clamp(0., 30_000.) as u64));
+            let (ping, mut pings) = unbounded::<()>();
+            let heard = cx.observe(&session, move |_, _| {
+                let _ = ping.unbounded_send(());
+            });
+            cx.spawn(async move |cx| {
+                let _heard = heard;
+                let until = Instant::now() + wait;
+                loop {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    let quiet = cx.background_executor().timer(Duration::from_millis(300).min(left));
+                    match futures::future::select(pings.next(), quiet).await {
+                        futures::future::Either::Left((Some(()), _)) => {}
+                        // Quiet, but its words are still held for the shell's first prompt: on.
+                        futures::future::Either::Right(_) if cx.update(|cx| session.read(cx).holding()) => {}
+                        _ => break,
+                    }
+                }
+                let screen = cx.update(|cx| session.read(cx).read(40));
+                let _ = tx.send(Ok(screen));
+            })
+            .detach();
+        }
+        other => {
+            let _ = tx.send(Err(format!("No tool {other}")));
+        }
     }
 }
 
@@ -207,7 +458,8 @@ async fn session(desktop: Desktop, url: String, token: String) -> Result<(), Str
 /// Keeps the desktop extension dialed in to its core as `desktop-<machine>`, again a few seconds
 /// after it drops, once the app is paired. A test copy beside the live app ($SWITCH_QUIET) doesn't.
 pub fn start(cx: &mut App) {
-    if super::helpers::quiet() {
+    let test = std::env::var("SWITCH_GPUI_MCP").ok().filter(|_| super::helpers::quiet());
+    if super::helpers::quiet() && test.is_none() {
         return;
     }
     let (ui, mut asks) = unbounded::<Ask>();
@@ -218,8 +470,12 @@ pub fn start(cx: &mut App) {
     })
     .detach();
     let net = cx.global::<Net>().clone();
-    let machine = crate::auth::machine_name();
     let desktop = Desktop { ui };
+    if let Some(path) = test {
+        net.rt.clone().spawn(serve_socket(desktop, path));
+        return;
+    }
+    let machine = crate::terminal::mac().to_string();
     net.rt.clone().spawn(async move {
         loop {
             if let Some(a) = net.auth() {
@@ -232,4 +488,34 @@ pub fn start(cx: &mut App) {
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
+}
+
+/// A quiet copy's own socket: each connection one MCP session, a JSON-RPC message a line.
+async fn serve_socket(desktop: Desktop, path: String) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let _ = std::fs::remove_file(&path);
+    let listener = match tokio::net::UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("desktop extension socket {path}: {e}");
+            return;
+        }
+    };
+    while let Ok((stream, _)) = listener.accept().await {
+        let desktop = desktop.clone();
+        tokio::spawn(async move {
+            let (read, write) = stream.into_split();
+            let lines = futures::stream::unfold(BufReader::new(read).lines(), |mut l| async move { l.next_line().await.ok().flatten().map(|line| (line, l)) });
+            let stream = Box::pin(lines.filter_map(|l| async move { serde_json::from_str::<RxJsonRpcMessage<RoleServer>>(&l).ok() }));
+            let sink = Box::pin(futures::sink::unfold(write, |mut w, m: TxJsonRpcMessage<RoleServer>| async move {
+                let mut line = serde_json::to_string(&m).unwrap_or_default();
+                line.push('\n');
+                w.write_all(line.as_bytes()).await?;
+                Ok::<_, std::io::Error>(w)
+            }));
+            if let Ok(running) = rmcp::serve_server(desktop, (sink, stream)).await {
+                let _ = running.waiting().await;
+            }
+        });
+    }
 }

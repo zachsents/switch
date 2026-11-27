@@ -47,7 +47,16 @@ impl WidgetColumn {
     /// The widgets placed in it that their extension offers, in their order.
     fn placed(&self, cx: &gpui::App) -> Vec<crate::items::Placed> {
         let host = Host::entity(cx).read(cx);
-        model(cx).read(cx).brain.placed.iter().filter(|w| w.space == self.space && host.offered.contains_key(&w.widget())).cloned().collect()
+        // A terminal is drawn here, not by its extension, and only on the Mac its shell runs on.
+        let windowed = &cx.global::<crate::terminal::Terminals>().windowed;
+        model(cx)
+            .read(cx)
+            .brain
+            .placed
+            .iter()
+            .filter(|w| w.space == self.space && if crate::terminal::is_terminal(w) { crate::terminal::is_here(w) && !windowed.contains(&w.id) } else { host.offered.contains_key(&w.widget()) })
+            .cloned()
+            .collect()
     }
 }
 
@@ -66,6 +75,14 @@ impl Render for WidgetColumn {
         let mut feed_before = false;
         for w in self.placed(cx) {
             let key = w.key();
+            if crate::terminal::is_terminal(&w) {
+                let start = crate::terminal::start_of(&w);
+                let view = crate::terminal::view_of(&w.id, || start, cx);
+                let h = crate::terminal::view::height(crate::terminal::rows_of(&w), &l, window);
+                cells.push(div().w_full().h(h).flex_none().when(shown > 0, |d| d.border_t(px(l.w_section)).border_color(l.line_section)).child(view).into_any_element());
+                shown += 1;
+                continue;
+            }
             host.update(cx, |h, cx| h.want(&key, Source::placed(&w), cx));
             let Some(surface) = host.read(cx).surface(&key) else {
                 // One still loading isn't an empty one: it holds the column's room, drawing nothing.

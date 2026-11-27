@@ -397,7 +397,7 @@ pub fn chat(b: &Brain, id: &str) -> Vec<ChatLine> {
                 home: Some(line.home.clone()),
                 who: line.who,
                 text: general_of(line),
-                also: std::iter::once(&line.home).chain(line.mentions.iter()).filter(|x| x.as_str() != id && b.spaces.contains_key(*x)).cloned().collect(),
+                also: line.spaces().into_iter().filter(|x| x.as_str() != id && b.spaces.contains_key(x)).collect(),
                 pending: None,
                 widget: line.widget.clone().map(|w| (w, line.seq)),
                 time: Some(line.time),

@@ -5,7 +5,7 @@ import { Effect, Schema, Stream } from "effect"
 
 import { Brain } from "./brain.ts"
 import { EventId, SpaceId } from "./ids.ts"
-import { defineEvent, on } from "./defs.ts"
+import { defineCommand, defineEvent, on } from "./defs.ts"
 import type { Projection, StoredEvent } from "./defs.ts"
 import { MessageMoved } from "./messages.ts"
 import { defineRead } from "./reads.ts"
@@ -46,6 +46,120 @@ export const SpaceTagged = defineEvent(
 
 /** An event that's no space's after all, such as bookkeeping once filed: it leaves every thread. */
 export const SpaceUntagged = defineEvent("space.untagged", 1, Schema.Struct({ seq: Schema.Number }))
+
+/**
+ * The user took a message out of one space it showed in (its own, or one it was mentioned in): it
+ * stays in the rest. A hand label on its tag, kept beside it: a retag doesn't bring it back.
+ */
+export const MessageRemoved = defineEvent(
+  "message.removed",
+  1,
+  Schema.Struct({ seq: Schema.Number, space: SpaceId }),
+)
+
+/** A removal undone: the message shows in that space again. */
+export const MessageRestored = defineEvent(
+  "message.restored",
+  1,
+  Schema.Struct({ seq: Schema.Number, space: SpaceId }),
+)
+
+export const removals: Projection = {
+  name: "removals",
+  version: 1,
+  tables: ["removals"],
+  create:
+    "CREATE TABLE removals (seq INTEGER NOT NULL, space TEXT NOT NULL, time INTEGER NOT NULL, PRIMARY KEY (space, seq));",
+  on: [
+    on(MessageRemoved, (db, p, e) => {
+      db.query("INSERT OR REPLACE INTO removals (seq, space, time) VALUES (?, ?, ?)").run(
+        p.seq,
+        p.space,
+        e.time,
+      )
+    }),
+    on(MessageRestored, (db, p) => {
+      db.query("DELETE FROM removals WHERE seq = ? AND space = ?").run(p.seq, p.space)
+    }),
+  ],
+  snapshot: (db) => db.query<{ n: number }, []>("SELECT count(*) AS n FROM removals").get()?.n ?? 0,
+}
+
+/** SQL: whether the event at `seq` was taken out of `space`, each a column or a parameter. */
+export const removedFrom = (seq: string, space: string) =>
+  `EXISTS (SELECT 1 FROM removals r WHERE r.seq = ${seq} AND r.space = ${space})`
+
+/** The spaces a message shows in now: where it was said and those it's mentioned in, but the removed. */
+export const placesOf = (db: Database, seq: number): SpaceId[] | null => {
+  const said = db
+    .query<{ space: SpaceId }, [number]>("SELECT space FROM messages WHERE seq = ?")
+    .get(seq)
+  if (!said) {
+    return null
+  }
+  const mentioned = db
+    .query<{ space: SpaceId }, [number]>("SELECT space FROM mentions WHERE seq = ?")
+    .all(seq)
+    .map((m) => m.space)
+  const removed = new Set(
+    db
+      .query<{ space: SpaceId }, [number]>("SELECT space FROM removals WHERE seq = ?")
+      .all(seq)
+      .map((r) => r.space),
+  )
+  return [...new Set([said.space, ...mentioned])].filter((s) => !removed.has(s))
+}
+
+/** Takes a message out of one space it shows in; never out of its last. */
+export const RemoveMessage = defineCommand({
+  type: "message.remove",
+  payload: MessageRemoved.payload,
+  load: (db, p) => placesOf(db, p.seq),
+  decide: (places, p) => {
+    if (places === null) {
+      return { reject: "No such message" }
+    }
+    if (!places.includes(p.space)) {
+      return { events: [] }
+    }
+    if (places.length === 1) {
+      return { reject: "Its only space" }
+    }
+    return { events: [MessageRemoved.make(p)] }
+  },
+})
+
+/** Puts a removed message back in that space. */
+export const RestoreMessage = defineCommand({
+  type: "message.restore",
+  payload: MessageRestored.payload,
+  load: (db, p) =>
+    db.query("SELECT 1 FROM removals WHERE seq = ? AND space = ?").get(p.seq, p.space) !== null,
+  decide: (removed, p) => ({ events: removed ? [MessageRestored.make(p)] : [] }),
+})
+
+/** A message the user took out of a space: a hand label for the tagger, the router and triage. */
+export interface Removal {
+  readonly seq: number
+  readonly space: SpaceId
+  /** Where it was said: it was taken out of its own space, not one it was mentioned in. */
+  readonly own: boolean
+  readonly text: string
+}
+
+/** The latest `limit` removals, newest first. */
+export const removalsOf = (db: Database, limit: number): Removal[] =>
+  db
+    .query<{ seq: number; space: SpaceId; own: number; text: string }, [number]>(
+      `SELECT r.seq, r.space, m.space = r.space AS own, m.text FROM removals r
+         JOIN messages m ON m.seq = r.seq ORDER BY r.time DESC LIMIT ?`,
+    )
+    .all(limit)
+    .map((r) => ({ seq: r.seq, space: r.space, own: r.own === 1, text: r.text }))
+
+/** Hand labels as a model reads them: each message and the space it isn't for. */
+export const labelsOf = (removed: readonly Removal[], width: number) =>
+  removed.map((r) => `- not ${r.space}: ${clip(r.text.replaceAll(/\s+/gu, " "), width)}`)
 
 export const membership: Projection = {
   name: "membership",
@@ -94,9 +208,9 @@ export const membership: Projection = {
 }
 
 export const membershipConfig = {
-  events: [SpaceTagged, SpaceUntagged],
-  projections: [membership],
-  commands: [],
+  events: [SpaceTagged, SpaceUntagged, MessageRemoved, MessageRestored],
+  projections: [membership, removals],
+  commands: [RemoveMessage, RestoreMessage],
 }
 
 interface EventRow {
@@ -135,9 +249,11 @@ export const thread = (db: Database, space: SpaceId): ThreadRow[] =>
   db
     .query<EventRow & { home: SpaceId; mentions: string }, [SpaceId]>(
       `SELECT e.*, t.home,
-         (SELECT json_group_array(m.space) FROM mentions m WHERE m.seq = t.seq) AS mentions
+         (SELECT json_group_array(m.space) FROM mentions m
+           WHERE m.seq = t.seq AND NOT ${removedFrom("m.seq", "m.space")}) AS mentions
        FROM tags t JOIN events e ON e.seq = t.seq
        WHERE t.seq IN (SELECT seq FROM tags WHERE home = ?1 UNION SELECT seq FROM mentions WHERE space = ?1)
+         AND NOT ${removedFrom("t.seq", "?1")}
        ORDER BY t.seq`,
     )
     .all(space)
@@ -344,6 +460,8 @@ const NAMED_QUESTION =
 const SURE = 0.8
 const NAMED = 0.7
 const CHAT = 8
+/** Hand labels a model reads: the user's latest removals. */
+const LABELS = 12
 
 /** What routing reads of the brain: what `context` does, and each open space's latest chat. */
 const routedOf = (db: Database) => {
@@ -356,6 +474,8 @@ const routedOf = (db: Database) => {
     chats: new Map<string, { source: string; text: string }[]>(
       seen.spaces.map((sp) => [sp.id, latest.all(sp.id, CHAT).toReversed()]),
     ),
+    // The user's own corrections: messages they took out of the space they were in.
+    removed: removalsOf(db, LABELS).filter((r) => r.own),
   }
 }
 
@@ -377,7 +497,14 @@ export const routing = (
     )
     return rows.length > 0 ? [`- ${s.value}: ${said.join(" | ")}`] : []
   })
-  const head = chats.length > 0 ? [`Latest in each space's chat:\n${chats.join("\n")}`] : []
+  const head = [
+    ...(chats.length > 0 ? [`Latest in each space's chat:\n${chats.join("\n")}`] : []),
+    ...(routed.removed.length > 0
+      ? [
+          `Messages the user took out of a space, as not for it (hand labels):\n${labelsOf(routed.removed, 160).join("\n")}`,
+        ]
+      : []),
+  ]
   return {
     input: {
       stable: STABLE,

@@ -1,52 +1,15 @@
 // What a word or a name is: its dictionary senses (Wiktionary's, from its REST API) and its
 // Wikipedia article's summary, each only when there's a real entry: a disambiguation page or a
-// missing word is none. Both in the document's language, cached for a day.
+// missing word is none. Both in the document's language; the reader keeps each answer (`define`).
+import type { Article, Dictionary } from "./store.ts"
+
 const AGENT = "SwitchReader/1 (https://github.com/zachsents/switch)"
 
-export interface Sense {
+interface Sense {
   readonly pos: string
   readonly text: string
   readonly example?: string
 }
-
-export interface Dictionary {
-  readonly word: string
-  readonly senses: readonly Sense[]
-  readonly url: string
-}
-
-export interface Article {
-  readonly title: string
-  readonly description?: string
-  readonly extract: string
-  readonly url: string
-  readonly thumbnail?: string
-}
-
-const DAY = 24 * 60 * 60 * 1000
-
-/** A cache of one kind of answer, each kept a day, the oldest let go past 2000. */
-const cacheOf = <A>() => {
-  const cache = new Map<string, { at: number; value: A }>()
-  return async (key: string, get: () => Promise<A>): Promise<A> => {
-    const hit = cache.get(key)
-    if (hit && Date.now() - hit.at < DAY) {
-      return hit.value
-    }
-    const value = await get()
-    cache.set(key, { at: Date.now(), value })
-    if (cache.size > 2000) {
-      const first = cache.keys().next().value
-      if (first !== undefined) {
-        cache.delete(first)
-      }
-    }
-    return value
-  }
-}
-
-const definitions = cacheOf<Dictionary | null>()
-const summaries = cacheOf<Article | null>()
 
 const json = async (url: string): Promise<unknown> => {
   const res = await fetch(url, {
@@ -184,35 +147,30 @@ const withLemma = async (entry: Dictionary | null, lang: string): Promise<Dictio
 
 /** A word's senses, its first few in each part of speech; none when Wiktionary has no entry. */
 export const define = async (word: string, lang: string): Promise<Dictionary | null> =>
-  await definitions(
-    `d:${lang}:${word}`,
-    async () =>
-      await withLemma(await firstEntry([...new Set([word, word.toLowerCase()])], lang), lang),
-  )
+  await withLemma(await firstEntry([...new Set([word, word.toLowerCase()])], lang), lang)
 
 /** A title's article summary (following redirects); none for a missing or disambiguation page. */
-export const wikipedia = async (title: string, lang: string): Promise<Article | null> =>
-  await summaries(`w:${lang}:${title}`, async () => {
-    const got = await json(
-      `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replaceAll(" ", "_"))}?redirect=true`,
-    )
-    if (got === null || str(get(got, "type")) !== "standard") {
-      return null
-    }
-    const extract = str(get(got, "extract"))
-    if (extract === "") {
-      return null
-    }
-    const description = str(get(got, "description"))
-    const thumbnail = str(get(get(got, "thumbnail"), "source"))
-    return {
-      title: str(get(got, "title")),
-      ...(description !== "" && { description }),
-      extract,
-      url: str(get(get(get(got, "content_urls"), "desktop"), "page")),
-      ...(thumbnail !== "" && { thumbnail }),
-    }
-  })
+export const wikipedia = async (title: string, lang: string): Promise<Article | null> => {
+  const got = await json(
+    `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replaceAll(" ", "_"))}?redirect=true`,
+  )
+  if (got === null || str(get(got, "type")) !== "standard") {
+    return null
+  }
+  const extract = str(get(got, "extract"))
+  if (extract === "") {
+    return null
+  }
+  const description = str(get(got, "description"))
+  const thumbnail = str(get(get(got, "thumbnail"), "source"))
+  return {
+    title: str(get(got, "title")),
+    ...(description !== "" && { description }),
+    extract,
+    url: str(get(get(get(got, "content_urls"), "desktop"), "page")),
+    ...(thumbnail !== "" && { thumbnail }),
+  }
+}
 
 /** A Wikipedia link's language and title, when it is one. */
 export const wikiTitle = (url: string): { lang: string; title: string } | null => {

@@ -13,6 +13,7 @@ import {
   HOME,
   MessagePosted,
   MessageReacted,
+  removedFrom,
   saidBy,
   seqAt,
   sideOfThread,
@@ -83,6 +84,9 @@ const SILENT = [
   "message.read",
   // A move's or a placement's own record: what it moved or placed shows where it went.
   "message.moved",
+  // A removal's: the hand label on a message's tag, which shows where it is now.
+  "message.removed",
+  "message.restored",
   "widget.placed",
   "widget.moved",
   "widget.removed",
@@ -268,6 +272,7 @@ const since = (db: Database, space: SpaceId, after: number, chat: boolean) =>
     .query<Row, [string, number]>(
       `SELECT e.*, t.home FROM tags t JOIN events e ON e.seq = t.seq
        WHERE t.seq > ?2 AND (t.home = ?1 OR t.seq IN (SELECT seq FROM mentions WHERE space = ?1))
+         AND NOT ${removedFrom("t.seq", "?1")}
        ORDER BY t.seq DESC LIMIT 12`,
     )
     .all(space, after)

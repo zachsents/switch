@@ -74,6 +74,8 @@ struct Line: Identifiable, Hashable {
   var text: String
   var home: String
   var mentions: [String]
+  /// The spaces the user took it out of: its own among them, it shows only where it's mentioned.
+  var removed: [String] = []
   /// A peer's name, as it gave it: an outside agent posting into the space.
   var from: String? = nil
   /// A quiet line: an app's outcome (its words in `text`), or where an exchange went.
@@ -96,6 +98,12 @@ struct Line: Identifiable, Hashable {
   /// The display name of the model that wrote it.
   var model: String? = nil
   var id: Int { seq }
+  /// The spaces it shows in: where it was said and those it's mentioned in, but those it was taken out of.
+  var spaces: [String] {
+    var out: [String] = []
+    for s in [home] + mentions where !removed.contains(s) && !out.contains(s) { out.append(s) }
+    return out
+  }
   /// Its general words: none when they only repeat its replies under what it replies to (the
   /// pre-read once stored those as its words too).
   var general: String {
@@ -467,6 +475,9 @@ struct Placement: Hashable {
   var widget: String { "\(app)/\(name)" }
   /// Whether it's its widget's first, the one a command naming no placement means.
   var first: Bool { id == widget }
+  /// A Mac's terminal (`desktop-<mac>/terminal`): drawn by that Mac's app alone, offered by none.
+  var terminal: Bool { Placement.terminal(app: app, name: name) }
+  static func terminal(app: String, name: String) -> Bool { name == "terminal" && app.hasPrefix("desktop-") }
 
   /// A placement as the snapshot or a `widget.*` event has it.
   init(_ p: JSON) {
@@ -627,7 +638,7 @@ final class Brain {
   static func line(_ j: JSON) -> Line {
     Line(
       seq: Int(j["seq"].number ?? 0), time: j["time"].number ?? 0, agent: j["who"].str == "agent" || j["who"].str == "peer", text: j["text"].str,
-      home: j["home"].str, mentions: j["mentions"].array.map(\.str), from: j["from"].string, quiet: quiet(j), turn: j["turn"].string,
+      home: j["home"].str, mentions: j["mentions"].array.map(\.str), removed: j["removed"].array.map(\.str), from: j["from"].string, quiet: quiet(j), turn: j["turn"].string,
       attachments: j["attachments"].array.compactMap(Attachment.init),
       detail: j["detail"].string.flatMap { $0.isEmpty ? nil : $0 }, edited: j["edited"].bool == true,
       reactions: Reactions(j["reactions"]), widget: Shown(j["widget"]),
@@ -732,6 +743,10 @@ final class Brain {
       }
     case "message.moved":
       moved(p)
+    case "message.removed":
+      removed(Int(p["seq"].number ?? 0), from: p["space"].str)
+    case "message.restored":
+      restored(Int(p["seq"].number ?? 0), to: p["space"].str)
     case "message.reacted":
       let reaction = Reaction(rawValue: p["reaction"].str)
       if p["quote"].isNull {
@@ -865,11 +880,13 @@ final class Brain {
   private func tagged(_ p: JSON) {
     let at = Int(p["seq"].number ?? 0)
     let home = p["home"].str
-    let mentions = p["mentions"].array.map(\.str)
+    let tag = p["mentions"].array.map(\.str)
     for (id, t) in threads where t.opened == at { threads[id]?.home = home }
     for (id, chat) in chats {
       guard let i = chat.lines.firstIndex(where: { $0.seq == at }), chat.lines[i].home == id else { continue }
       var line = chat.lines[i]
+      // What the user took it out of stays out, whatever the tag says.
+      let mentions = tag.filter { !line.removed.contains($0) }
       line.mentions = mentions
       // A retag moves the line to its new home.
       line.home = home
@@ -883,11 +900,40 @@ final class Brain {
     }
   }
 
+  /// Line `seq` taken out of `space`: gone from its chat, and from the spaces it shows in.
+  func removed(_ seq: Int, from space: String) {
+    guard let line = chats.values.lazy.compactMap({ $0.lines.first { $0.seq == seq && $0.quiet == nil } }).first,
+      !line.removed.contains(space)
+    else { return }
+    chats[space]?.lines.removeAll { $0.seq == seq && $0.quiet == nil }
+    for (id, chat) in chats {
+      for i in chat.lines.indices where chat.lines[i].seq == seq && chat.lines[i].quiet == nil {
+        chats[id]?.lines[i].mentions.removeAll { $0 == space }
+        chats[id]?.lines[i].removed.append(space)
+      }
+    }
+  }
+
+  /// A removal undone: line `seq` is in `space`'s chat again.
+  func restored(_ seq: Int, to space: String) {
+    guard var line = chats.values.lazy.compactMap({ $0.lines.first { $0.seq == seq && $0.quiet == nil } }).first,
+      line.removed.contains(space)
+    else { return }
+    line.removed.removeAll { $0 == space }
+    if line.home != space && !line.mentions.contains(space) { line.mentions.append(space) }
+    for (id, chat) in chats {
+      for i in chat.lines.indices where chat.lines[i].seq == seq && chat.lines[i].quiet == nil {
+        chats[id]?.lines[i] = line
+      }
+    }
+    chats[space]?.insert(line)
+  }
+
   /// The user's last message, changed: its new words, and the replies to the old ones gone.
   private func edited(_ e: StoredEvent) {
     let at = Int(e.payload["seq"].number ?? 0)
     guard let line = chats.values.lazy.compactMap({ $0.lines.first { $0.seq == at } }).first else { return }
-    for space in [line.home] + line.mentions {
+    for space in line.spaces {
       chats[space]?.lines.removeAll { $0.agent && $0.from == nil && $0.quiet == nil && $0.home == line.home && $0.seq > at && $0.seq < e.seq }
       if let i = chats[space]?.lines.firstIndex(where: { $0.seq == at }) {
         chats[space]?.lines[i].text = e.payload["text"].str
@@ -901,7 +947,7 @@ final class Brain {
   private func revised(_ e: StoredEvent) {
     let at = Int(e.payload["seq"].number ?? 0)
     guard let line = chats.values.lazy.compactMap({ $0.lines.first { $0.seq == at } }).first else { return }
-    for space in [line.home] + line.mentions {
+    for space in line.spaces {
       if let i = chats[space]?.lines.firstIndex(where: { $0.seq == at }) {
         chats[space]?.lines[i].text = e.payload["text"].str
         chats[space]?.lines[i].edited = true

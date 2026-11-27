@@ -554,6 +554,34 @@ for the parent). `widgets/page.rs` answers the MCP Apps bridge.
   land on the pasteboard.
 - Cost: three WebKit processes for the first page, about 69 MB (GPU 27, network 11, content 31).
 
+## Terminals (`src/terminal`)
+
+Past the Electrobun app, which had none. A shell on this Mac, drawn natively: Alacritty's emulator
+and PTY (`alacritty_terminal` 0.26, as Zed's terminal uses it), not libghostty-vt (0.2, its API
+not stable yet, every type `!Send`, a Zig-built C library under it). Alacritty's is the one in
+Rust that years of daily use have proven: xterm's modes, the alternate screen, mouse reports,
+bracketed paste, OSC 52, kitty's keyboard flags, wide letters, scrollback, its own selection.
+
+- Where: pinned in a space (`desktop-<mac>/terminal` placements, Add Terminal ⇧⌘T or the space's
+  menu, or the agent's `terminal_open` with `space`) in the widget column, or in a window of its
+  own (New Terminal ⌘T, `terminal_open`). The Mac in the placement is where its shell runs:
+  another Mac's column doesn't draw it. Input: `cwd`, `command` (typed into the shell once it
+  starts, so the shell stays when it ends), `rows`.
+- A restart ends the shell (the PTY closes, SIGHUP); a pinned one starts a fresh shell when next
+  drawn. A shell that ends leaves its last screen and `[exited N]`; Return starts another.
+- Keys: while it has the keyboard every key is the program's, Esc and Tab too; ⌘ keys stay the
+  app's but ⌘C, ⌘V, ⌘A; ⌘Esc leaves for the message box. Words come through the Mac's input
+  handler (⌥'s letters, dead keys, input methods). A program asking for the pointer gets presses,
+  drags and the wheel (⇧ keeps them for selecting); otherwise a drag selects in the grid (twice
+  words, three times lines; Alacritty's selection: a grid's, which the kit's runs of words don't
+  fit), the wheel scrolls the history, then the column.
+- Colours: the Look's background and ink, Tomorrow's sixteen moved toward the ink until they read
+  on it, xterm's cube and greys; a program's own (OSC 4, 10, 11) win, and it's answered when it asks.
+- The agent: the desktop extension's `terminal_open`, `terminal_list`, `terminal_read` (screen,
+  cursor, up to `history` lines above), `terminal_send` (`text`, then `keys`; answers the screen
+  once output is quiet 300 ms), `terminal_close`; events `terminal.opened`, `terminal.exited`. A
+  quiet copy with `SWITCH_GPUI_MCP=<socket>` serves the same tools on a socket of its own.
+
 ## Hot reloading
 
 `sh scripts/dev.sh` runs the app with hot reloading (UI SDK for gpui's `hot-reload`, on Subsecond,

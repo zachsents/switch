@@ -214,6 +214,9 @@ enum Step {
     },
     "brain_archive_space": { i, _ in [words(i["undo"]?.bool == true ? "Opened \(spaceIn(i)) again" : "Archived \(spaceIn(i))")] },
     "brain_move_exchange": { i, _ in [words("Moved an exchange to \(spaceIn(i))")] },
+    "brain_remove_message": { i, _ in
+      [words(i["undo"]?.bool == true ? "Put a message back in \(spaceIn(i))" : "Removed a message from \(spaceIn(i))")]
+    },
     "brain_widgets": { _, _ in [words("Listed the widgets")] },
     "brain_show_widget": { i, _ in
       [words("Showed \(field(i, "title").isEmpty ? named(or(field(i, "app"), "a widget")) : quoted(field(i, "title"), 40))")]
@@ -492,7 +495,7 @@ enum Step {
     "brain_query": "cylinder", "brain_post": "text.bubble", "brain_react": "text.bubble", "brain_user": "book",
     "brain_describe_user": "square.and.pencil", "brain_spaces": "square.grid.2x2", "brain_create_space": "square.grid.2x2",
     "brain_rename_space": "square.grid.2x2", "brain_move_space": "square.grid.2x2", "brain_archive_space": "square.grid.2x2",
-    "brain_move_exchange": "square.grid.2x2", "brain_widgets": "square.grid.2x2", "brain_show_widget": "square.grid.2x2",
+    "brain_move_exchange": "square.grid.2x2", "brain_remove_message": "square.grid.2x2", "brain_widgets": "square.grid.2x2", "brain_show_widget": "square.grid.2x2",
     "brain_publish": "square.grid.2x2", "brain_pages": "square.grid.2x2", "brain_place_widget": "square.grid.2x2", "brain_remove_widget": "square.grid.2x2", "brain_folder": "folder",
     "brain_folders": "folder", "autonomy_say": "text.bubble", "autonomy_nothing": "text.bubble", "autonomy_expect": "eye",
     "autonomy_wait": "eye", "autonomy_surprise": "bolt", "autonomy_remember": "brain", "autonomy_action_item": "tray",

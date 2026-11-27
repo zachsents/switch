@@ -75,6 +75,14 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 }
                 continue;
             }
+            // `terminal:<space>[:<command>]`: a terminal pinned in that space (here only), running it.
+            if let Some(rest) = page.strip_prefix("terminal:") {
+                let (space, command) = rest.split_once(':').map_or((rest.to_string(), None), |(s, c)| (s.to_string(), Some(c.to_string())));
+                let start = crate::terminal::session::Start { cwd: Some(crate::terminal::session::folder("~/work/terminal")), command, space: None };
+                let _ = cx.update(|cx| crate::terminal::pin(&space, start, Some(16), cx));
+                cx.background_executor().timer(Duration::from_millis(3000)).await;
+                continue;
+            }
             // `theme:<system|light|dark>`: the theme's appearance that, as Settings sets it (kept
             // here only).
             if let Some(a) = page.strip_prefix("theme:") {

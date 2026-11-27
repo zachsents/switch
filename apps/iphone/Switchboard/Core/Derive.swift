@@ -106,7 +106,7 @@ extension Brain {
     activities.values.filter { $0.space == id && $0.state != "done" }.sorted { $0.startedAt < $1.startedAt }
   }
 
-  func widgetsIn(_ id: String) -> [Placement] { widgets.filter { $0.space == id } }
+  func widgetsIn(_ id: String) -> [Placement] { widgets.filter { $0.space == id && !$0.terminal } }
 
   private func warmth(_ s: Space) -> Int { warm[s.id] ?? s.made }
 
@@ -130,7 +130,7 @@ extension Brain {
   /// steps, and its words until they're posted, are its thread's, never the chat's.
   func chat(_ id: String) -> [ChatLine] {
     var out = (chats[id]?.lines ?? []).map { line in
-      ChatLine(line: line, also: ([line.home] + line.mentions).filter { $0 != id && spaces[$0] != nil })
+      ChatLine(line: line, also: line.spaces.filter { $0 != id && spaces[$0] != nil })
     }
     let kept = Outbox.shared.posts.compactMap(Pending.init).filter { pending[$0.id] == nil && !arrived.contains($0.id) }
     for p in (kept + pending.values).sorted(by: { $0.time < $1.time }) where p.space == id {

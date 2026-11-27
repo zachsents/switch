@@ -10,6 +10,7 @@ struct ChatPane: View {
   let id: String
   @State private var reading: Reading?
   @Environment(\.scenePhase) private var phase
+  @Environment(\.undoManager) private var undo
   /// The message being edited in the box, and its words.
   @State private var editing: (seq: Int, text: String)?
   @State private var editError: String?
@@ -226,7 +227,10 @@ struct ChatPane: View {
           onInset: { go($0) },
           onReact: held ? { r in phone.react(l.line.seq, r, was: l.line.reactions.user) } : nil,
           onEmoji: held ? { emojiFor = l.line.seq } : nil,
-          onEdit: edit ? { editing = (l.line.seq, l.line.text) } : nil
+          onEdit: edit ? { editing = (l.line.seq, l.line.text) } : nil,
+          // This space first: the one it's most likely out of place in.
+          removals: held ? phone.removable(l.line).sorted { a, _ in a.id == id } : [],
+          onRemove: { [seq = l.line.seq] space in phone.remove(seq, from: space, undo: undo) }
         ) { text in
           reading = Reading(title: title, text: text)
         }

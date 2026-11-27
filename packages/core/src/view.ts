@@ -35,6 +35,7 @@ import {
   placements,
   reactionsTo,
   reads,
+  removedFrom,
   repliesOf,
   ReplyRef,
   recordOf,
@@ -428,6 +429,7 @@ const chat = (db: Database, space: SpaceId, before: number, limit: number) => {
          LEFT JOIN message_revisions r ON r.seq = l.seq
          LEFT JOIN message_models mm ON mm.seq = l.seq
          LEFT JOIN message_senders ms ON ms.seq = l.seq
+       WHERE NOT ${removedFrom("l.seq", "?1")}
        ORDER BY l.seq DESC LIMIT ?3`,
     )
     .all(space, before, limit + 1)
@@ -439,15 +441,26 @@ const chat = (db: Database, space: SpaceId, before: number, limit: number) => {
       "SELECT seq, time, note, updated FROM chat_events WHERE space = ? AND seq > ? AND seq < ? ORDER BY seq",
     )
     .all(space, from, before)
+  // The spaces each shows in besides: those it's mentioned in, and where it was taken out.
   const mentions = new Map<number, string[]>()
+  const removed = new Map<number, string[]>()
   if (page.length > 0) {
+    const seqs = page.map((r) => r.seq)
+    const marks = seqs.map(() => "?").join(", ")
     const found = db
       .query<{ seq: number; space: SpaceId }, number[]>(
-        `SELECT seq, space FROM mentions WHERE seq IN (${page.map(() => "?").join(", ")})`,
+        `SELECT seq, space FROM mentions x WHERE seq IN (${marks}) AND NOT ${removedFrom("x.seq", "x.space")}`,
       )
-      .all(...page.map((r) => r.seq))
+      .all(...seqs)
     for (const m of found) {
       mentions.set(m.seq, [...(mentions.get(m.seq) ?? []), m.space])
+    }
+    for (const r of db
+      .query<{ seq: number; space: SpaceId }, number[]>(
+        `SELECT seq, space FROM removals WHERE seq IN (${marks})`,
+      )
+      .all(...seqs)) {
+      removed.set(r.seq, [...(removed.get(r.seq) ?? []), r.space])
     }
   }
   const reacted = reactionsTo(
@@ -478,6 +491,7 @@ const chat = (db: Database, space: SpaceId, before: number, limit: number) => {
           ...(parts.has(r.seq) && { parts: parts.get(r.seq) }),
           home: r.space,
           mentions: mentions.get(r.seq) ?? [],
+          ...(removed.has(r.seq) && { removed: removed.get(r.seq) }),
           turn: r.turn,
           ...(r.widget !== null && { widget: parseJson(r.widget) }),
           ...(r.attachments !== null && { attachments: parseJson(r.attachments) }),
@@ -778,15 +792,19 @@ const live = (db: Database, e: StoredEvent) => {
   if (e.type === TriageSorted.type) {
     return Option.getOrNull(decodeSorted(e.payload))?.items.some((i) => i.line === true) === true
   }
-  return (
-    e.type === "message.posted" ||
-    e.type === "message.moved" ||
-    e.type === "message.edited" ||
-    e.type === "message.revised" ||
-    e.type === "message.reacted" ||
-    SHOWN.some((p) => e.type.startsWith(p))
-  )
+  return LIVE.has(e.type) || SHOWN.some((p) => e.type.startsWith(p))
 }
+
+/** What changes a chat line: each goes out as it is. */
+const LIVE = new Set([
+  "message.posted",
+  "message.moved",
+  "message.removed",
+  "message.restored",
+  "message.edited",
+  "message.revised",
+  "message.reacted",
+])
 
 const decodeTagged = Schema.decodeUnknownOption(SpaceTagged.payload)
 const decodeGate = Schema.decodeUnknownOption(GateDecided.payload)

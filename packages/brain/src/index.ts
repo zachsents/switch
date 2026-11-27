@@ -114,8 +114,17 @@ export {
 export type { PartReaction, Reactions } from "./reactions.ts"
 export type { Effort, Message } from "./messages.ts"
 export {
+  labelsOf,
   membership,
   membershipConfig,
+  MessageRemoved,
+  MessageRestored,
+  placesOf,
+  removals,
+  removalsOf,
+  removedFrom,
+  RemoveMessage,
+  RestoreMessage,
   retagged,
   route,
   routing,
@@ -124,7 +133,7 @@ export {
   tagger,
   thread,
 } from "./membership.ts"
-export type { Line, ThreadRow } from "./membership.ts"
+export type { Line, Removal, ThreadRow } from "./membership.ts"
 export {
   allSpaces,
   ArchiveSpace,

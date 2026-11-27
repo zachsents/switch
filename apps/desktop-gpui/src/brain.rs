@@ -335,6 +335,8 @@ pub struct Line {
     pub home: String,
     /// The other spaces it bears on.
     pub mentions: Vec<String>,
+    /// The spaces the user took it out of: its own among them, it shows only where it's mentioned.
+    pub removed: Vec<String>,
     pub widget: Option<Shown>,
     pub quiet: Option<Quiet>,
     pub attachments: Vec<Attachment>,
@@ -356,6 +358,18 @@ pub struct Line {
 }
 
 impl Line {
+    /// The spaces it shows in: where it was said and those it's mentioned in, but those it was
+    /// taken out of.
+    pub fn spaces(&self) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for s in std::iter::once(&self.home).chain(self.mentions.iter()) {
+            if !self.removed.contains(s) && !out.contains(s) {
+                out.push(s.clone());
+            }
+        }
+        out
+    }
+
     /// A line with nothing but its place, side and words.
     pub fn bare(seq: u64, time: f64, who: Who, text: String, home: String) -> Self {
         Line {
@@ -365,6 +379,7 @@ impl Line {
             text,
             home,
             mentions: vec![],
+            removed: vec![],
             widget: None,
             quiet: None,
             attachments: vec![],
@@ -716,6 +731,7 @@ pub fn line_of(raw: &Value) -> Line {
         text: gs(raw, "text"),
         home: gs(raw, "home"),
         mentions: list(get(raw, "mentions")).iter().map(s).collect(),
+        removed: strings(get(raw, "removed")),
         turn: get(raw, "turn").as_str().map(str::to_string),
         widget: shown_of(get(raw, "widget")),
         quiet,
@@ -1106,6 +1122,10 @@ impl Brain {
             for key in ["from", "to"] {
                 self.stale_chat(&gs(p, key));
             }
+        } else if kind == "message.removed" {
+            self.removed(gu(p, "seq"), &gs(p, "space"));
+        } else if kind == "message.restored" {
+            self.restored(gu(p, "seq"), &gs(p, "space"));
         } else if kind == "message.edited" {
             self.edited(e);
         } else if kind == "message.revised" {
@@ -1426,11 +1446,14 @@ impl Brain {
         let Some(line) = self.find_line(seq) else { return };
         let mut named = (*line).clone();
         named.home = home.clone();
+        // What the user took it out of stays out, whatever the tag says.
+        let mentions: Vec<String> = mentions.into_iter().filter(|m| !line.removed.contains(m)).collect();
         named.mentions = mentions.clone();
         let named = Arc::new(named);
+        let shown = named.spaces();
         let mut touched = vec![];
         for (space, chat) in &mut self.chats {
-            let keep = *space == home || mentions.contains(space);
+            let keep = shown.contains(space);
             let before = chat.lines.len();
             if keep {
                 for l in &mut chat.lines {
@@ -1449,12 +1472,52 @@ impl Brain {
             self.touch_chat(&space);
         }
         let mut to = mentions;
-        if line.home != home {
+        if line.home != home && shown.contains(&home) {
             to.insert(0, home);
         }
         for m in to {
             self.insert_line(&m, named.clone());
         }
+    }
+
+    /// Line `seq` taken out of `space`: gone from its chat, and from the spaces it shows in.
+    pub fn removed(&mut self, seq: u64, space: &str) {
+        let Some(line) = self.find_line(seq) else { return };
+        if line.removed.iter().any(|s| s == space) {
+            return;
+        }
+        if let Some(chat) = self.chats.get_mut(space) {
+            chat.lines.retain(|l| l.seq != seq);
+            self.touch_chat(space);
+        }
+        let space = space.to_string();
+        self.edit_line(seq, |l| {
+            l.mentions.retain(|m| *m != space);
+            l.removed.push(space.clone());
+        });
+        self.version += 1;
+    }
+
+    /// A removal undone: line `seq` is in `space`'s chat again.
+    pub fn restored(&mut self, seq: u64, space: &str) {
+        let Some(line) = self.find_line(seq) else {
+            self.stale_chat(space);
+            return;
+        };
+        if !line.removed.iter().any(|s| s == space) {
+            return;
+        }
+        let at = space.to_string();
+        self.edit_line(seq, |l| {
+            l.removed.retain(|s| *s != at);
+            if l.home != at && !l.mentions.contains(&at) {
+                l.mentions.push(at.clone());
+            }
+        });
+        if let Some(back) = self.find_line(seq) {
+            self.insert_line(space, back);
+        }
+        self.version += 1;
     }
 
     /// A memory forgotten: its "Remembered" lines go.
@@ -1477,7 +1540,7 @@ impl Brain {
         let seq = gu(&e.payload, "seq");
         let text = gs(&e.payload, "text");
         let Some(line) = self.find_line(seq) else { return };
-        for space in std::iter::once(&line.home).chain(line.mentions.iter()) {
+        for space in &line.spaces() {
             if let Some(chat) = self.chats.get_mut(space) {
                 chat.lines.retain(|l| !(l.who == Who::Agent && l.quiet.is_none() && l.home == line.home && l.seq > seq && l.seq < e.seq));
             }
@@ -1490,7 +1553,7 @@ impl Brain {
         let seq = gu(&e.payload, "seq");
         let text = gs(&e.payload, "text");
         let Some(line) = self.find_line(seq) else { return };
-        for space in std::iter::once(&line.home).chain(line.mentions.iter()) {
+        for space in &line.spaces() {
             self.edit_line_in(space, seq, |l| {
                 l.text = text.clone();
                 l.edited = true;

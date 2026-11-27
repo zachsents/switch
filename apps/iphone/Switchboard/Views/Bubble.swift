@@ -32,6 +32,9 @@ struct Said: View {
   var onEmoji: (() -> Void)?
   /// The user's last message: Edit puts it back in the box.
   var onEdit: (() -> Void)?
+  /// The spaces it shows in, when more than one: each a Remove from it.
+  var removals: [(id: String, name: String)] = []
+  var onRemove: ((String) -> Void)?
   /// Opens the whole of a long line, with its detail.
   var onRead: ((String) -> Void)?
 
@@ -130,6 +133,13 @@ struct Said: View {
       Label("Copy", systemImage: "doc.on.doc")
     }
     if let onEdit { Button("Edit", systemImage: "pencil", action: onEdit) }
+    if let onRemove, !removals.isEmpty {
+      Section {
+        ForEach(removals, id: \.id) { space in
+          Button("Remove from \(space.name)", systemImage: "minus.circle") { onRemove(space.id) }
+        }
+      }
+    }
   }
 
   /// When it was said, in its menu: "Today 9:12 PM".

@@ -52,6 +52,12 @@ pub fn checked(command: &str, p: &Value) -> Result<(), String> {
             }
             Ok(())
         }
+        "message.remove" | "message.restore" => {
+            if !number(p.get("seq")) || !string(p.get("space")) {
+                return bad("seq and space");
+            }
+            Ok(())
+        }
         "message.edit" | "space.read" => {
             if !number(p.get("seq")) {
                 return bad("seq");

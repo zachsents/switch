@@ -285,6 +285,42 @@ final class Phone {
     }
   }
 
+  /// The spaces line `seq` can be taken out of, each with its name: none when it shows in one.
+  func removable(_ line: Line) -> [(id: String, name: String)] {
+    let spaces = line.spaces
+    guard spaces.count > 1 else { return [] }
+    return spaces.compactMap { id in brain.spaces[id].map { (id: id, name: $0.name) } }
+  }
+
+  /// Takes line `seq` out of `space` at once, leaving it in the others; put back if the brain says
+  /// no. Shaking undoes it, as anywhere on iPhone.
+  func remove(_ seq: Int, from space: String, undo: UndoManager?) {
+    brain.removed(seq, from: space)
+    undo?.registerUndo(withTarget: self) { phone in MainActor.assumeIsolated { phone.restore(seq, to: space, undo: undo) } }
+    undo?.setActionName("Remove")
+    Task {
+      do {
+        try await command("message.remove", ["seq": .number(Double(seq)), "space": .string(space)])
+      } catch {
+        brain.restored(seq, to: space)
+      }
+    }
+  }
+
+  /// A removal undone: the line is in that space again (and Redo takes it out once more).
+  func restore(_ seq: Int, to space: String, undo: UndoManager?) {
+    brain.restored(seq, to: space)
+    undo?.registerUndo(withTarget: self) { phone in MainActor.assumeIsolated { phone.remove(seq, from: space, undo: undo) } }
+    undo?.setActionName("Remove")
+    Task {
+      do {
+        try await command("message.restore", ["seq": .number(Double(seq)), "space": .string(space)])
+      } catch {
+        brain.removed(seq, from: space)
+      }
+    }
+  }
+
   /// Best effort: a dropped one isn't worth a word on screen.
   func emit(_ event: String, _ payload: JSON) {
     Task { try? await sync?.emit(event, payload) }

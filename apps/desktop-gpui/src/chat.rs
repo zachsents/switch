@@ -142,6 +142,7 @@ fn runs(kinds: Vec<(String, Kind_, u64, Option<String>)>) -> Vec<Entry> {
                 l.edited.hash(&mut h);
                 l.attachments.len().hash(&mut h);
                 l.mentions.hash(&mut h);
+                l.removed.hash(&mut h);
                 l.home.hash(&mut h);
                 l.reactions.hash(&mut h);
                 l.parts.hash(&mut h);
@@ -454,6 +455,17 @@ impl ChatView {
     fn reply_picked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some((line, _)) = self.picked_line() else { return };
         crate::replying::attach(&self.space, Reply::Quote { seq: line.seq, text: general_of(&line), reply: None }, cx);
+        self.unpick(cx);
+    }
+
+    /// ⌫ on the line picked: out of this space, when it shows in another too.
+    fn remove_picked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((line, _)) = self.picked_line() else { return };
+        let space = self.space.clone();
+        if !model(cx).read(cx).removable(line.seq).iter().any(|(id, _)| *id == space) {
+            return;
+        }
+        model(cx).update(cx, |m, cx| m.remove_from(line.seq, &space, cx));
         self.unpick(cx);
     }
 
@@ -885,12 +897,13 @@ impl ChatView {
             );
         }
         let m = model(cx).read(cx);
-        let also: Vec<(String, String, Hsla, String)> = std::iter::once(&line.home)
-            .chain(line.mentions.iter())
-            .filter(|x| **x != self.space)
+        let also: Vec<(String, String, Hsla, String)> = line
+            .spaces()
+            .into_iter()
+            .filter(|x| *x != self.space)
             .filter_map(|id| {
-                let s = m.brain.spaces.get(id)?;
-                let st = m.derived.station(id);
+                let s = m.brain.spaces.get(&id)?;
+                let st = m.derived.station(&id);
                 Some((id.clone(), st.code.clone(), l.ink_of(&st), s.name.clone()))
             })
             .collect();
@@ -1152,6 +1165,7 @@ impl ChatView {
             .on_action(cx.listener(|this, _: &crate::commands::ReplyPicked, window, cx| this.reply_picked(window, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::ReactPicked, window, cx| this.react_picked(window, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::CopyPicked, window, cx| this.copy_picked(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::RemovePicked, window, cx| this.remove_picked(window, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::ReadPicked, _, cx| this.read_picked(cx)))
             // Edit ▸ Copy, as ⌘C.
             // ⌘A and Edit ▸ Select All: the column's words.

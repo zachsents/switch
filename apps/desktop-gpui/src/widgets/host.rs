@@ -205,7 +205,8 @@ impl Host {
                 h.placements(cx);
                 h.watch(cx);
                 cx.notify();
-                let missing = model(cx).read(cx).brain.placed.iter().any(|w| !h.offered.contains_key(&w.widget()));
+                // A terminal is drawn by its Mac's app, offered by no extension.
+                let missing = model(cx).read(cx).brain.placed.iter().any(|w| !crate::terminal::is_terminal(w) && !h.offered.contains_key(&w.widget()));
                 if missing || !h.listed {
                     cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(Duration::from_secs(3)).await;
@@ -355,7 +356,7 @@ impl Host {
         for e in events {
             let p = &e.payload;
             let named = key_of(&crate::json::gs(p, "app"), &crate::json::gs(p, "name"));
-            if e.kind.starts_with("widget.") && !self.offered.contains_key(&named) {
+            if e.kind.starts_with("widget.") && !self.offered.contains_key(&named) && !(named.starts_with("desktop-") && named.ends_with("/terminal")) {
                 self.list(cx);
             }
             // A placement's input may have changed: its data again, called with the new one.

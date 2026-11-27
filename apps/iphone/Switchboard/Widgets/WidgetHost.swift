@@ -127,7 +127,7 @@ final class WidgetHost {
       watch(Array(Set(list.flatMap(\.refresh))).sorted())
     }
     // A placed widget whose extension hasn't connected yet: look again.
-    if let brain, brain.widgets.contains(where: { offered[$0.widget] == nil }) {
+    if let brain, brain.widgets.contains(where: { !$0.terminal && offered[$0.widget] == nil }) {
       try? await Task.sleep(for: .seconds(3))
       await list()
     }
@@ -234,7 +234,9 @@ final class WidgetHost {
 
   /// A widget's data comes again when an event it names lands, at most once per 100 ms.
   private func saw(_ e: StoredEvent) {
-    if e.type.hasPrefix("widget."), offered["\(e.payload["app"].str)/\(e.payload["name"].str)"] == nil {
+    if e.type.hasPrefix("widget."), !Placement.terminal(app: e.payload["app"].str, name: e.payload["name"].str),
+      offered["\(e.payload["app"].str)/\(e.payload["name"].str)"] == nil
+    {
       Task { await list() }
     }
     let refreshed = placed.filter { _, widget in offered[widget]?.refreshes(on: e.type) == true }

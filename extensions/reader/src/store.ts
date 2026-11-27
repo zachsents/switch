@@ -1,6 +1,7 @@
 // What the reader keeps: each document's words in a file of its own (`docs/<id>.json`, written
-// whole), and in its log the documents opened, their highlights and their threads, each a passage
-// with the questions asked about it and Switch's answers. The same events go to the brain.
+// whole), and in its log the documents opened, their highlights, their threads (each a passage with
+// the questions asked about it and Switch's answers), the notes those threads pinned to passages,
+// and every lookup's answer, so none is fetched twice. The same events go to the brain.
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
@@ -84,7 +85,80 @@ export const Answered = defineEvent(
   }),
 )
 
-export const logged = [Opened, Linked, Highlighted, Unhighlighted, Asked, Answered] as const
+/** What a note is: a term's meaning, an idea explained, or where to read more. */
+export const NoteKind = Schema.Literals(["definition", "callout", "link"])
+export type Kind = typeof NoteKind.Type
+
+/** A note made or changed, whole: pinned to its passage, from the thread that settled it. */
+export const Noted = defineEvent(
+  "reader.noted",
+  1,
+  Schema.Struct({
+    doc: Schema.String,
+    note: Schema.String,
+    kind: NoteKind,
+    /** What it's about, as the document writes it: how it's found again in other documents. */
+    term: Schema.String,
+    text: Schema.String,
+    url: Schema.optionalKey(Schema.String),
+    quote: Quote,
+    thread: Schema.optionalKey(Schema.String),
+  }),
+)
+
+export const Unnoted = defineEvent(
+  "reader.unnoted",
+  1,
+  Schema.Struct({ doc: Schema.String, note: Schema.String }),
+)
+
+export const Sense = Schema.Struct({
+  pos: Schema.String,
+  text: Schema.String,
+  example: Schema.optionalKey(Schema.String),
+})
+
+export const DictionaryEntry = Schema.Struct({
+  word: Schema.String,
+  senses: Schema.Array(Sense),
+  url: Schema.String,
+})
+export type Dictionary = typeof DictionaryEntry.Type
+
+export const ArticleSummary = Schema.Struct({
+  title: Schema.String,
+  description: Schema.optionalKey(Schema.String),
+  extract: Schema.String,
+  url: Schema.String,
+  thumbnail: Schema.optionalKey(Schema.String),
+})
+export type Article = typeof ArticleSummary.Type
+
+/** A lookup's answer (either may be none), kept with the document it was looked up in. */
+export const LookedUp = defineEvent(
+  "reader.looked_up",
+  1,
+  Schema.Struct({
+    /** What it was asked by: `t:<lang>:<term>` or `w:<lang>:<article>`. */
+    key: Schema.String,
+    term: Schema.String,
+    doc: Schema.optionalKey(Schema.String),
+    dictionary: Schema.NullOr(DictionaryEntry),
+    wikipedia: Schema.NullOr(ArticleSummary),
+  }),
+)
+
+export const logged = [
+  Opened,
+  Linked,
+  Highlighted,
+  Unhighlighted,
+  Asked,
+  Answered,
+  Noted,
+  Unnoted,
+  LookedUp,
+] as const
 
 const Record = defineCommand({
   type: "reader.record",
@@ -120,6 +194,28 @@ export interface ThreadRow {
   readonly updated: number
 }
 
+export interface NoteRow {
+  readonly id: string
+  readonly doc: string
+  readonly kind: Kind
+  readonly term: string
+  readonly text: string
+  readonly url: string | null
+  readonly quote: string
+  readonly thread: string | null
+  readonly made: number
+  readonly edited: number
+}
+
+export interface LookupRow {
+  readonly key: string
+  readonly doc: string
+  readonly term: string
+  readonly dictionary: string | null
+  readonly wikipedia: string | null
+  readonly time: number
+}
+
 export interface MessageRow {
   readonly id: string
   readonly thread: string
@@ -131,8 +227,8 @@ export interface MessageRow {
 
 const projection: Projection = {
   name: "reader",
-  version: 2,
-  tables: ["docs", "highlights", "threads", "messages"],
+  version: 3,
+  tables: ["docs", "highlights", "threads", "messages", "notes", "lookups"],
   create: `
     CREATE TABLE docs (doc TEXT PRIMARY KEY, title TEXT NOT NULL, format TEXT NOT NULL,
       source TEXT NOT NULL, words INTEGER NOT NULL, sections INTEGER NOT NULL, opened INTEGER NOT NULL,
@@ -143,6 +239,12 @@ const projection: Projection = {
     CREATE TABLE messages (id TEXT PRIMARY KEY, thread TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
       failed TEXT, time INTEGER NOT NULL);
     CREATE INDEX messages_thread ON messages (thread, time);
+    CREATE TABLE notes (id TEXT PRIMARY KEY, doc TEXT NOT NULL, kind TEXT NOT NULL, term TEXT NOT NULL,
+      text TEXT NOT NULL, url TEXT, quote TEXT NOT NULL, thread TEXT, made INTEGER NOT NULL,
+      edited INTEGER NOT NULL);
+    CREATE INDEX notes_doc ON notes (doc, made);
+    CREATE TABLE lookups (key TEXT NOT NULL, doc TEXT NOT NULL, term TEXT NOT NULL, dictionary TEXT,
+      wikipedia TEXT, time INTEGER NOT NULL, PRIMARY KEY (key, doc));
   `,
   on: [
     on(Opened, (db, p, e) => {
@@ -188,6 +290,42 @@ const projection: Projection = {
       db.run(
         "INSERT OR REPLACE INTO messages (id, thread, role, text, failed, time) VALUES (?, ?, 'reader', ?, ?, ?)",
         [p.message, p.thread, p.answer, p.failed ?? null, e.time],
+      )
+    }),
+    on(Noted, (db, p, e) => {
+      db.run(
+        `INSERT INTO notes (id, doc, kind, term, text, url, quote, thread, made, edited)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, term = excluded.term,
+           text = excluded.text, url = excluded.url, quote = excluded.quote, edited = excluded.edited`,
+        [
+          p.note,
+          p.doc,
+          p.kind,
+          p.term,
+          p.text,
+          p.url ?? null,
+          JSON.stringify(p.quote),
+          p.thread ?? null,
+          e.time,
+          e.time,
+        ],
+      )
+    }),
+    on(Unnoted, (db, p) => {
+      db.run("DELETE FROM notes WHERE id = ?", [p.note])
+    }),
+    on(LookedUp, (db, p, e) => {
+      db.run(
+        "INSERT OR REPLACE INTO lookups (key, doc, term, dictionary, wikipedia, time) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+          p.key,
+          p.doc ?? "",
+          p.term,
+          p.dictionary === null ? null : JSON.stringify(p.dictionary),
+          p.wikipedia === null ? null : JSON.stringify(p.wikipedia),
+          e.time,
+        ],
       )
     }),
   ],

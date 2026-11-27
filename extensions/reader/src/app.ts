@@ -1,7 +1,9 @@
 // Reader: documents of any common kind, read in Switch's own reader, with a word's definition and
 // a name's Wikipedia article a selection away, and follow-up questions each in a thread of its own,
 // anchored to its passage: asked of Switch itself (switch-ext-kit's `Switch.ask`), a real turn in a
-// side thread of the document's space, which the space's chat knows of but never shows.
+// side thread of the document's space, which the space's chat knows of but never shows. What a
+// thread settles, that turn pins to the passage as a note (`annotate`), shown in the margin and
+// found again wherever another document mentions its term.
 import { Effect, Schema } from "effect"
 import {
   AppEvents,
@@ -11,6 +13,7 @@ import {
   Host,
   Models,
   Progress,
+  sideOfThread,
   sideThread,
   Switch,
   SWITCH_CATALOG,
@@ -25,6 +28,7 @@ import type {
   SwitchService,
 } from "switch-ext-kit"
 
+import { anchor, mention, passage, textsOf, within } from "./anchor.ts"
 import { words } from "./formats.ts"
 import type { Parsed } from "./formats.ts"
 import { link, linkable, names, plainOf } from "./links.ts"
@@ -32,19 +36,34 @@ import { define as dictionary, wikiTitle, wikipedia } from "./lookup.ts"
 import { docId, fromText, isUrl, readSource } from "./source.ts"
 import {
   Answered,
+  ArticleSummary,
   Asked,
+  DictionaryEntry,
   Highlighted,
   Linked,
+  LookedUp,
+  Noted,
+  NoteKind,
   Opened,
   Quote,
   Unhighlighted,
+  Unnoted,
   load,
   logged,
   read,
   record,
   save,
 } from "./store.ts"
-import type { DocRow, HighlightRow, MessageRow, Passage, Stored, ThreadRow } from "./store.ts"
+import type {
+  DocRow,
+  HighlightRow,
+  LookupRow,
+  MessageRow,
+  NoteRow,
+  Passage,
+  Stored,
+  ThreadRow,
+} from "./store.ts"
 
 const BEAT = 5 * 60_000
 
@@ -368,13 +387,14 @@ const document = tool(
   "document",
   {
     description:
-      "A document's title, kind and size, its highlights, and its threads with every message, by `doc`; `thread` names one to show open.",
+      "A document's title, kind and size, its highlights, its threads with every message, its notes, and the notes from other documents whose term it mentions (`seen`), by `doc`; `thread` names one to show open.",
     readOnly: true,
     input: Schema.Struct({ doc: Schema.String, thread: Schema.optionalKey(Schema.String) }),
   },
   (input) =>
     Effect.gen(function* reading() {
       const s = yield* stored(input.doc)
+      const all = textsOf(s)
       return {
         doc: s.doc,
         title: s.title,
@@ -386,7 +406,12 @@ const document = tool(
         version: s.version,
         open: input.thread ?? "",
         highlights: yield* highlightsOf(s.doc),
-        threads: yield* threadsOf(s.doc),
+        threads: (yield* threadsOf(s.doc)).map((t) => ({
+          ...t,
+          quote: t.quote === null ? null : anchor(all, t.quote),
+        })),
+        notes: (yield* noteRows(s.doc)).map((n) => noteOut(n, all)),
+        seen: yield* seenIn(s),
       }
     }),
 )
@@ -423,11 +448,59 @@ const content = tool(
 const wordish = (s: string) =>
   s.length <= 48 && s.split(/\s+/u).length <= 4 && !/[.!?;:]\s/u.test(s)
 
+const decodeDictionary = Schema.decodeUnknownSync(Schema.fromJsonString(DictionaryEntry))
+const decodeArticle = Schema.decodeUnknownSync(Schema.fromJsonString(ArticleSummary))
+
+/** A lookup's kept answer by its key: this document's, else any document's; null if never asked. */
+const lookedUp = (key: string, doc: string) =>
+  read(
+    (db) =>
+      db
+        .query<LookupRow, [string, string]>(
+          "SELECT * FROM lookups WHERE key = ? ORDER BY doc = ? DESC, time DESC LIMIT 1",
+        )
+        .get(key, doc) ?? null,
+  )
+
+/**
+ * A term's lookup, kept: this document's, else another's (kept with this one too), else fetched
+ * once and kept. `article` when it's a Wikipedia link's, no dictionary asked.
+ */
+const lookUp = (term: string, lang: string, article: boolean, doc: string) =>
+  Effect.gen(function* lookingUp() {
+    const key = `${article ? "w" : "t"}:${lang}:${term}`
+    const kept = yield* lookedUp(key, doc)
+    if (kept !== null) {
+      const found = {
+        term,
+        dictionary: kept.dictionary === null ? null : decodeDictionary(kept.dictionary),
+        wikipedia: kept.wikipedia === null ? null : decodeArticle(kept.wikipedia),
+      }
+      if (kept.doc !== doc) {
+        yield* happen(LookedUp.make({ key, ...found, ...(doc !== "" && { doc }) }))
+      }
+      return found
+    }
+    const [dict, summary] = yield* Effect.all(
+      [
+        article ? Effect.succeed(null) : attempt(async () => await dictionary(term, lang)),
+        attempt(async () => await wikipedia(term, lang)),
+      ],
+      { concurrency: 2 },
+    )
+    // A plain lowercase word the dictionary knows means that, not a show or a band of its name.
+    const plainWord =
+      !article && dict !== null && !term.includes(" ") && term === term.toLowerCase()
+    const found = { term, dictionary: dict, wikipedia: plainWord ? null : summary }
+    yield* happen(LookedUp.make({ key, ...found, ...(doc !== "" && { doc }) }))
+    return found
+  })
+
 const define = tool(
   "define",
   {
     description:
-      "What a word or name is: its dictionary senses (Wiktionary) and its Wikipedia article's summary, each when there is a real entry. `term`, or a Wikipedia `url`; `doc` gives the language.",
+      "What a word or name is: its dictionary senses (Wiktionary) and its Wikipedia article's summary, each when there is a real entry. `term`, or a Wikipedia `url`; `doc` gives the language. Each answer is kept with its document and never fetched twice.",
     readOnly: true,
     input: Schema.Struct({
       term: Schema.optionalKey(Schema.String),
@@ -445,26 +518,10 @@ const define = tool(
       if (term === "") {
         return yield* Effect.fail(new Error("Give a term or url"))
       }
-      const looked = wiki !== null || wordish(term)
-      const [dict, article] = looked
-        ? yield* Effect.all(
-            [
-              wiki === null
-                ? attempt(async () => await dictionary(term, lang)).pipe(
-                    Effect.orElseSucceed(() => null),
-                  )
-                : Effect.succeed(null),
-              attempt(async () => await wikipedia(term, wiki?.lang ?? lang)).pipe(
-                Effect.orElseSucceed(() => null),
-              ),
-            ],
-            { concurrency: 2 },
-          )
-        : [null, null]
-      // A plain lowercase word the dictionary knows means that, not a show or a band of its name.
-      const plainWord =
-        wiki === null && dict !== null && !term.includes(" ") && term === term.toLowerCase()
-      return { term, dictionary: dict, wikipedia: plainWord ? null : article }
+      if (wiki === null && !wordish(term)) {
+        return { term, dictionary: null, wikipedia: null }
+      }
+      return yield* lookUp(term, wiki?.lang ?? lang, wiki !== null, input.doc ?? "")
     }),
 )
 
@@ -557,13 +614,30 @@ const passageOf = (s: Stored, quote: Passage) => {
  * it. The whole document is a call away (reader_content), so a long one isn't sent with every
  * question.
  */
-const noteOf = (s: Stored, quote: Passage | null | undefined) => {
+/** A note, a line of what Switch reads. */
+const lineOf = (n: { term: string; text: string }) =>
+  `- ${n.term}: ${n.text.replaceAll(/\s+/gu, " ")}`
+
+const contextOf = (
+  s: Stored,
+  threadId: string,
+  quote: Passage | null | undefined,
+  noted: readonly NoteRow[],
+  seen: readonly { term: string; text: string; source: string }[],
+) => {
   const author = s.author ?? ""
   return [
-    `They're reading "${s.title}"${author === "" ? "" : ` by ${author}`} (${s.format}, doc ${s.doc}) in the reader, and ask about it there. All of it: reader_content with doc ${s.doc}.`,
+    `They're reading "${s.title}"${author === "" ? "" : ` by ${author}`} (${s.format}, doc ${s.doc}) in the reader, and ask about it there, in reader thread ${threadId}. All of it: reader_content with doc ${s.doc}.`,
     quote === null || quote === undefined ? "" : passageOf(s, quote),
     `<document-excerpt>\n${aroundOf(s, quote?.section ?? 0)}\n</document-excerpt>`,
     "Answer in Markdown (math as $…$ or $$…$$), as briefly as the question allows.",
+    "When your answer settles something worth keeping beside the passage (what a term means, an idea explained, where to read more), also pin it there as one note with reader_annotate: kind `definition`, `callout` or `link`, `term` as the text writes it, `text` a sentence or two, plain and specific (no preamble, no restating the question). When nothing is settled, no note.",
+    noted.length === 0
+      ? ""
+      : `This thread's notes (reader_edit_note to change one rather than add another):\n${noted.map((n) => `${lineOf(n)} (${n.id})`).join("\n")}`,
+    seen.length === 0
+      ? ""
+      : `Noted before, in other documents they read:\n${seen.map((n) => `${lineOf(n)} (in "${n.source}")`).join("\n")}`,
   ]
     .filter((p) => p !== "")
     .join("\n\n")
@@ -594,13 +668,19 @@ const askSwitch = (
   Effect.gen(function* asking() {
     const agent = yield* Switch
     const progress = yield* Progress
+    const noted = (yield* noteRows(s.doc)).filter((n) => n.thread === thread)
+    // Earlier notes on the terms the passage mentions.
+    const seen =
+      quote === null || quote === undefined
+        ? []
+        : (yield* seenIn(s)).filter((n) => mention([quote.exact], n.term) !== null)
     const got = yield* Effect.result(
       agent.ask(
         {
           key: thread,
           id: message,
           text: question,
-          note: noteOf(s, quote),
+          note: contextOf(s, thread, quote, noted, seen),
           title: `${s.title}${quote === null || quote === undefined ? "" : `: “${quote.exact.slice(0, 60)}”`}`,
           ...(space !== null && { space }),
         },
@@ -710,6 +790,245 @@ const thread = tool(
     }),
 )
 
+// --- Notes ---
+
+/** At most this many notes from other documents beside one. */
+const SEEN = 24
+
+const noteRows = (doc: string) =>
+  read((db) =>
+    db.query<NoteRow, [string]>("SELECT * FROM notes WHERE doc = ? ORDER BY made").all(doc),
+  )
+
+const noteRow = (note: string) =>
+  read((db) => db.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(note) ?? null)
+
+/** A note as its tools give it, its passage where it is now when the document's words are given. */
+const noteOut = (n: NoteRow, all: readonly string[] | null) => {
+  const quote = decodeQuote(n.quote)
+  return {
+    id: n.id,
+    doc: n.doc,
+    kind: n.kind,
+    term: n.term,
+    text: n.text,
+    ...(n.url !== null && { url: n.url }),
+    quote: all === null ? quote : anchor(all, quote),
+    ...(n.thread !== null && { thread: n.thread }),
+  }
+}
+
+/**
+ * Notes from other documents whose term this one mentions, read from the notes as they are: each
+ * term's first, at its first mention here, with the title of the document it's from. None for a
+ * term this one has its own note on.
+ */
+const seenIn = (s: Stored) =>
+  Effect.gen(function* finding() {
+    const rows = yield* read((db) =>
+      db
+        .query<NoteRow & { title: string }, [string]>(
+          "SELECT n.*, d.title FROM notes n JOIN docs d ON d.doc = n.doc WHERE n.doc != ? ORDER BY n.made",
+        )
+        .all(s.doc),
+    )
+    const taken = new Set((yield* noteRows(s.doc)).map((n) => n.term.toLowerCase()))
+    const all = textsOf(s)
+    const out: (ReturnType<typeof noteOut> & { source: string })[] = []
+    for (const n of rows) {
+      const term = n.term.toLowerCase()
+      if (taken.has(term)) {
+        continue
+      }
+      taken.add(term)
+      const at = mention(all, n.term)
+      if (at !== null) {
+        out.push({ ...noteOut(n, null), quote: at, source: n.title })
+      }
+    }
+    return out.toSorted((a, b) => a.quote.section - b.quote.section).slice(0, SEEN)
+  })
+
+/**
+ * What a note is pinned from: the thread named, else the reader thread whose side thread the
+ * calling turn is, else none; and its document.
+ */
+const noteSource = (named: string | undefined, docNamed: string | undefined) =>
+  Effect.gen(function* finding() {
+    const caller = yield* Caller
+    const side = caller.thread === null ? null : sideOfThread(caller.thread)
+    const from = named ?? (side?.app === "reader" ? side.key : null)
+    const [t] = from === null ? [] : yield* threadsOf(null, from)
+    if (from !== null && t === undefined) {
+      return yield* Effect.fail(new Error(`No thread ${from}`))
+    }
+    const doc = t?.doc ?? docNamed
+    if (doc === undefined) {
+      return yield* Effect.fail(new Error("Give a thread, or a doc and a passage"))
+    }
+    if (t !== undefined && docNamed !== undefined && docNamed !== t.doc) {
+      return yield* Effect.fail(new Error(`Thread ${t.id} is about ${t.doc}`))
+    }
+    return { t, s: yield* stored(doc) }
+  })
+
+/** A note's passage: `said` (words in the thread's passage, else the document), else the thread's. */
+const passageFor = (s: Stored, own: Passage | null, said: string) => {
+  const quote =
+    said === ""
+      ? own
+      : ((own === null ? null : within(own, said)) ?? passage(textsOf(s), said, own?.section ?? 0))
+  return quote === null
+    ? Effect.fail(
+        new Error(said === "" ? "Give a passage" : `No “${said.slice(0, 60)}” in ${s.title}`),
+      )
+    : Effect.succeed(quote)
+}
+
+const annotate = tool(
+  "annotate",
+  {
+    description:
+      "Pins a short note to a passage of a document, shown in its margin and beside the first mention of its `term` in other documents: `definition` (what a term means), `callout` (an idea explained) or `link` (where to read more, its `url`). Only for what the user asked: in a reader thread's turn, once the thread has settled something worth keeping (the thread is that turn's own unless `thread` names one; the passage is the thread's, or `passage`, words in it or in the document), or when the user asks for a note (`doc` and `passage`). Never on your own. `text` is a sentence or two of Markdown, plain and specific; `term` as the document writes it.",
+    closed: true,
+    input: Schema.Struct({
+      kind: NoteKind,
+      term: Schema.String,
+      text: Schema.String,
+      url: Schema.optionalKey(Schema.String),
+      thread: Schema.optionalKey(Schema.String),
+      doc: Schema.optionalKey(Schema.String),
+      passage: Schema.optionalKey(Schema.String),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* noting() {
+      const { t, s } = yield* noteSource(input.thread, input.doc)
+      const { doc } = s
+      const quote = yield* passageFor(s, t?.quote ?? null, input.passage?.trim() ?? "")
+      const term = input.term.trim()
+      const text = input.text.trim()
+      if (term === "" || text === "") {
+        return yield* Effect.fail(new Error("Give a term and its text"))
+      }
+      const same = (yield* noteRows(doc)).find((n) => n.term.toLowerCase() === term.toLowerCase())
+      if (same !== undefined) {
+        return yield* Effect.fail(new Error(`Already noted: ${same.id} (edit_note changes it)`))
+      }
+      const note = id("nt")
+      const url = input.url?.trim() ?? ""
+      yield* happen(
+        Noted.make({
+          doc,
+          note,
+          kind: input.kind,
+          term,
+          text,
+          ...(url !== "" && { url }),
+          quote,
+          ...(t !== undefined && { thread: t.id }),
+        }),
+      )
+      return { note, doc, term, view: viewOf(doc) }
+    }),
+)
+
+const editNote = tool(
+  "edit_note",
+  {
+    description:
+      "Changes a note: its `text`, `term`, `kind` or `url` (an empty `url` takes it away).",
+    closed: true,
+    input: Schema.Struct({
+      note: Schema.String,
+      kind: Schema.optionalKey(NoteKind),
+      term: Schema.optionalKey(Schema.String),
+      text: Schema.optionalKey(Schema.String),
+      url: Schema.optionalKey(Schema.String),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* editing() {
+      const n = yield* noteRow(input.note)
+      if (n === null) {
+        return yield* Effect.fail(new Error(`No note ${input.note}`))
+      }
+      const term = input.term?.trim() ?? n.term
+      const text = input.text?.trim() ?? n.text
+      if (term === "" || text === "") {
+        return yield* Effect.fail(new Error("A note needs a term and text"))
+      }
+      const url = input.url === undefined ? (n.url ?? "") : input.url.trim()
+      yield* happen(
+        Noted.make({
+          doc: n.doc,
+          note: n.id,
+          kind: input.kind ?? n.kind,
+          term,
+          text,
+          ...(url !== "" && { url }),
+          quote: decodeQuote(n.quote),
+          ...(n.thread !== null && { thread: n.thread }),
+        }),
+      )
+      return { note: n.id, doc: n.doc, term, text }
+    }),
+)
+
+const deleteNote = tool(
+  "delete_note",
+  {
+    description: "Deletes a note.",
+    closed: true,
+    input: Schema.Struct({ note: Schema.String }),
+  },
+  (input) =>
+    Effect.gen(function* deleting() {
+      const n = yield* noteRow(input.note)
+      if (n === null) {
+        return yield* Effect.fail(new Error(`No note ${input.note}`))
+      }
+      yield* happen(Unnoted.make({ doc: n.doc, note: n.id }))
+      return { deleted: n.id }
+    }),
+)
+
+const notes = tool(
+  "notes",
+  {
+    description:
+      "Notes pinned to passages: a document's (`doc`), with the notes from other documents whose term it mentions (`seen`); every note about a `term`, in any document (or in `doc`); or, with neither, the latest notes everywhere.",
+    readOnly: true,
+    input: Schema.Struct({
+      doc: Schema.optionalKey(Schema.String),
+      term: Schema.optionalKey(Schema.String),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* listing() {
+      const term = input.term?.trim().toLowerCase() ?? ""
+      if (term === "" && input.doc !== undefined) {
+        const s = yield* stored(input.doc)
+        const all = textsOf(s)
+        return {
+          notes: (yield* noteRows(s.doc)).map((n) => noteOut(n, all)),
+          seen: yield* seenIn(s),
+        }
+      }
+      const rows = yield* read((db) =>
+        db
+          .query<NoteRow & { title: string }, [string, string]>(
+            `SELECT n.*, d.title FROM notes n JOIN docs d ON d.doc = n.doc
+             WHERE (?1 = '' OR instr(lower(n.term), ?1) > 0 OR instr(?1, lower(n.term)) > 0)
+               AND (?2 = '' OR n.doc = ?2)
+             ORDER BY n.made DESC LIMIT 200`,
+          )
+          .all(term, input.doc ?? ""),
+      )
+      return { notes: rows.map((n) => ({ ...noteOut(n, null), title: n.title })) }
+    }),
+)
+
 // --- The heartbeat ---
 
 export const beat = Effect.gen(function* beating() {
@@ -732,7 +1051,7 @@ export const beat = Effect.gen(function* beating() {
 
 // --- The app ---
 
-const REFRESH = logged.map((e) => e.type)
+const REFRESH = logged.filter((e) => e !== LookedUp).map((e) => e.type)
 
 const tools = {
   content: "content",
@@ -740,6 +1059,8 @@ const tools = {
   ask: "ask",
   highlight: "highlight",
   unhighlight: "unhighlight",
+  editNote: "edit_note",
+  deleteNote: "delete_note",
 }
 
 /** What its tools run on: the kit's services, through the host. */
@@ -751,7 +1072,7 @@ export const readerApp = defineApp<Needs>({
   // A published page by its id or title.
   reaches: { calls: ["brain_pages"] },
   instructions:
-    "A reader for documents of any common kind: open one (`open`), show it to the user (its `view`), and ask Switch about it in threads of their own.",
+    "A reader for documents of any common kind: open one (`open`), show it to the user (its `view`), and ask Switch about it in threads of their own, whose turns pin what they settle to the passage as notes (`annotate`).",
   tools: [
     open,
     documents,
@@ -764,6 +1085,10 @@ export const readerApp = defineApp<Needs>({
     ask,
     threads,
     thread,
+    annotate,
+    notes,
+    editNote,
+    deleteNote,
   ],
   events: [...logged, Heartbeat],
   widgets: [
@@ -791,6 +1116,8 @@ export const readerApp = defineApp<Needs>({
                 version: { "@path": "/version" },
                 highlights: { "@path": "/highlights" },
                 threads: { "@path": "/threads" },
+                notes: { "@path": "/notes" },
+                seen: { "@path": "/seen" },
                 open: { "@path": "/open" },
                 widget: "document",
                 tools,
