@@ -4,7 +4,7 @@
 export type Field = string | number | boolean | readonly unknown[]
 
 export interface Request {
-  readonly section: "print" | "system" | "pushing"
+  readonly section: "print" | "system" | "pushing" | "xcam"
   readonly body: { readonly sequence_id: string; readonly command: string } & Readonly<
     Record<string, Field>
   >
@@ -91,6 +91,24 @@ export const ledctrl = (seq: string, on: boolean): Request => ({
     led_off_time: 500,
     loop_times: 0,
     interval_time: 0,
+  },
+})
+
+/**
+ * Turns one of the camera's checks on or off, as Bambu Studio's print options send it
+ * (DevPrintOptions::command_xcam_control): `buildplate_marker_detector` is the plate marker check
+ * that pauses a job on HMS 0500_8062. `enable` and `print_halt` are the older firmware's fields,
+ * sent alongside as Studio does.
+ */
+export const xcamControl = (seq: string, module: string, on: boolean): Request => ({
+  section: "xcam",
+  body: {
+    sequence_id: seq,
+    command: "xcam_control_set",
+    module_name: module,
+    control: on,
+    enable: on,
+    print_halt: true,
   },
 })
 

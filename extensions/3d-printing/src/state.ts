@@ -73,13 +73,14 @@ export const parseMessage = (payload: string): Message => {
   }
   const print = isRecord(json.print) ? json.print : undefined
   const system = isRecord(json.system) ? json.system : undefined
-  const push =
+  const xcam = isRecord(json.xcam) ? json.xcam : undefined
+  const status =
     print && (print.command === "push_status" || print.command === undefined) ? print : undefined
-  const body = [print, system].find(
-    (b) => b !== undefined && b !== push && typeof b.sequence_id === "string",
+  const body = [print, system, xcam].find(
+    (b) => b !== undefined && b !== status && typeof b.sequence_id === "string",
   )
   if (!body) {
-    return push ? { push } : {}
+    return status ? { push: status } : {}
   }
   const result = str(body.result) ?? ""
   const reason = str(body.reason)
@@ -88,7 +89,22 @@ export const parseMessage = (payload: string): Message => {
     ok: !/fail/iu.test(result),
     ...(reason === undefined ? {} : { reason }),
   }
+  const push = withXcamSet(status, body === xcam && result !== "" && reply.ok ? xcam : undefined)
   return push ? { push, reply } : { reply }
+}
+
+/**
+ * An accepted xcam_control_set names the check and its new setting, as Bambu Studio reads it; it
+ * goes into the state as the status push's `xcam` would carry it, which a P2S sends only on change.
+ */
+const withXcamSet = (push: Raw | undefined, answer: Raw | undefined): Raw | undefined => {
+  const module = answer === undefined ? undefined : str(answer.module_name)
+  const value = answer?.control ?? answer?.enable
+  if (module === undefined || typeof value !== "boolean") {
+    return push
+  }
+  const xcam = isRecord(push?.xcam) ? push.xcam : {}
+  return { ...push, xcam: { ...xcam, [module]: value } }
 }
 
 /** Lists of records with ids merged by id, each record key by key; what the old list had and the new lacks stays. */
@@ -130,6 +146,9 @@ export const mergePush = (raw: Raw, push: Raw): Raw => {
   }
   if (isRecord(raw.vt_tray) && isRecord(push.vt_tray)) {
     merged.vt_tray = { ...raw.vt_tray, ...push.vt_tray }
+  }
+  if (isRecord(raw.xcam) && isRecord(push.xcam)) {
+    merged.xcam = { ...raw.xcam, ...push.xcam }
   }
   return merged
 }
@@ -305,6 +324,8 @@ export interface View {
   readonly slots: readonly Slot[]
   readonly errors: readonly Alert[]
   readonly light?: boolean
+  /** Whether the camera checks the plate's marker before a job (HMS 0500_8062), when it reports it. */
+  readonly plateMarker?: boolean
   /** The heat it's holding while idle, until `until` (ms). */
   readonly hold?: { readonly nozzle: number; readonly bed?: number; readonly until: number }
 }
@@ -331,6 +352,12 @@ const lightOf = (raw: Raw) => {
   return chamber === undefined ? {} : { light: chamber.mode === "on" }
 }
 
+/** The plate marker check's setting, from the push's `xcam`, when the printer has it. */
+export const plateMarkerOf = (raw: Raw): boolean | undefined => {
+  const value = isRecord(raw.xcam) ? raw.xcam.buildplate_marker_detector : undefined
+  return typeof value === "boolean" ? value : undefined
+}
+
 const round = (x: unknown) => Math.round(num(x) ?? 0)
 
 export const viewOf = (
@@ -347,6 +374,7 @@ export const viewOf = (
   const stage = active && stg !== undefined ? STAGES[stg] : undefined
   const file = text(raw.subtask_name)
   const left = active ? (num(raw.mc_remaining_time) ?? 0) : 0
+  const plateMarker = plateMarkerOf(raw)
   return {
     id: printer.id,
     name: printer.name,
@@ -369,5 +397,6 @@ export const viewOf = (
     slots: slotsOf(raw),
     errors,
     ...lightOf(raw),
+    ...(plateMarker === undefined ? {} : { plateMarker }),
   }
 }

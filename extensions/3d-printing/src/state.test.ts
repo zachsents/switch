@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { cellsFor, lineOf, swapOf } from "./board.ts"
 import { shortOf } from "./short.ts"
 import { track } from "./track.ts"
-import { mergePush, slotsOf, viewOf } from "./state.ts"
+import { mergePush, parseMessage, slotsOf, viewOf } from "./state.ts"
 
 const tray = (id: string, type: string, color: string) => ({
   id,
@@ -181,5 +181,53 @@ describe("trouble in a word or two", () => {
       ),
     )
     expect(line).toMatchObject({ detail: "Lens dirty · 0%", note: lens, alert: true, mark: "warn" })
+  })
+})
+
+describe("plate marker check", () => {
+  const printer = { id: "p2s", name: "Echo", model: "P2S" }
+  const xcam = {
+    ...full,
+    xcam: { buildplate_marker_detector: true, first_layer_inspector: true, cfg: 748_983 },
+  }
+
+  test("status reports it from the push's xcam, and nothing where there is none", () => {
+    expect(viewOf(printer, xcam, true, new Map(), 0).plateMarker).toBe(true)
+    expect(viewOf(printer, full, true, new Map(), 0).plateMarker).toBeUndefined()
+  })
+
+  test("a push with part of xcam keeps the rest", () => {
+    const merged = mergePush(xcam, { xcam: { first_layer_inspector: false } })
+    expect(viewOf(printer, merged, true, new Map(), 0).plateMarker).toBe(true)
+  })
+
+  test("an accepted xcam_control_set answers its request and sets the state", () => {
+    const m = parseMessage(
+      JSON.stringify({
+        xcam: {
+          command: "xcam_control_set",
+          sequence_id: "31000",
+          module_name: "buildplate_marker_detector",
+          control: false,
+          result: "success",
+        },
+      }),
+    )
+    expect(m.reply).toEqual({ seq: "31000", ok: true })
+    const merged = mergePush(xcam, m.push ?? {})
+    expect(viewOf(printer, merged, true, new Map(), 0).plateMarker).toBe(false)
+  })
+
+  test("a refused or echoed request changes nothing", () => {
+    const request = {
+      command: "xcam_control_set",
+      sequence_id: "31001",
+      module_name: "buildplate_marker_detector",
+      control: false,
+    }
+    expect(parseMessage(JSON.stringify({ xcam: request })).push).toBeUndefined()
+    const refused = parseMessage(JSON.stringify({ xcam: { ...request, result: "fail" } }))
+    expect(refused.reply?.ok).toBe(false)
+    expect(refused.push).toBeUndefined()
   })
 })

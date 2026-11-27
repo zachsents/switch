@@ -1,6 +1,6 @@
 // A simulated P1P and P1S, for exercising the command tools without hardware: they take the same
 // MQTT requests (pushall, pause, resume, stop, ams_filament_setting, project_file, ledctrl,
-// print_speed, gcode_line) and answer with
+// print_speed, gcode_line, xcam_control_set) and answer with
 // the same replies and status pushes. A plate on the simulated card prints in about 30 s; one whose
 // name has "runout" in it runs out of filament halfway.
 import { copyFileSync, mkdtempSync, statSync } from "node:fs"
@@ -46,6 +46,7 @@ const fresh = (id: string): Raw => ({
   hms: [],
   hw_switch_state: 1,
   lights_report: [{ node: "chamber_light", mode: "on" }],
+  ...(id === "sim-p1s" ? { xcam: { buildplate_marker_detector: true } } : {}),
   vt_tray: { id: "254", tray_type: id === "sim-p1p" ? "PLA" : "", tray_color: "000000FF" },
   ams:
     id === "sim-p1s"
@@ -177,6 +178,17 @@ class SimPrinter {
       }
       case "ledctrl": {
         this.push({ lights_report: [{ node: "chamber_light", mode: body.led_mode }] })
+        this.reply(section, body, true)
+        return
+      }
+      case "xcam_control_set": {
+        const { xcam } = this.raw
+        const module = texts(body.module_name)
+        if (!isBody(xcam) || !(module in xcam)) {
+          this.reply(section, body, false, "unsupported")
+          return
+        }
+        this.push({ xcam: { ...xcam, [module]: body.control } })
         this.reply(section, body, true)
         return
       }

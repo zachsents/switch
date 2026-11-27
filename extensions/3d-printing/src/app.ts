@@ -42,6 +42,7 @@ import {
   printSpeed,
   temps,
   unload,
+  xcamControl,
 } from "./payloads.ts"
 import { SIM_PRINTERS, simCard, simDial, simEye } from "./sim.ts"
 import {
@@ -56,7 +57,7 @@ import {
   SlotsChanged,
   StateChanged,
 } from "./events.ts"
-import { isActive, slotsOf, viewOf } from "./state.ts"
+import { isActive, plateMarkerOf, slotsOf, viewOf } from "./state.ts"
 import type { Raw, View } from "./state.ts"
 import { makingTools } from "./making.ts"
 import { INTERVAL_S, MIN_INTERVAL_S, plateStem, Recorders, timelapseRoot } from "./timelapse.ts"
@@ -607,39 +608,94 @@ const board = tool(
     }),
 )
 
-const control = (action: "pause" | "resume" | "stop", description: string) =>
-  tool(action, { description, input: which }, (input) =>
-    Effect.gen(function* controlling() {
-      const printers = yield* Printers
-      const e = yield* find(printers, input.printer)
-      const { link } = e
-      if (!link.online()) {
-        return yield* Effect.fail(new Error(`${e.printer.name} is offline`))
-      }
-      const state = stateOf(link.raw)
-      if (!isActive(state)) {
-        return yield* Effect.fail(new Error(`${e.printer.name} isn't printing`))
-      }
-      if (action === "resume" && state !== "PAUSE") {
-        return yield* Effect.fail(new Error(`${e.printer.name} isn't paused`))
-      }
-      if (action === "pause" && state === "PAUSE") {
-        return yield* Effect.fail(new Error(`${e.printer.name} is already paused`))
-      }
-      const confirmed = {
-        pause: (r: Raw) => stateOf(r) === "PAUSE",
-        resume: (r: Raw) => stateOf(r) === "RUNNING",
-        stop: (r: Raw) => !isActive(stateOf(r)),
-      }[action]
+/** Turns the camera's plate marker check on or off; what the printer reports after. */
+const setPlateMarker = (e: Entry, on: boolean) =>
+  Effect.gen(function* marking() {
+    const { link } = e
+    const now = plateMarkerOf(link.raw)
+    if (now === undefined) {
+      return yield* Effect.fail(new Error(`${e.printer.name} has no plate marker check`))
+    }
+    if (now !== on) {
       yield* attempt(async () => {
-        await sendAndConfirm(link, jobControl(link.nextSeq(), action), confirmed, 15_000)
+        await sendAndConfirm(
+          link,
+          xcamControl(link.nextSeq(), "buildplate_marker_detector", on),
+          (r) => plateMarkerOf(r) === on,
+          10_000,
+        )
       })
+    }
+    return plateMarkerOf(link.raw)
+  })
+
+const options = tool(
+  "options",
+  {
+    description:
+      "A printer's settings: plateMarker turns the camera's check for the plate's marker on or off (the check that pauses a job on 05008062, plate marker not detected). It lasts until changed; status shows it as plateMarker.",
+    input: Schema.Struct({ printer: Schema.String, plateMarker: Schema.Boolean }),
+  },
+  (input) =>
+    Effect.gen(function* setting() {
+      const printers = yield* Printers
+      const e = yield* commandable(printers, input.printer)
+      yield* setPlateMarker(e, input.plateMarker)
       return printers.view(e)
     }),
+)
+
+const control = (action: "pause" | "resume" | "stop", description: string) =>
+  tool(
+    action,
+    {
+      description,
+      input:
+        action === "resume"
+          ? Schema.Struct({
+              printer: Schema.String,
+              plateMarker: Schema.optionalKey(Schema.Boolean),
+            })
+          : which,
+    },
+    (input: { readonly printer: string; readonly plateMarker?: boolean }) =>
+      Effect.gen(function* controlling() {
+        const printers = yield* Printers
+        const e = yield* find(printers, input.printer)
+        const { link } = e
+        if (!link.online()) {
+          return yield* Effect.fail(new Error(`${e.printer.name} is offline`))
+        }
+        const state = stateOf(link.raw)
+        if (!isActive(state)) {
+          return yield* Effect.fail(new Error(`${e.printer.name} isn't printing`))
+        }
+        if (action === "resume" && state !== "PAUSE") {
+          return yield* Effect.fail(new Error(`${e.printer.name} isn't paused`))
+        }
+        if (action === "pause" && state === "PAUSE") {
+          return yield* Effect.fail(new Error(`${e.printer.name} is already paused`))
+        }
+        if (input.plateMarker !== undefined) {
+          yield* setPlateMarker(e, input.plateMarker)
+        }
+        const confirmed = {
+          pause: (r: Raw) => stateOf(r) === "PAUSE",
+          resume: (r: Raw) => stateOf(r) === "RUNNING",
+          stop: (r: Raw) => !isActive(stateOf(r)),
+        }[action]
+        yield* attempt(async () => {
+          await sendAndConfirm(link, jobControl(link.nextSeq(), action), confirmed, 15_000)
+        })
+        return printers.view(e)
+      }),
   )
 
 const pause = control("pause", "Pause a printer's job.")
-const resume = control("resume", "Resume a paused job.")
+const resume = control(
+  "resume",
+  "Resume a paused job. plateMarker: false first turns off the plate marker check (as options does), for a job paused on 05008062.",
+)
 const stop = control("stop", "Stop a printer's job. It can't be resumed.")
 
 const setFilament = tool(
@@ -1657,6 +1713,7 @@ export const printersApp = defineApp<Printers>({
     pause,
     resume,
     stop,
+    options,
     print,
     wait,
     heat,
