@@ -67,6 +67,8 @@ pub struct AskCard {
     sealed: Entity<Input>,
     sealed_going: Going,
     assist: Going,
+    /// Its command, opening in a terminal.
+    terminal: Going,
     /// Each draft's field, by its name, in the item's order.
     drafts: Vec<(String, Entity<Textarea>)>,
     /// The versions the fields last took from the core, by draft.
@@ -197,6 +199,16 @@ fn key(id: impl Into<gpui::ElementId>, look: Btn, on: bool, l: &Look, name: impl
     button(id, look, on, l).role(gpui::Role::Button).aria_label(name.clone()).child(name)
 }
 
+/// The most of `c` in a row in `s`.
+fn longest_run(s: &str, c: char) -> usize {
+    let (mut most, mut now) = (0, 0);
+    for ch in s.chars() {
+        now = if ch == c { now + 1 } else { 0 };
+        most = most.max(now);
+    }
+    most
+}
+
 /// A field's most (`max-h-40`, border and padding inside it).
 const FIELD_MOST: f32 = 160. - 12. - 2.;
 
@@ -287,6 +299,7 @@ impl AskCard {
             sealed,
             sealed_going: Going::default(),
             assist: Going::default(),
+            terminal: Going::default(),
             drafts,
             seen: shown,
             mine,
@@ -619,6 +632,27 @@ impl AskCard {
         cx.notify();
     }
 
+    /// ⌘O, or its key: the command in a terminal on this Mac, typed and waiting for ↵.
+    pub fn open_command(&mut self, cx: &mut Context<Self>) {
+        let Some(c) = self.item.command.clone() else { return };
+        if self.terminal.pending || !self.item.is_open() {
+            return;
+        }
+        self.terminal = Going { pending: true, error: None };
+        let task = crate::asks::terminal::open(&c, cx);
+        cx.spawn(async move |this, cx| {
+            let got = task.await;
+            this.update(cx, |this, cx| {
+                this.terminal.pending = false;
+                this.terminal.error = got.err().map(|e| safe(&e));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn head(&self, l: &Look) -> AnyElement {
         let it = &self.item;
         div()
@@ -639,11 +673,22 @@ impl AskCard {
     /// Its title and its words, selectable as one.
     fn body(&mut self, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
         let it = self.item.clone();
-        let doc = (!it.body.is_empty() && it.body != it.title).then(|| match &self.body {
-            Some((text, doc)) if *text == it.body => doc.clone(),
+        let words = if it.body == it.title { String::new() } else { it.body.clone() };
+        // Its command under its words, as code: what the terminal will have typed.
+        let shown = match &it.command {
+            Some(c) => {
+                // Its folder as the line before it, so the block copies as it runs; home goes without.
+                let to = c.cwd.as_deref().filter(|d| !d.is_empty() && *d != "~").map(|d| format!("cd {d}\n")).unwrap_or_default();
+                let fence = "`".repeat(longest_run(&c.run, '`').max(2) + 1);
+                format!("{words}\n\n{fence}\n{to}{}\n{fence}", c.run)
+            }
+            None => words,
+        };
+        let doc = (!shown.trim().is_empty()).then(|| match &self.body {
+            Some((text, doc)) if *text == shown => doc.clone(),
             _ => {
-                let doc = Rc::new(Doc::of(&it.body));
-                self.body = Some((it.body.clone(), doc.clone()));
+                let doc = Rc::new(Doc::of(&shown));
+                self.body = Some((shown.clone(), doc.clone()));
                 doc
             }
         });
@@ -716,6 +761,18 @@ impl AskCard {
         let it = self.item.clone();
         let can_answer = !it.owner_completes;
         let mut row = div().flex().flex_wrap().items_center().gap(u(8.));
+        if it.command.is_some() {
+            let on = !self.terminal.pending;
+            row = row.child(
+                key("terminal", Btn::Key, on, l, crate::asks::terminal::label())
+                    .gap(u(6.))
+                    .child(kit::keys(crate::asks::terminal::SHORTCUT, l).pt(px(1.)))
+                    .when(on, |b| b.on_click(cx.listener(|this, _, _, cx| this.open_command(cx)))),
+            );
+        }
+        if let Some(e) = &self.terminal.error {
+            row = row.child(action_error(e, l));
+        }
         if let Some(a) = &it.action {
             row = row.child(key("assist", Btn::Key, !self.assist.pending, l, a.label.clone()).when(!self.assist.pending, |b| b.on_click(cx.listener(|this, _, _, cx| this.assist(cx)))));
         }
@@ -1004,6 +1061,7 @@ impl Render for AskCard {
             .key_context("AskCard")
             .on_action(cx.listener(|this, _: &crate::commands::Approve, _, cx| this.key_approve(cx)))
             .on_action(cx.listener(|this, _: &crate::commands::Dismiss, _, cx| this.key_dismiss(cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::OpenCommand, _, cx| this.open_command(cx)))
             .flex()
             .flex_col()
             .gap(u(12.))

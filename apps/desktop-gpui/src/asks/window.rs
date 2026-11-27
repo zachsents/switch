@@ -45,6 +45,8 @@ pub struct AskWindow {
 pub enum Then {
     Approve,
     Dismiss,
+    /// Its command, in a terminal.
+    Terminal,
 }
 
 /// Opens an ask's window and answers it there, where its Undo shows: open already, at once.
@@ -152,6 +154,7 @@ impl AskWindow {
             c.update(cx, |c, cx| match then {
                 Then::Approve => c.key_approve(cx),
                 Then::Dismiss => c.key_dismiss(cx),
+                Then::Terminal => c.open_command(cx),
             });
         }
     }
@@ -216,6 +219,7 @@ impl Render for AskWindow {
             .key_context("AskWindow")
             .on_action(cx.listener(|this, _: &crate::commands::Approve, _, cx| this.then(Then::Approve, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::Dismiss, _, cx| this.then(Then::Dismiss, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::OpenCommand, _, cx| this.then(Then::Terminal, cx)))
             .on_action(cx.listener(|this, c: &crate::commands::Choose, _, cx| {
                 if let Some(card) = this.card.clone() {
                     card.update(cx, |card, cx| card.key_choose(c.0, cx));

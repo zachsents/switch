@@ -88,7 +88,8 @@ A widget is A2UI 1.0, drawn by every client in Switch's look, from two catalogs 
   calling its tools, a rule running while it plays; paused, one quiet line), `Document` (a
   document its extension reads: a line that opens it, and in its own window the reader, its words,
   lookups, threads and highlights from its tools), and charts that
-  take plain data: `BarChart` (grouped or `stacked`, `horizontal`), `LineChart`, `AreaChart`,
+  take plain data: `BarChart` (grouped or `stacked`, `horizontal`), `LineChart`, `AreaChart` (both
+  with `ticks`, the axis's words when not the labels, `max` and a red `limit` line),
   `Sparkline`, `DonutChart`, `ScatterChart`, `Histogram`, `CalendarHeatmap` and `Meter`.
 
 ```ts

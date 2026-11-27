@@ -97,6 +97,10 @@ pub struct Approve;
 #[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
 #[action(namespace = switch)]
 pub struct Dismiss;
+/// An ask's command, opened in a terminal on this Mac, on its row or in its window.
+#[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
+#[action(namespace = switch)]
+pub struct OpenCommand;
 /// A question's option, by its place (1 the first), in its window.
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = switch, no_json)]
@@ -224,6 +228,9 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s("Asks", "Dismiss", &["cmd-backspace"], Some("AskWindow && !TextField"), act!(Dismiss)),
         s("Asks", "Approve", &["cmd-enter"], Some("AskCard"), act!(Approve)),
         s("Asks", "Dismiss", &["cmd-backspace"], Some("AskCard && !TextField"), act!(Dismiss)),
+        s("Asks", "Open in Terminal", &["cmd-o"], Some("Rail"), act!(OpenCommand)),
+        s("Asks", "Open in Terminal", &["cmd-o"], Some("AskWindow"), act!(OpenCommand)),
+        s("Asks", "Open in Terminal", &["cmd-o"], Some("AskCard"), act!(OpenCommand)),
         own("Asks", "Choose an Option", "⌘1–⌘9"),
         s("Running", "Stop", &["cmd-backspace", "cmd-."], Some("Work"), act!(Dismiss)),
         s("Settings", "Next Section", &["ctrl-tab", "cmd-}"], Some("Settings"), act!(NextSection)),

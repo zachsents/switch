@@ -96,6 +96,13 @@ pub struct Portal {
     pub session: String,
 }
 
+/// A shell command the item asks the user to run, and its folder: opened in a terminal here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Command {
+    pub run: String,
+    pub cwd: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionItem {
     pub id: String,
@@ -114,6 +121,7 @@ pub struct ActionItem {
     pub app: Option<String>,
     pub sealed: Option<Sealed>,
     pub portal: Option<Portal>,
+    pub command: Option<Command>,
     /// Out of the user's queue while the agent reworks it.
     pub revising: bool,
     /// The user's own version of drafts, by name, saved as he edits (not an approval).
@@ -213,6 +221,7 @@ impl ActionItem {
             app: opt(raw, "app"),
             sealed: raw.get("sealed").and_then(|s| Some(Sealed { key: s.get("key")?.as_str()?.to_string(), usage: gs(s, "use") })),
             portal: raw.get("portal").and_then(|p| Some(Portal { app: p.get("app")?.as_str()?.to_string(), session: gs(p, "session") })),
+            command: raw.get("command").and_then(|c| Some(Command { run: c.get("run")?.as_str()?.to_string(), cwd: opt(c, "cwd") })).filter(|c| !c.run.trim().is_empty()),
             revising: raw.get("revising").is_some_and(|r| !r.is_null()),
             edits: texts_of(get(raw, "edits")),
             model: raw.get("model").and_then(|m| m.get("name").and_then(Value::as_str).or(m.as_str())).map(str::to_string),
@@ -595,6 +604,14 @@ mod check {
 
     #[derive(Deserialize)]
     #[allow(dead_code)]
+    struct Command {
+        run: String,
+        #[serde(default, deserialize_with = "some")]
+        cwd: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
     struct Revising {
         #[serde(default, deserialize_with = "some")]
         thread: Option<String>,
@@ -658,6 +675,8 @@ mod check {
         sealed: Option<Sealed>,
         #[serde(default, deserialize_with = "some")]
         portal: Option<Portal>,
+        #[serde(default, deserialize_with = "some")]
+        command: Option<Command>,
         #[serde(default, deserialize_with = "some")]
         revising: Option<Revising>,
         #[serde(default, deserialize_with = "some")]

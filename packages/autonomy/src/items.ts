@@ -81,6 +81,15 @@ export const ItemCheck = Schema.Struct({
   machine: Schema.optionalKey(Schema.String),
 })
 
+/**
+ * A shell command the item asks the user to run, and the folder it runs in (~ is home): the
+ * desktop opens it in a terminal on the Mac they're at, typed and waiting for their ↵.
+ */
+export const ItemCommand = Schema.Struct({
+  run: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+})
+
 const itemFields = Schema.Struct({
   id: ItemId,
   space: SpaceId,
@@ -130,6 +139,7 @@ const itemFields = Schema.Struct({
    */
   passkey: Schema.optionalKey(Schema.String),
   portal: Schema.optionalKey(Portal),
+  command: Schema.optionalKey(ItemCommand),
   /**
    * Out of the user's queue while the agent reworks it: not shown, counted or answerable, until a
    * revise without it, or the end of the work (`thread`) that set it. The user, Nov 22: "if you're

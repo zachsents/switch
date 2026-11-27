@@ -41,7 +41,9 @@ enum ChartAxes {
 
   /// Labels along an axis of places (0, 1, 2…), a line's points edge to edge.
   static func places(_ labels: [String]) -> some AxisContent {
-    AxisMarks(values: shown(labels.count)) { value in
+    // Given words with gaps between ("" for none), each that has words; else every so many.
+    let some = labels.indices.filter { !labels[$0].isEmpty }
+    return AxisMarks(values: some.count < labels.count ? some : shown(labels.count)) { value in
       AxisValueLabel(anchor: anchor(value.as(Int.self) ?? 0, of: labels.count)) {
         if let i = value.as(Int.self), i < labels.count {
           Text(labels[i]).font(SIS.text(SIS.Size.label)).foregroundStyle(SIS.ink3)

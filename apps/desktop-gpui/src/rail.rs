@@ -594,6 +594,11 @@ impl Rail {
             .on_action(cx.listener(|this, _: &crate::commands::PreviousRow, window, cx| this.step(-1, window, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::Approve, window, cx| this.act(true, window, cx)))
             .on_action(cx.listener(|this, _: &crate::commands::Dismiss, window, cx| this.act(false, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::commands::OpenCommand, window, cx| {
+                if let Some(ask) = this.focused(window).and_then(|id| id.strip_prefix("ask-").map(str::to_string)) {
+                    crate::asks::window::open_to(&ask, crate::asks::window::Then::Terminal, cx);
+                }
+            }))
             // Esc from a row: back to the box.
             .on_action(cx.listener(|this, _: &crate::commands::Escape, window, cx| {
                 if this.focused(window).is_some() {

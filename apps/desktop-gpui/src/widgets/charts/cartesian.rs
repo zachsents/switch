@@ -113,15 +113,17 @@ fn y_words(shown: &[Option<f32>], words: &[String], oy: f32, right: f32, l: &Loo
 /// `lo` to `hi`.
 #[allow(clippy::too_many_arguments)]
 fn x_words(p: &Plot, coords: &[f32], words: &[String], (lo, hi): (f32, f32), gap: f32, interval: Interval, l: &Look, window: &Window) -> Vec<Word> {
-    let lines: Vec<_> = words.iter().map(|w| parts::shape(w, parts::SMALL, l.ink3, false, l, window)).collect();
+    // Only words take room: a label with none (a chart's `ticks` between its words) is passed over.
+    let kept: Vec<usize> = (0..words.len()).filter(|i| !words[*i].is_empty()).collect();
+    let lines: Vec<_> = kept.iter().map(|&i| parts::shape(&words[i], parts::SMALL, l.ink3, false, l, window)).collect();
     let widths: Vec<f32> = lines.iter().map(|ln| f32::from(ln.width)).collect();
-    let shown = parts::ticks_shown(coords, &widths, (lo, hi), gap * k(l), interval);
+    let at: Vec<f32> = kept.iter().map(|&i| coords[i]).collect();
+    let shown = parts::ticks_shown(&at, &widths, (lo, hi), gap * k(l), interval);
     let baseline = parts::x_baseline(p.bottom(), l);
     lines
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| !words[*i].is_empty())
-        .filter_map(|(i, line)| shown[i].map(|at| Word { text: words[i].clone(), left: at - widths[i] / 2., baseline, line, over: true }))
+        .filter_map(|(j, line)| shown[j].map(|x| Word { text: words[kept[j]].clone(), left: x - widths[j] / 2., baseline, line, over: true }))
         .collect()
 }
 
@@ -656,6 +658,10 @@ fn active_dot(window: &mut Window, x: f32, y: f32, color: Hsla, l: &Look) {
 
 struct Trend {
     labels: Vec<String>,
+    /// The words along the bottom, one per label: the labels unless given.
+    ticks: Vec<String>,
+    /// A red line across at this value.
+    limit: Option<f64>,
     series: Vec<Series>,
     area: bool,
     stacked: bool,
@@ -737,7 +743,7 @@ impl Trend {
         let mut out = end_words(&placed, l, window);
         out.extend(y_words(&lay.shown, &self.words, origin.1, origin.0 + lay.axis_w - parts::TICK_OFF * s, l, window));
         let coords: Vec<f32> = (0..self.labels.len()).map(|i| self.x(&p, i)).collect();
-        out.extend(x_words(&p, &coords, &self.labels, (origin.0, origin.0 + w), LABEL_GAP, Interval::StartEnd, l, window));
+        out.extend(x_words(&p, &coords, &self.ticks, (origin.0, origin.0 + w), LABEL_GAP, Interval::StartEnd, l, window));
         out
     }
 
@@ -797,6 +803,10 @@ impl Trend {
                 }
             }
         }
+        // The limit, over the marks.
+        if let Some(v) = self.limit {
+            parts::hline(window, p.x, p.right(), p.y_of(&self.scale, v), l.w1.max(s), l.red);
+        }
         // The axes: the line along the bottom and their words.
         parts::hline(window, p.x, p.right(), p.bottom(), l.w1, l.line1);
         parts::paint_words(words, true, window, cx);
@@ -834,11 +844,22 @@ fn trend(c: &Value, ctx: &Ctx, area: bool, window: &mut Window, cx: &mut App) ->
             })
             .collect()
     };
-    let scale = scale::value_scale(&series, labels.len(), stacked, area);
+    let limit = c.get("limit").and_then(data::number_of);
+    let reach = [c.get("max").and_then(data::number_of), limit].into_iter().flatten().fold(None, |a: Option<f64>, v| Some(a.map_or(v, |a| a.max(v))));
+    let mut scale = scale::value_scale(&series, labels.len(), stacked, area);
+    // Held up to `max` and the limit: the axis then reaches them, from where it starts.
+    if let Some(top) = reach.filter(|t| *t > scale.domain.1) {
+        let (lo, _) = scale::extent_of(series.iter().flat_map(|s| s.values.iter().copied())).unwrap_or((0., 0.));
+        scale = scale::scale_of(lo.min(top), top, area || stacked, false);
+    }
+    let given = data::labels_of(&ctx.scope.prop(c, "ticks"));
+    let ticks = if given.len() == labels.len() { given } else { labels.clone() };
     let m = Rc::new(Trend {
         words: scale.ticks.iter().map(|t| tick(*t, &fig)).collect(),
         scale,
         height: height_of(ctx, c, parts::HEIGHT) * s,
+        ticks,
+        limit,
         labels,
         series,
         area,

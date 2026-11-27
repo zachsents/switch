@@ -27,7 +27,10 @@ enum Charts {
     let stacked = area && node.bool(for: "stacked") == true
     let series = ChartData.series(node.jsonValue(for: "series"), count: labels.count, sum: stacked)
     if !labels.isEmpty && ChartData.anyValue(series) {
-      TrendView(labels: labels, series: series, area: area, stacked: stacked, fig: Figures(node), height: height(node))
+      let ticks = ChartData.labels(node.jsonValue(for: "ticks"))
+      TrendView(
+        labels: labels, ticks: ticks.count == labels.count ? ticks : labels, series: series, area: area, stacked: stacked, fig: Figures(node),
+        top: node.double(for: "max"), limit: node.double(for: "limit"), height: height(node))
     }
   }
 
@@ -76,11 +79,12 @@ enum Charts {
   }
 
   private static let data = ["labels": "DynamicValue", "series": "DynamicValue"]
+  private static let trends = ["labels": "DynamicValue", "series": "DynamicValue", "ticks": "DynamicValue"]
 
   static let components: [ComponentImplementation] = [
     ComponentImplementation(name: "BarChart", schema: schema("BarChart", data)) { bars($0) },
-    ComponentImplementation(name: "LineChart", schema: schema("LineChart", data)) { trend($0, area: false) },
-    ComponentImplementation(name: "AreaChart", schema: schema("AreaChart", data)) { trend($0, area: true) },
+    ComponentImplementation(name: "LineChart", schema: schema("LineChart", trends)) { trend($0, area: false) },
+    ComponentImplementation(name: "AreaChart", schema: schema("AreaChart", trends)) { trend($0, area: true) },
     ComponentImplementation(name: "Sparkline", schema: schema("Sparkline", ["values": "DynamicValue"])) { sparkline($0) },
     ComponentImplementation(name: "DonutChart", schema: schema("DonutChart", ["slices": "DynamicValue"])) { donut($0) },
     ComponentImplementation(name: "ScatterChart", schema: schema("ScatterChart", ["series": "DynamicValue"])) { scatter($0) },

@@ -244,6 +244,12 @@ export interface LineChart extends Figures {
   readonly labels: Bound<readonly string[]>
   /** One to eight. */
   readonly series: Bound<readonly Series[]>
+  /** The words along the bottom, one per label ("" for none), when not the labels themselves. */
+  readonly ticks?: Bound<readonly string[]>
+  /** The value axis reaches at least this (100 for a share). */
+  readonly max?: number
+  /** A line across at this value, in red: a limit. */
+  readonly limit?: number
   readonly height?: number
 }
 
@@ -356,6 +362,12 @@ const lines = {
   series,
   height: Schema.optionalKey(px),
 }
+const trends = {
+  ...lines,
+  ticks: Schema.optionalKey(bound(Schema.Array(Schema.String))),
+  max: Schema.optionalKey(Schema.Finite),
+  limit: Schema.optionalKey(Schema.Finite),
+}
 
 /** Each part's properties, to check a component by. */
 export const SWITCH_PARTS: { readonly [K in keyof SwitchParts]: Schema.Codec<SwitchParts[K]> } = {
@@ -457,8 +469,8 @@ export const SWITCH_PARTS: { readonly [K in keyof SwitchParts]: Schema.Codec<Swi
     stacked: Schema.optionalKey(Schema.Boolean),
     horizontal: Schema.optionalKey(Schema.Boolean),
   }),
-  LineChart: Schema.Struct(lines),
-  AreaChart: Schema.Struct({ ...lines, stacked: Schema.optionalKey(Schema.Boolean) }),
+  LineChart: Schema.Struct(trends),
+  AreaChart: Schema.Struct({ ...trends, stacked: Schema.optionalKey(Schema.Boolean) }),
   Sparkline: Schema.Struct({
     values: bound(Schema.Array(Schema.Finite)),
     height: Schema.optionalKey(px),

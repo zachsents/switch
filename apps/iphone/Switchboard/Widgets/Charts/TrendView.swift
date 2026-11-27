@@ -7,10 +7,16 @@ import SwiftUI
 /// tap shows every series at a label, along a hairline.
 struct TrendView: View {
   let labels: [String]
+  /// The words along the bottom, one per label, "" for none.
+  let ticks: [String]
   let series: [ChartData.Series]
   let area: Bool
   let stacked: Bool
   let fig: Figures
+  /// The value axis reaches at least this.
+  let top: Double?
+  /// A red line across at this value.
+  let limit: Double?
   let height: CGFloat
 
   @State private var selected: Int?
@@ -49,7 +55,9 @@ struct TrendView: View {
   }
 
   private var scale: ChartScale {
-    ChartScale(points.flatMap { stacked ? [$0.value, $0.base] : [$0.value] }.map { Optional($0) }, zero: area)
+    let values = points.flatMap { stacked ? [$0.value, $0.base] : [$0.value] }
+    let reach = [top, limit].compactMap { $0 }
+    return ChartScale(values.map { Optional($0) } + reach.map { Optional($0) }, zero: area)
   }
 
   /// Each line's end, and whether there's room to label them all.
@@ -92,6 +100,9 @@ struct TrendView: View {
           }
         }
         RuleMark(y: .value("Value", 0)).foregroundStyle(SIS.rule).lineStyle(StrokeStyle(lineWidth: SIS.line))
+        if let limit {
+          RuleMark(y: .value("Value", limit)).foregroundStyle(SIS.stopped).lineStyle(StrokeStyle(lineWidth: SIS.line))
+        }
         ForEach(ends) { e in
           PointMark(x: .value("Label", e.at), y: .value("Value", e.value)).foregroundStyle(SIS.paper).symbolSize(144)
           PointMark(x: .value("Label", e.at), y: .value("Value", e.value))
@@ -116,7 +127,7 @@ struct TrendView: View {
       }
       .chartXScale(domain: 0...max(1, labels.count - 1), range: .plotDimension(startPadding: 0, endPadding: room))
       .chartYScale(domain: axis.lo...axis.hi, range: .plotDimension(startPadding: 0, endPadding: 8))
-      .chartXAxis { ChartAxes.places(labels) }
+      .chartXAxis { ChartAxes.places(ticks) }
       .chartYAxis { ChartAxes.values(axis, fig) }
       .chartLegend(.hidden)
       .chartTap { proxy, at in

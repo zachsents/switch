@@ -7,4 +7,5 @@ pub mod card;
 pub mod chat;
 mod files;
 mod portal;
+pub mod terminal;
 pub mod window;

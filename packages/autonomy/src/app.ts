@@ -58,6 +58,7 @@ import {
   CloseItem,
   Draft,
   ItemCheck,
+  ItemCommand,
   Portal,
   fieldsOf,
   FollowItem,
@@ -683,6 +684,8 @@ const itemInput = Schema.Struct({
   notify: Schema.optionalKey(Schema.Boolean),
   /** A live view on the card: the app whose screen it shows, and its session. */
   portal: Schema.optionalKey(Portal),
+  /** A shell command it asks them to run, and its folder: the card opens it in a terminal. */
+  command: Schema.optionalKey(ItemCommand),
   /** A deadline close by: the notification breaks through Focus. */
   urgent: Schema.optionalKey(Schema.Boolean),
   /** An open item's id: revise it in place. */
@@ -827,6 +830,7 @@ const controlOf = (input: ItemInput, was: ItemFields | null) => {
   const send = input.send ? itemCall(input.send) : was?.send
   const notify = input.notify ?? was?.notify
   const portal = input.portal ?? was?.portal
+  const command = input.command ?? was?.command
   return {
     ...(was?.action && { action: was.action }),
     ...(was?.completion && { completion: was.completion }),
@@ -835,6 +839,7 @@ const controlOf = (input: ItemInput, was: ItemFields | null) => {
     ...closingOf(input, was),
     ...(notify !== undefined && { notify }),
     ...(portal && { portal }),
+    ...(command && { command }),
   }
 }
 
@@ -1090,6 +1095,7 @@ const item = tool(
       "Put something in the user's queue: only what needs them, after you've taken it as far as you can without them. " +
       "kind: task (Done), question (options as keys and/or a typed answer), approval (Approve runs `send`, the committal call, with `drafts` as they left them; put every message you'd send for them in drafts and `{{draft:name}}` in send's args). " +
       'For an approval receipt an extension tool returns (its result.ask), pass it entire in `ask`; do not rebuild it or create another draft. links: navigation buttons. attachments: files on the card, each its `path` on this machine (stored so every device opens it) and name. When it leaves them a step outside Switch (a setting, an approval elsewhere, a sign-in, a payment, something by hand) that a command or a record can see done, give it a way to close itself, so they never tap Done just to tell you: check, a sh command that succeeds once it\'s done (`ssh -o BatchMode=yes -o ConnectTimeout=10 user@host true`), run every 10 s on `machine` (the core\'s own by default) until it does; or resolve_when, a query that finds something once they\'ve done it (entities | where id == "device:studio" and facts.accessibility == true). The item then closes itself and you hear about it. Either must not hold yet when you ask. notify: false for no notification. portal: a live view of the Mac an app runs on, about one of its sessions ({"app": "<app>", "session": "<session>"}), which the user drives from the card; the app\'s own instructions say when. ' +
+      "command: whenever it asks them to run something in a terminal, the shell line as {run, cwd?} (cwd its folder, ~ for home), not in the body: the card shows it and opens it in a terminal on the Mac they're at, typed and waiting for their ↵; give it a check too when its effect can be seen. " +
       "Give `id` to revise an open item in place. " +
       "A revision that drops words the user wrote in its drafts comes back listing them. " +
       "Take an item out of their queue while you rework it (`id` and `revising: true`), and put it back when it's ready: revise it. " +

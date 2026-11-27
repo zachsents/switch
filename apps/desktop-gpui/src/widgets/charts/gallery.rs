@@ -174,6 +174,19 @@ pub fn fixtures() -> Vec<(&'static str, Vec<Fixture>)> {
                 ),
                 f("area-stacked", "Stacked", json!({ "component": "AreaChart", "labels": MONTHS, "series": many(3, 12), "stacked": true })),
                 f("area-folded", "Ten stacked", json!({ "component": "AreaChart", "labels": MONTHS, "series": many(10, 12), "stacked": true })),
+                f(
+                    "area-limit",
+                    "Up to a limit",
+                    json!({
+                        "component": "AreaChart",
+                        "labels": (0..=24).map(|h| format!("{h}:00")).collect::<Vec<_>>(),
+                        "ticks": (0..=24).map(|h| if h % 6 == 0 && h > 0 { format!("{h}:00") } else { String::new() }).collect::<Vec<_>>(),
+                        "series": [{ "name": "Used", "values": (0..=24).map(|h| if h > 16 { Value::Null } else { json!(((h % 8) as f64 * 11.).min(100.)) }).collect::<Vec<_>>() }],
+                        "suffix": "%",
+                        "max": 100,
+                        "limit": 100,
+                    }),
+                ),
             ],
         ),
         (

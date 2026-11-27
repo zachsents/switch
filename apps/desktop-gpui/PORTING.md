@@ -130,7 +130,7 @@ detail.
 | `mainview/ui/action-error.tsx` | 2 | `settings/parts.rs` (`action_error`) | done: `role=alert` (VoiceOver reaches it by its words) |
 | `mainview/ui/activity-row.tsx` | 3 | `rail.rs` (`activity_row`) | done |
 | `mainview/ui/ask-answer.tsx` | 2 | `asks/card.rs` | done: a field's hairline ink3 while it has the keyboard (a draft's box while its field does), the whole box the click, a draft's label too; an option's files by its index as a number (`===`), each files row its own sideways scroll; errors are alerts, read out as they show |
-| `mainview/ui/ask-card.tsx` | 2 | `asks/card.rs` | done: the age again every 30 s (`useNow`); title and words selectable as one, the words in ink2; what's held and the brain's reason for refusing it are the card's own |
+| `mainview/ui/ask-card.tsx` | 2 | `asks/card.rs` | done: the age again every 30 s (`useNow`); title and words selectable as one, the words in ink2; what's held and the brain's reason for refusing it are the card's own; new here: an item's `command` shows as code under its words, and Open in Ghostty ⌘O (Open in Terminal where Ghostty isn't installed) opens it typed, waiting for ↵, through this Mac's ghostty extension, else Terminal from the app (`asks/terminal.rs`), its folder as a `cd` line in the code |
 | `mainview/ui/ask-decided.tsx` | 2 | `asks/card.rs` | done |
 | `mainview/ui/ask-ending.tsx` | 2 | `asks/card.rs`, `asks/chat.rs` | done |
 | `mainview/ui/ask-files.tsx` | 2 | `asks/files.rs` | done |

@@ -15,10 +15,11 @@ import { BASIC_CATALOG, defineApp, SWITCH_CATALOG, tool } from "switch-ext-kit"
 import { Effect } from "effect"
 
 import { CoreConfig } from "./config.ts"
-import { CatalogUpdated, profilesState } from "./profiles.ts"
+import { CatalogUpdated } from "./profiles.ts"
 import { RELEASE } from "./release.ts"
 import { Runtime } from "./runtime.ts"
 import type { MachineView } from "./runtime.ts"
+import { accountNames, USAGE_REFRESH, usageA2ui, UsageInput, usageRead } from "./usage.ts"
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
@@ -30,8 +31,6 @@ const HIGH_MEMORY_PCT = 80
 const STALL_SHOWN_MS = 2 * HOUR
 /** What's wrong, said beside a part's name: its first clause, the whole on hover. */
 const GIST = 60
-/** An account's name, beside its figures. */
-const NAME = 26
 /** The nightly backup missed once and a bit. */
 const BACKUP_LATE_MS = 30 * HOUR
 /** An iPhone build is the minute it was made since the epoch (scripts/ios.sh): one past 2020's.
@@ -61,7 +60,7 @@ const when = (at: number, now: number) => {
 }
 
 /** A time ahead: its clock time today, else its weekday and hour. */
-const until = (at: number, now: number) => {
+export const until = (at: number, now: number) => {
   const d = new Date(at)
   return d.toDateString() === new Date(now).toDateString()
     ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
@@ -180,45 +179,13 @@ const said = (s: Surprise, name: string) => {
 
 const markOf = (s: Surprise): Mark => (s.kind === "stopped" ? "stop" : "warn")
 
-/** A name longer than a line holds, cut in its middle: an email keeps its start and its domain. */
-const middle = (text: string, max = NAME) => {
-  if (text.length <= max) {
-    return text
-  }
-  const head = Math.ceil((max - 1) / 2)
-  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`
-}
-
-/** Each login's email as the catalog has it, by its id and the ids found the same account. */
-const emailsOf = (db: Database) => {
-  const emails = new Map<string, string>()
-  for (const a of profilesState(db).accounts) {
-    if (a.email !== undefined && a.email !== null && a.email !== "") {
-      for (const host of [a.host, ...(a.same ?? [])]) {
-        emails.set(host, a.email)
-      }
-    }
-  }
-  return emails
-}
-
-const accountLine = (
-  a: Account,
-  email: string | undefined,
-  shared: boolean,
-  now: number,
-): Line | null => {
+const accountLine = (a: Account, label: string, now: number): Line | null => {
   const limited = a.limitedUntil > now
   const down = !a.up && !limited ? "Down" : undefined
   const fails = a.problem === "" ? down : a.problem
   if (a.windows.length === 0 && !limited && fails === undefined) {
     return null
   }
-  const [provider = a.host, ...rest] = a.host.split("-")
-  const name = `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`
-  // By the email its login reports (with its provider when another's login has it too), else its id.
-  const id = a.host.includes(":") ? a.host : [name, ...rest].join(" ")
-  const label = email === undefined ? id : middle(shared ? `${name} ${email}` : email)
   const windows = a.windows.map((w) => {
     const span = w.name.replace("five_hour", "5h").replace("seven_day", "7d")
     return `${span} ${Math.round(w.used * 100)}%`
@@ -408,17 +375,9 @@ export const statusOf = (
     )
   })
 
-  const emails = emailsOf(db)
   const listed = allAccounts(db)
-  const accounts = listed.flatMap((a) => {
-    const email = emails.get(a.host)
-    const shared =
-      email !== undefined &&
-      listed.some(
-        (b) => b.host !== a.host && b.provider !== a.provider && emails.get(b.host) === email,
-      )
-    return accountLine(a, email, shared, now) ?? []
-  })
+  const named = accountNames(db, listed)
+  const accounts = listed.flatMap((a) => accountLine(a, named.get(a.host) ?? a.host, now) ?? [])
 
   // What's wrong that no part owns. A promise or a watch of the agent's (`broken:`) is its own
   // work, not a part of Switch, and isn't here.
@@ -487,12 +446,37 @@ const status = tool(
     }),
 )
 
+const usage = tool(
+  "usage",
+  {
+    description:
+      "Each account's 5-hour and 7-day usage limits over time, as graphs: the share used up to now, when each window resets, and which accounts are signed out or at a limit. `accounts` picks some by email or id; `span` reaches back a day, a week or a month instead of the window.",
+    readOnly: true,
+    input: UsageInput,
+  },
+  (input) =>
+    Effect.gen(function* reading() {
+      const brain = yield* Brain
+      return yield* brain.read(usageRead, input, Date.now())
+    }),
+)
+
 export const statusApp = defineApp<Brain | CoreConfig | Runtime>({
   name: "system",
   version: "1",
   instructions: "Switch's own parts and how each stands.",
-  tools: [status],
+  tools: [status, usage],
   widgets: [
+    {
+      name: "usage",
+      title: "Usage",
+      surfaces: ["space"],
+      resource: "ui://system/usage",
+      tool: "usage",
+      refresh: USAGE_REFRESH,
+      size: { aspect: "auto" },
+      a2ui: usageA2ui,
+    },
     {
       name: "status",
       title: "Status",
