@@ -160,6 +160,10 @@ const answersOf = (endpoint: keyof typeof requests, reply: unknown): Record<stri
 }
 
 export interface ModelsShape {
+  /** The model a role's work runs on now: a gateway role runs on a subscription without the key. */
+  readonly routed: (role: Role) => Effect.Effect<Model>
+  /** Whether the gateway's key is here: embeddings and pictures run on the gateway alone. */
+  readonly keyed: Effect.Effect<boolean>
   /** Asks the role's decision model every question about one input, in one call. */
   readonly decide: (
     input: Input,
@@ -604,7 +608,21 @@ const make = Effect.fnUntraced(function* making(profile: Profile | Effect.Effect
       return yield* new ModelError({ reason: `No gateway image model ${model}` })
     })
 
-  return { decide, complete, completeOn, embed, image } satisfies ModelsShape
+  const routedRole: ModelsShape["routed"] = (role) =>
+    (Effect.isEffect(profile) ? profile : Effect.succeed(profile)).pipe(
+      Effect.flatMap((p) => routed(p.roles[role])),
+    )
+  const keyed = Effect.exit(key).pipe(Effect.map(Exit.isSuccess))
+
+  return {
+    routed: routedRole,
+    keyed,
+    decide,
+    complete,
+    completeOn,
+    embed,
+    image,
+  } satisfies ModelsShape
 })
 
 export class Models extends Context.Service<Models, ModelsShape>()("switch/Models") {

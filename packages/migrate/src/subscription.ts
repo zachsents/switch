@@ -171,6 +171,9 @@ export const subscriptionModels = (model: string, budgetUsd: number, ledger: str
         })
 
       const shape: ModelsShape = {
+        // Every role on `claude -p`, with the model it was given.
+        routed: () => Effect.succeed({ provider: "claude-code", id: model }),
+        keyed: Effect.succeed(false),
         complete: (_role, system, prompt) => run(system, prompt),
         completeOn: (_model, system, prompt) => run(system, prompt),
         // A decision model's yes/no questions, asked of the model in one call as probabilities.

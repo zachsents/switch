@@ -5,9 +5,9 @@
 import type { Database } from "bun:sqlite"
 import { allAccounts } from "@switch/agent"
 import type { Account } from "@switch/agent"
-import { defineRead } from "@switch/brain"
-import { BASIC_CATALOG, SWITCH_CATALOG } from "switch-ext-kit"
-import { Schema } from "effect"
+import { Brain, defineRead } from "@switch/brain"
+import { BASIC_CATALOG, defineApp, SWITCH_CATALOG, tool } from "switch-ext-kit"
+import { Effect, Schema } from "effect"
 
 import { CatalogUpdated, profilesState } from "./profiles.ts"
 
@@ -324,14 +324,14 @@ const usageOf = (db: Database, input: UsageInput, now: number) => {
 }
 
 /** The accounts' graphs, as of `now`. */
-export const usageRead = defineRead("core/usage/usage", usageOf)
+const usageRead = defineRead("core/usage/usage", usageOf)
 
 /** What changes the graphs: a reading, an account gone, the emails the catalog finds. */
-export const USAGE_REFRESH = ["account.state", "account.removed", CatalogUpdated.type]
+const USAGE_REFRESH = ["account.state", "account.removed", CatalogUpdated.type]
 
 /** A line per account, its name and its trouble; under it a column per window, its name and when
  * it resets over its graph, the share used up to the limit. */
-export const usageA2ui = () => [
+const usageA2ui = () => [
   { version: "1.0", createSurface: { surfaceId: "usage", catalogId: SWITCH_CATALOG } },
   {
     version: "1.0",
@@ -381,3 +381,37 @@ export const usageA2ui = () => [
     },
   },
 ]
+
+const usage = tool(
+  "usage",
+  {
+    description:
+      "Each account's 5-hour and 7-day usage limits over time, as graphs: the share used up to now, when each window resets, and which accounts are signed out or at a limit. `accounts` picks some by email or id; `span` reaches back a day, a week or a month instead of the window.",
+    readOnly: true,
+    input: UsageInput,
+  },
+  (input) =>
+    Effect.gen(function* reading() {
+      const brain = yield* Brain
+      return yield* brain.read(usageRead, input, Date.now())
+    }),
+)
+
+export const usageApp = defineApp<Brain>({
+  name: "system",
+  version: "1",
+  instructions: "Switch's own accounts' usage limits.",
+  tools: [usage],
+  widgets: [
+    {
+      name: "usage",
+      title: "Usage",
+      surfaces: ["space"],
+      resource: "ui://system/usage",
+      tool: "usage",
+      refresh: USAGE_REFRESH,
+      size: { aspect: "auto" },
+      a2ui: usageA2ui,
+    },
+  ],
+})

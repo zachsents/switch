@@ -13,7 +13,6 @@ import {
   allLogins,
   canInstallClaude,
   cliCommand,
-  cliDirectory,
   cliVersion,
   Hosts,
   installClaude,
@@ -150,31 +149,41 @@ const make = Effect.gen(function* making() {
       }),
     { concurrency: 4, discard: true },
   )
-  // The CLI's own login on this machine, when the CLI is the one Providers installed (a new Mac):
-  // nothing signed it in but the CLI itself, so a turn on it before then would fail as signed out.
-  // A CLI the user installed keeps its login as it is: what it's run with (a token in the
-  // environment, say) may sign it in where its status alone doesn't.
+  // The CLI's own login on this machine takes turns while its CLI says it's signed in: a turn on
+  // it otherwise fails as signed out, and the user's message with it. Its status runs as its turns
+  // do (the same environment, tokens in it included), and is read again each minute, so signing
+  // it in or out at the CLI is felt without a restart. A status it didn't print judges nothing.
   const checkOwn = (provider: LoginProvider) =>
     Effect.gen(function* checkingOwn() {
       const cli = command(provider)
       const own = hosts.get(provider)
       if (
         cli === null ||
-        path.dirname(cli) !== cliDirectory(c.dir) ||
         own === undefined ||
         own.machine.id !== c.machine ||
         own.lent === true ||
         own.configDir !== undefined ||
+        own.token !== undefined ||
         providerOf(own) !== provider
       ) {
         return
       }
-      if ((yield* ownSignedIn(provider, cli)) === false) {
+      const signed = yield* ownSignedIn(provider, cli)
+      const state = (yield* hosts.states).find((s) => s.account === hosts.account(provider))
+      const out = state?.problem === "Signed out"
+      if (signed === false && !out) {
         yield* hosts.limit(provider, Number.MAX_SAFE_INTEGER, "Signed out")
+        yield* report(provider)
+      } else if (signed === true && out) {
+        yield* hosts.limit(provider, 0)
         yield* report(provider)
       }
     })
-  yield* Effect.forEach(LOGIN_PROVIDERS, checkOwn, { discard: true })
+  const checkAllOwn = Effect.forEach(LOGIN_PROVIDERS, checkOwn, { discard: true })
+  yield* checkAllOwn
+  yield* Effect.forkScoped(
+    Effect.forever(Effect.andThen(Effect.sleep("1 minute"), Effect.ignore(checkAllOwn))),
+  )
   // Each account added here goes to every machine linked in, lent: its own home there, its login
   // the core's. hosts.add and hosts.remove lend again.
   yield* hosts.lend((machine) =>

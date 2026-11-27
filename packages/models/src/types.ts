@@ -2,7 +2,12 @@ import { Schema } from "effect"
 
 export class ModelError extends Schema.TaggedError<ModelError>()("ModelError", {
   reason: Schema.String,
-}) {}
+}) {
+  /** Its reason, so a log of it says what went wrong. */
+  override get message() {
+    return this.reason
+  }
+}
 
 export interface Choice {
   readonly value: string

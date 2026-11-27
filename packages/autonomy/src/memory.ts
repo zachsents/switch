@@ -453,6 +453,10 @@ const unembeddedRead = defineRead("autonomy/memory/unembedded", (db) => {
 export const embedMissing = Effect.gen(function* embedding() {
   const brain = yield* Brain
   const models = yield* Models
+  // Without the gateway's key there are no vectors: recall reads by full text alone.
+  if (!(yield* models.keyed)) {
+    return { embedded: 0, cost: 0 }
+  }
   // The table is made here, the one place that writes it, so the reads stay reads.
   yield* brain.migrate((db) => db.run(VECTORS))
   const todo = yield* brain.read(unembeddedRead)

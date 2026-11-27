@@ -115,6 +115,11 @@ export const effortOf = (
 ) =>
   Effect.gen(function* deciding() {
     const models = yield* Models
+    // Only a gateway model answers within the budget: a subscription's session takes longer to
+    // start, so it would only be started and cut off.
+    if ((yield* models.routed("decision")).provider !== "gateway") {
+      return { effort: user.fallback, cost: 0 }
+    }
     const item = [user.rules, `Their default effort: ${user.fallback}`, `Message: ${text}`]
       .filter((s) => s !== "")
       .join("\n\n")

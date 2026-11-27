@@ -268,11 +268,14 @@ const CUT = "Your last turn was cut off when its host restarted. Pick up where i
 // it started outside the turn went with the old core's processes.
 const PAUSE =
   "Your last turn was paused for an update to Switch, which is live now. Anything you left running (background commands, servers, watchers) may have stopped: check before carrying on. Pick up where it left off."
+// A turn whose login turned out signed out carries on the same way on another account.
+const SIGNED_OUT_CUT =
+  "Your last turn's account turned out to be signed out, and it carries on here on another. Pick up where it left off."
 // A turn moved to another profile carries on the same way, at once (`move`).
 const MOVE =
   "Your last turn was moved to another model profile partway, and carries on here. Pick up where it left off, without redoing what's done."
 /** What a carried-on turn's wake opens with. */
-const CARRIED = [LIMIT_CUT, CUT, PAUSE, MOVE]
+const CARRIED = [LIMIT_CUT, CUT, PAUSE, MOVE, SIGNED_OUT_CUT]
 /** A process ended by SIGTERM or SIGKILL, or with its host's link (remote.ts ends those with -1). */
 const SIGNALLED = new Set([143, 137, -1])
 /** How often work waiting for a host looks again: an account's limit may lift, its machine link back, or the profile change. A cut turn's carry-on waits for it too, so the core serves its tools first. */
@@ -315,10 +318,31 @@ const cutsInARow = (db: Database, thread: ThreadId) => {
   return n
 }
 
+// A login that isn't signed in, as a turn on it ends.
+const SIGNED_OUT =
+  /isn't signed in|not logged in|please run \/login|invalid api key|authentication required|failed to authenticate|oauth session expired/iu
+
+/** Whether the thread's last turn before this one also failed on a login that was signed out. */
+const signedOutBefore = (db: Database, thread: ThreadId) => {
+  const last = db
+    .query<{ status: string; result: string }, [string]>(
+      `SELECT json_extract(payload, '$.status') AS status, json_extract(payload, '$.result') AS result
+       FROM events WHERE type = 'turn.ended' AND json_extract(payload, '$.thread') = ?
+       ORDER BY seq DESC LIMIT 1`,
+    )
+    .get(thread)
+  return last !== null && last.status === "failed" && SIGNED_OUT.test(last.result)
+}
+
 /** What a turn that ended this way carries on with, if it does. */
 const carryWhy = (db: Database, thread: ThreadId, end: Ended) => {
   if (end.status === "limited") {
     return LIMIT_CUT
+  }
+  // Its login was signed out: another account takes it, once, so a turn every login fails on
+  // ends rather than going round.
+  if (end.status === "failed" && SIGNED_OUT.test(end.result)) {
+    return signedOutBefore(db, thread) ? null : SIGNED_OUT_CUT
   }
   if (end.status !== "interrupted") {
     return null
@@ -441,9 +465,6 @@ const claudeOnly = (): Subscription => "claude"
 
 /** A session on a lapsing token takes no new turn with less than this left of it. */
 const FRESH_MS = 2 * 60 * MINUTE
-
-const SIGNED_OUT =
-  /isn't signed in|not logged in|please run \/login|invalid api key|authentication required/iu
 
 // The API refused the session itself (a bad id in it, say): every turn on it fails the same way.
 const BROKEN_SESSION = /API Error: 400 messages\./u
@@ -769,7 +790,8 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
         yield* close(live)
         yield* limit(live.host.id, end.resetAt ?? Date.now() + 15 * MINUTE)
       } else if (end.status === "failed" && SIGNED_OUT.test(end.result)) {
-        // The login can't run turns until the user signs it in; others take its threads meanwhile.
+        // The login can't run turns until the user signs it in; others take its threads meanwhile,
+        // this one's included (its end recorded its carry-on).
         yield* close(live)
         yield* hosts.limit(live.host.id, Date.now() + 10 * MINUTE, "Signed out")
         yield* report(live.host.id)

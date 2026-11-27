@@ -116,7 +116,7 @@ import { makeHost } from "./host.ts"
 import { notifier, notifyConfig } from "./notify.ts"
 import { reportsConfig } from "./reports.ts"
 import { scriptsApp } from "./scripts-app.ts"
-import { statusApp } from "./status.ts"
+import { usageApp } from "./usage.ts"
 import { eventsRoute, scriptsConfig, scriptsRetire } from "./scripts.ts"
 import { itemChecks } from "./item-checks.ts"
 import { takeInLayer } from "./take-in.ts"
@@ -362,9 +362,10 @@ const layerGateway = Layer.unwrap(
     const plug = yield* inProcess(phone.app)
     const inbox = yield* inProcess(inboxApp)
     const history = yield* inProcess(historyApp)
+    const usage = yield* inProcess(usageApp)
     const brain = yield* Brain
     return Gateway.layer({
-      plugs: [autonomy, connections, logins, skills, plug, inbox, history],
+      plugs: [autonomy, connections, logins, skills, plug, inbox, history, usage],
       enrich: yield* enrich,
       // Every call that speaks for the user, an agent's or an extension's, through the outbound
       // gate.
@@ -391,16 +392,6 @@ const layerScriptsApp = Layer.effectDiscard(
     const gateway = yield* Gateway
     const runtime = yield* Runtime
     const app = yield* inProcess(scriptsApp).pipe(Effect.provideService(Runtime, runtime))
-    yield* Effect.forkScoped(gateway.keep(app))
-  }),
-)
-
-// Switch's own parts read the hosts' runs too.
-const layerStatusApp = Layer.effectDiscard(
-  Effect.gen(function* statusPlug() {
-    const gateway = yield* Gateway
-    const runtime = yield* Runtime
-    const app = yield* inProcess(statusApp).pipe(Effect.provideService(Runtime, runtime))
     yield* Effect.forkScoped(gateway.keep(app))
   }),
 )
@@ -720,7 +711,6 @@ export const layerServer = (
     layerBrainApp,
     pictureRedaction,
     layerScriptsApp,
-    layerStatusApp,
     layerWorkers,
     stallsWatch,
     layerPagesListener,

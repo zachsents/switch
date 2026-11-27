@@ -135,23 +135,33 @@ const TAILSCALE = [
   "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
 ].find((p) => existsSync(p))
 
-const dnsName = Schema.decodeUnknownOption(
+const selfOf = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ Self: Schema.Struct({ DNSName: Schema.String }) })),
 )
 
-/** Tailscale's name for this machine, else its host name. */
-const machineName = () => {
-  const fallback = hostname().split(".")[0] ?? "local"
+/** A DNS name's first label, or null when it has none. */
+const firstLabel = (name: string) => {
+  const [first = ""] = name.split(".")
+  return first === "" ? null : first
+}
+
+/**
+ * This machine's name on its tailnet, or null when it's on none: Tailscale absent, logged out or
+ * stopped (its DNS name empty then), or not answering.
+ */
+const tailnetName = () => {
   if (TAILSCALE === undefined) {
-    return fallback
+    return null
   }
   const done = Bun.spawnSync([TAILSCALE, "status", "--self", "--json"], { stderr: "ignore" })
-  const found = dnsName(done.stdout.toString())
-  return Option.match(found, {
-    onNone: () => fallback,
-    onSome: (v) => v.Self.DNSName.split(".")[0] ?? fallback,
+  return Option.match(selfOf(done.stdout.toString()), {
+    onNone: () => null,
+    onSome: (v) => firstLabel(v.Self.DNSName),
   })
 }
+
+/** This machine as an address can name it: its tailnet name, else its host name. */
+const hereName = () => tailnetName() ?? firstLabel(hostname()) ?? "localhost"
 
 // Compiled, this binary is bun too, with BUN_BE_BUN set; under bun, bun is what runs it.
 const compiled = Bun.main.startsWith("/$bunfs/")
@@ -198,9 +208,8 @@ const load = Effect.gen(function* loading() {
   )
   const canary = yield* Config.Boolean("SWITCH_CANARY").pipe(Config.withDefault(false))
   const reachable = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host
-  const machine = yield* Config.String("SWITCH_MACHINE").pipe(
-    Config.withDefault(f.machine ?? machineName()),
-  )
+  const here = hereName()
+  const machine = yield* Config.String("SWITCH_MACHINE").pipe(Config.withDefault(f.machine ?? here))
   return {
     host,
     port,
@@ -218,7 +227,8 @@ const load = Effect.gen(function* loading() {
     provides: [osName(), ...hardware(), ...(f.provides ?? [])],
     core: yield* Config.String("SWITCH_CORE").pipe(Config.withDefault(f.core ?? null)),
     local: `http://${reachable}:${port}`,
-    pagesUrl: f.pages?.url ?? `http://${machine}:${port}`,
+    // Never the machine's name as the user gave it ("Zoe's Mac"), which an address can't hold.
+    pagesUrl: f.pages?.url ?? `http://${here}:${port}`,
     pagesPort: f.pages?.port ?? null,
   } satisfies CoreConfigShape
 })
