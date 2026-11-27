@@ -631,7 +631,7 @@ const contextOf = (
     quote === null || quote === undefined ? "" : passageOf(s, quote),
     `<document-excerpt>\n${aroundOf(s, quote?.section ?? 0)}\n</document-excerpt>`,
     "Answer in Markdown (math as $…$ or $$…$$), as briefly as the question allows.",
-    "When your answer settles something worth keeping beside the passage (what a term means, an idea explained, where to read more), also pin it there as one note with reader_annotate: kind `definition`, `callout` or `link`, `term` as the text writes it, `text` a sentence or two, plain and specific (no preamble, no restating the question). When nothing is settled, no note.",
+    "When your answer settles something worth keeping beside the passage (what a term means, an idea explained, where to read more), also pin it there as one note with reader_annotate: kind `definition`, `callout` or `link`, `term` as the text writes it, `text` one plain, specific sentence of at most 25 words (no preamble, no restating the question). When nothing is settled, no note.",
     noted.length === 0
       ? ""
       : `This thread's notes (reader_edit_note to change one rather than add another):\n${noted.map((n) => `${lineOf(n)} (${n.id})`).join("\n")}`,
@@ -889,7 +889,7 @@ const annotate = tool(
   "annotate",
   {
     description:
-      "Pins a short note to a passage of a document, shown in its margin and beside the first mention of its `term` in other documents: `definition` (what a term means), `callout` (an idea explained) or `link` (where to read more, its `url`). Only for what the user asked: in a reader thread's turn, once the thread has settled something worth keeping (the thread is that turn's own unless `thread` names one; the passage is the thread's, or `passage`, words in it or in the document), or when the user asks for a note (`doc` and `passage`). Never on your own. `text` is a sentence or two of Markdown, plain and specific; `term` as the document writes it.",
+      "Pins a short note to a passage of a document, shown in its margin and beside the first mention of its `term` in other documents: `definition` (what a term means), `callout` (an idea explained) or `link` (where to read more, its `url`). Only for what the user asked: in a reader thread's turn, once the thread has settled something worth keeping (the thread is that turn's own unless `thread` names one; the passage is the thread's, or `passage`, words in it or in the document), or when the user asks for a note (`doc` and `passage`). Never on your own. `text` is one plain, specific sentence of Markdown, at most 25 words; `term` as the document writes it.",
     closed: true,
     input: Schema.Struct({
       kind: NoteKind,

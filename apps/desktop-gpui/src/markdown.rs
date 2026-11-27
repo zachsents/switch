@@ -748,7 +748,14 @@ pub struct Mark {
 pub struct Reading {
     pub marks: Box<dyn Fn((u64, u32), &str) -> Vec<Mark>>,
     pub on_mark: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    /// What's beside each top block: given its entry's order, its runs' keys, the room above it and
+    /// the block, the row it goes in.
+    pub margin: Option<Margin>,
+    /// Where the named marks' first lines are drawn, once they are.
+    pub spots: Option<crate::select::Spots>,
 }
+
+pub type Margin = Box<dyn Fn(u64, Range<u32>, gpui::Rems, AnyElement, &mut Window, &mut App) -> AnyElement>;
 
 /// Runs split where marks start and end, the marked parts washed.
 fn washed(runs: Vec<TextRun>, marks: &[Mark]) -> Vec<TextRun> {
@@ -857,11 +864,19 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
     }
     let id = SharedString::from(format!("{}.w{}", cx.id, key.1));
     let math: Vec<_> = w.text.char_indices().filter_map(|(i, c)| crate::math::formula_of(c, &cx.formulas).map(|f| (i, f.clone(), color))).collect();
-    let text = if math.is_empty() {
+    let mut text = if math.is_empty() {
         SelText::new(id, key, &cx.sel, SharedString::from(w.text.clone()), Some(runs))
     } else {
         SelText::new(id, key, &cx.sel, SharedString::from(w.text.clone()), Some(runs.clone())).math(math, Some(runs))
     };
+    if let Some(to) = cx.reading.as_ref().and_then(|r| r.spots.clone()) {
+        // Its second character's place: where a line wraps, its first's can be the line above's end.
+        let second = |r: &Range<usize>| w.text.get(r.clone()).and_then(|t| t.chars().next()).map_or(r.start, |c| (r.start + c.len_utf8()).min(r.end));
+        let spots: Vec<_> = marks.iter().filter_map(|m| Some((m.id.clone()?, second(&m.range)))).collect();
+        if !spots.is_empty() {
+            text = text.spots(spots, to);
+        }
+    }
     if links.is_empty() {
         return text.into_any_element();
     }
@@ -909,199 +924,204 @@ fn margins(b: &Block, reading: bool) -> (f32, f32) {
     }
 }
 
+fn above((list, i): (&[Block], usize), cx: &Ctx) -> f32 {
+    let reading = cx.reading.is_some();
+    if cx.cell { 0. } else { i.checked_sub(1).map(|j| margins(&list[j], reading).1.max(margins(&list[i], reading).0)).unwrap_or(0.) }
+}
+
 fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, window: &mut Window, app: &mut App) -> Vec<AnyElement> {
-    list.iter()
-        .enumerate()
-        .map(|(i, b)| {
-            // Margins between blocks collapse, as a page's do: the larger of the two; none at the
-            // ends (`first:mt-0 last:mb-0`).
-            let reading = cx.reading.is_some();
-            let above = if cx.cell { 0. } else { i.checked_sub(1).map(|j| margins(&list[j], reading).1.max(margins(b, reading).0)).unwrap_or(0.) };
-            // In a cell, each block's own inset and space (text.tsx's components).
-            let inset = |d: gpui::Div| if cx.cell { d.mx(u(8.)).my(u(4.)) } else { d };
-            let gap = |d: gpui::Div, _: f32| d.when(above > 0., |d| d.mt(u(above)));
-            let first = i == 0;
-            let last = i + 1 == list.len();
-            match b {
-                Block::Para(w) | Block::Plain(w) if crate::math::alone(&w.text, &cx.formulas).is_some() => {
-                    let shown = math_block(w, n, cx, l, color, window, app);
-                    inset(gap(div(), 8.)).child(shown).into_any_element()
-                }
-                Block::Para(w) if cx.cell => div().px(u(8.)).py(u(4.)).child(words(w, n, cx, l, false, color)).into_any_element(),
-                Block::Heading(_, w, more) if cx.cell => {
-                    let more = blocks(more, n, cx, l, color, window, app);
-                    div().flex().flex_col().child(div().flex().items_center().min_h(u(24.)).px(u(8.)).child(words(w, n, cx, l, true, l.ink))).children(more).into_any_element()
-                }
-                Block::Rule if cx.cell => div().h(px(l.w2)).bg(l.line2).into_any_element(),
-                Block::Para(w) => {
-                    cx.sel.apart((cx.order, *n));
-                    gap(div(), 8.).child(words(w, n, cx, l, false, color)).into_any_element()
-                }
-                Block::Plain(w) => div().child(words(w, n, cx, l, false, color)).into_any_element(),
-                Block::Group(inner) => div().flex().flex_col().min_w_0().children(blocks(inner, n, cx, l, color, window, app)).into_any_element(),
-                Block::Details { open, summary, body } => {
-                    let key = format!("{}.details{}", cx.id, *n);
-                    let shown = OPENED.with(|o| o.borrow().get(&key).copied()).unwrap_or(*open);
-                    let marker = if shown { "▾" } else { "▸" };
-                    let focus = crate::said::focus_for(SharedString::from(key.clone()), window, app);
-                    let head = crate::said::keyed(div().id(SharedString::from(key.clone())), &focus, l.z(4.), l, window)
-                        .flex()
-                        .items_start()
-                        .gap(u(6.))
-                        .cursor_pointer()
-                        .on_click(move |_, window, _| {
-                            OPENED.with(|o| o.borrow_mut().insert(key.clone(), !shown));
-                            window.refresh();
-                        })
-                        .child(div().flex_none().text_color(l.ink3).child(marker))
-                        .child(div().flex_auto().min_w_0().child(words(&summary.0, n, cx, l, false, color)).children(blocks(&summary.1, n, cx, l, color, window, app)));
-                    let body = shown.then(|| div().flex().flex_col().min_w_0().children(blocks(body, n, cx, l, color, window, app)));
-                    div().flex().flex_col().min_w_0().child(head).children(body).into_any_element()
-                }
-                Block::Heading(level, w, more) => {
-                    cx.sel.apart((cx.order, *n));
-                    let more = blocks(more, n, cx, l, color, window, app);
-                    // A document's headings step down in size by level; a message's are a weight up.
-                    let sized = |d: gpui::Div| match (cx.reading.is_some(), level) {
-                        (false, _) => d,
-                        (true, 1) => d.text_size(u(26.)).line_height(u(32.)),
-                        (true, 2) => d.text_size(u(21.)).line_height(u(28.)),
-                        (true, 3) => d.text_size(u(18.)).line_height(u(24.)),
-                        (true, _) => d.text_size(u(16.)).line_height(u(24.)),
-                    };
-                    sized(gap(div(), 0.).when(last, |d| d.mb(u(4.)))).child(words(w, n, cx, l, true, color)).children(more).into_any_element()
-                }
-                Block::Task(done, w, more) => div()
+    (0..list.len()).map(|i| block((list, i), n, cx, l, color, window, app)).collect()
+}
+
+/// A block among its siblings (`list` and where in it), drawn.
+fn block((list, i): (&[Block], usize), n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, window: &mut Window, app: &mut App) -> AnyElement {
+    let b = &list[i];
+    // Margins between blocks collapse, as a page's do: the larger of the two; none at the
+    // ends (`first:mt-0 last:mb-0`).
+    let above = above((list, i), cx);
+    // In a cell, each block's own inset and space (text.tsx's components).
+    let inset = |d: gpui::Div| if cx.cell { d.mx(u(8.)).my(u(4.)) } else { d };
+    let gap = |d: gpui::Div, _: f32| d.when(above > 0., |d| d.mt(u(above)));
+    let first = i == 0;
+    let last = i + 1 == list.len();
+    match b {
+        Block::Para(w) | Block::Plain(w) if crate::math::alone(&w.text, &cx.formulas).is_some() => {
+            let shown = math_block(w, n, cx, l, color, window, app);
+            inset(gap(div(), 8.)).child(shown).into_any_element()
+        }
+        Block::Para(w) if cx.cell => div().px(u(8.)).py(u(4.)).child(words(w, n, cx, l, false, color)).into_any_element(),
+        Block::Heading(_, w, more) if cx.cell => {
+            let more = blocks(more, n, cx, l, color, window, app);
+            div().flex().flex_col().child(div().flex().items_center().min_h(u(24.)).px(u(8.)).child(words(w, n, cx, l, true, l.ink))).children(more).into_any_element()
+        }
+        Block::Rule if cx.cell => div().h(px(l.w2)).bg(l.line2).into_any_element(),
+        Block::Para(w) => {
+            cx.sel.apart((cx.order, *n));
+            gap(div(), 8.).child(words(w, n, cx, l, false, color)).into_any_element()
+        }
+        Block::Plain(w) => div().child(words(w, n, cx, l, false, color)).into_any_element(),
+        Block::Group(inner) => div().flex().flex_col().min_w_0().children(blocks(inner, n, cx, l, color, window, app)).into_any_element(),
+        Block::Details { open, summary, body } => {
+            let key = format!("{}.details{}", cx.id, *n);
+            let shown = OPENED.with(|o| o.borrow().get(&key).copied()).unwrap_or(*open);
+            let marker = if shown { "▾" } else { "▸" };
+            let focus = crate::said::focus_for(SharedString::from(key.clone()), window, app);
+            let head = crate::said::keyed(div().id(SharedString::from(key.clone())), &focus, l.z(4.), l, window)
+                .flex()
+                .items_start()
+                .gap(u(6.))
+                .cursor_pointer()
+                .on_click(move |_, window, _| {
+                    OPENED.with(|o| o.borrow_mut().insert(key.clone(), !shown));
+                    window.refresh();
+                })
+                .child(div().flex_none().text_color(l.ink3).child(marker))
+                .child(div().flex_auto().min_w_0().child(words(&summary.0, n, cx, l, false, color)).children(blocks(&summary.1, n, cx, l, color, window, app)));
+            let body = shown.then(|| div().flex().flex_col().min_w_0().children(blocks(body, n, cx, l, color, window, app)));
+            div().flex().flex_col().min_w_0().child(head).children(body).into_any_element()
+        }
+        Block::Heading(level, w, more) => {
+            cx.sel.apart((cx.order, *n));
+            let more = blocks(more, n, cx, l, color, window, app);
+            // A document's headings step down in size by level; a message's are a weight up.
+            let sized = |d: gpui::Div| match (cx.reading.is_some(), level) {
+                (false, _) => d,
+                (true, 1) => d.text_size(u(26.)).line_height(u(32.)),
+                (true, 2) => d.text_size(u(21.)).line_height(u(28.)),
+                (true, 3) => d.text_size(u(18.)).line_height(u(24.)),
+                (true, _) => d.text_size(u(16.)).line_height(u(24.)),
+            };
+            sized(gap(div(), 0.).when(last, |d| d.mb(u(4.)))).child(words(w, n, cx, l, true, color)).children(more).into_any_element()
+        }
+        Block::Task(done, w, more) => div()
+            .flex()
+            .items_start()
+            .gap(u(6.))
+            .child(
+                div()
+                    .mt(u(4.))
+                    .flex_none()
+                    .size(u(12.))
+                    .rounded(px(2.))
+                    .border_1()
+                    .border_color(l.ink3)
                     .flex()
-                    .items_start()
-                    .gap(u(6.))
-                    .child(
-                        div()
-                            .mt(u(4.))
-                            .flex_none()
-                            .size(u(12.))
-                            .rounded(px(2.))
-                            .border_1()
-                            .border_color(l.ink3)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(*done, |d| d.bg(l.ink3).child(crate::chat_marks::drawn("copied", u(10.).to_pixels(window.rem_size()), l.bg))),
-                    )
-                    .child(div().flex_auto().min_w_0().child(words(w, n, cx, l, false, color)).children(blocks(more, n, cx, l, color, window, app)))
-                    .into_any_element(),
-                Block::List { start, items } => gap(div(), 8.)
-                    .when(cx.cell, |d| d.py(u(4.)).pl(u(8.)).pr(u(8.)))
+                    .items_center()
+                    .justify_center()
+                    .when(*done, |d| d.bg(l.ink3).child(crate::chat_marks::drawn("copied", u(10.).to_pixels(window.rem_size()), l.bg))),
+            )
+            .child(div().flex_auto().min_w_0().child(words(w, n, cx, l, false, color)).children(blocks(more, n, cx, l, color, window, app)))
+            .into_any_element(),
+        Block::List { start, items } => gap(div(), 8.)
+            .when(cx.cell, |d| d.py(u(4.)).pl(u(8.)).pr(u(8.)))
+            .flex()
+            .flex_col()
+            .children(items.iter().enumerate().map(|(k, item)| {
+                let marker = match start {
+                    Some(s) => format!("{}.", s + k as u64),
+                    None => "•".into(),
+                };
+                // `my-0.5` between items, collapsed to one; a long number widens its
+                // marker rather than running out past the bubble. The words grow from their
+                // own width (`flex-auto`): from none (`flex-1`), Taffy takes their width at
+                // their narrowest while the bubble fits its words, a word a line.
+                div()
                     .flex()
-                    .flex_col()
-                    .children(items.iter().enumerate().map(|(k, item)| {
-                        let marker = match start {
-                            Some(s) => format!("{}.", s + k as u64),
-                            None => "•".into(),
-                        };
-                        // `my-0.5` between items, collapsed to one; a long number widens its
-                        // marker rather than running out past the bubble. The words grow from their
-                        // own width (`flex-auto`): from none (`flex-1`), Taffy takes their width at
-                        // their narrowest while the bubble fits its words, a word a line.
-                        div()
-                            .flex()
-                            .when(k > 0, |d| d.mt(u(2.)))
-                            .child(div().flex_none().min_w(if start.is_some() { u(28.) } else { u(20.) }).flex().justify_end().pr(u(6.)).text_color(l.ink3).child(marker))
-                            .child(div().flex_auto().min_w_0().flex().flex_col().children(blocks(item, n, cx, l, color, window, app)))
-                    }))
-                    .into_any_element(),
-                Block::Code(c) => {
-                    let whole = c.clone();
-                    let sel = cx.sel.clone();
-                    let k = (cx.order, *n);
-                    cx.sel.apart(k);
-                    *n += 1;
-                    let h = scroll_of(format!("{}.code{}", cx.id, k.1), window, app);
-                    let id = SharedString::from(format!("{}.code{}", cx.id, k.1));
-                    inset(gap(div(), 8.))
-                        .id(id.clone())
-                        // A key, as the desktop's: Tab reaches it, and Enter or Space copies it.
-                        .track_focus(&crate::said::focus_for(id, window, app))
-                        .focus_visible(|s| s.border_color(l.ink3))
-                        .tooltip(crate::band::tip("Copy"))
-                        .px(u(12.))
-                        .py(u(8.))
-                        .border_1()
-                        .border_color(l.line2)
-                        .bg(l.bg)
-                        .font_family(MONO)
-                        .text_size(u(12.))
-                        .line_height(u(16.))
-                        .text_color(l.ink)
-                        // `pre`: its lines as they are, scrolled sideways rather than wrapped.
-                        .whitespace_nowrap()
-                        .map(|d| crate::follow::across(d, &h))
-                        .on_scroll(crate::app::sideways(Some(h.clone())))
-                        .on_click(move |e, _, cx| {
-                            if e.is_keyboard() || sel.is_empty() {
-                                cx.write_to_clipboard(ClipboardItem::new_string(whole.clone()));
-                            }
-                        })
-                        .child(SelText::new(SharedString::from(format!("{}.c{}", cx.id, k.1)), k, &cx.sel, SharedString::from(c.clone()), None).copies_all())
-                        .into_any_element()
-                }
-                // A quote keeps its `my-2` at the ends too.
-                Block::Quote(inner) => inset(gap(div(), 8.).when(first && !cx.cell, |d| d.mt(u(8.))).when(last && !cx.cell, |d| d.mb(u(8.)))).pl(u(12.)).border_l_2().border_color(l.line2).flex().flex_col().children(blocks(inner, n, cx, l, l.ink2, window, app)).into_any_element(),
-                Block::Rule => gap(div(), 0.).when(first, |d| d.mt(u(12.))).when(last, |d| d.mb(u(12.))).h(px(1.)).bg(l.line2).into_any_element(),
-                Block::Table { cols, head, rows } => {
-                    // A grid whose columns are as wide as their words (a table's auto layout), as
-                    // wide as it needs and no wider, lines collapsed to one, scrolled sideways when
-                    // it's wider than the bubble.
-                    // Copied, a row's cells a tab apart and its rows a line apart; the table a
-                    // paragraph from what's before it.
-                    let cell = |w: &Cell, th: bool, first: (bool, bool), n: &mut u32, window: &mut Window, app: &mut App| {
-                        match first {
-                            (true, true) => cx.sel.apart((cx.order, *n)),
-                            (_, false) => cx.sel.tabbed((cx.order, *n)),
-                            _ => {}
-                        }
-                        let more = blocks(&w.rich.1, n, cx, l, color, window, app);
-                        div()
-                            .px(u(10.))
-                            .py(u(6.))
-                            .border_r_1()
-                            .border_b_1()
-                            .border_color(l.line2)
-                            .col_span(w.span.0)
-                            .row_span(w.span.1)
-                            .map(|d| match w.align {
-                                Alignment::Center => d.text_center(),
-                                Alignment::Right => d.text_right(),
-                                _ => d.text_left(),
-                            })
-                            .when(th, |d| d.text_size(u(12.)).line_height(u(16.)))
-                            .child(words(&w.rich.0, n, cx, l, th, if th { l.ink2 } else { color }))
-                            .children(more)
-                    };
-                    let mut cells = vec![];
-                    for (i, c) in head.iter().enumerate() {
-                        cells.push(cell(c, true, (true, i == 0), n, window, app));
+                    .when(k > 0, |d| d.mt(u(2.)))
+                    .child(div().flex_none().min_w(if start.is_some() { u(28.) } else { u(20.) }).flex().justify_end().pr(u(6.)).text_color(l.ink3).child(marker))
+                    .child(div().flex_auto().min_w_0().flex().flex_col().children(blocks(item, n, cx, l, color, window, app)))
+            }))
+            .into_any_element(),
+        Block::Code(c) => {
+            let whole = c.clone();
+            let sel = cx.sel.clone();
+            let k = (cx.order, *n);
+            cx.sel.apart(k);
+            *n += 1;
+            let h = scroll_of(format!("{}.code{}", cx.id, k.1), window, app);
+            let id = SharedString::from(format!("{}.code{}", cx.id, k.1));
+            inset(gap(div(), 8.))
+                .id(id.clone())
+                // A key, as the desktop's: Tab reaches it, and Enter or Space copies it.
+                .track_focus(&crate::said::focus_for(id, window, app))
+                .focus_visible(|s| s.border_color(l.ink3))
+                .tooltip(crate::band::tip("Copy"))
+                .px(u(12.))
+                .py(u(8.))
+                .border_1()
+                .border_color(l.line2)
+                .bg(l.bg)
+                .font_family(MONO)
+                .text_size(u(12.))
+                .line_height(u(16.))
+                .text_color(l.ink)
+                // `pre`: its lines as they are, scrolled sideways rather than wrapped.
+                .whitespace_nowrap()
+                .map(|d| crate::follow::across(d, &h))
+                .on_scroll(crate::app::sideways(Some(h.clone())))
+                .on_click(move |e, _, cx| {
+                    if e.is_keyboard() || sel.is_empty() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(whole.clone()));
                     }
-                    for (j, r) in rows.iter().enumerate() {
-                        for (i, c) in r.iter().enumerate() {
-                            cells.push(cell(c, false, (head.is_empty() && j == 0, i == 0), n, window, app));
-                        }
-                    }
-                    let h = scroll_of(format!("{}.table{}", cx.id, *n), window, app);
-                    let grid = div().grid().grid_cols_max_content(*cols as u16).border_t_1().border_l_1().border_color(l.line2).text_size(u(13.)).line_height(u(16.)).children(cells);
-                    inset(gap(div(), 8.))
-                        .id(SharedString::from(format!("{}.table{}", cx.id, *n)))
-                        .map(|d| crate::follow::across(d, &h))
-                        .on_scroll(crate::app::sideways(Some(h.clone())))
-                        .child(div().flex().items_start().child(grid))
-                        .into_any_element()
+                })
+                .child(SelText::new(SharedString::from(format!("{}.c{}", cx.id, k.1)), k, &cx.sel, SharedString::from(c.clone()), None).copies_all())
+                .into_any_element()
+        }
+        // A quote keeps its `my-2` at the ends too.
+        Block::Quote(inner) => inset(gap(div(), 8.).when(first && !cx.cell, |d| d.mt(u(8.))).when(last && !cx.cell, |d| d.mb(u(8.)))).pl(u(12.)).border_l_2().border_color(l.line2).flex().flex_col().children(blocks(inner, n, cx, l, l.ink2, window, app)).into_any_element(),
+        Block::Rule => gap(div(), 0.).when(first, |d| d.mt(u(12.))).when(last, |d| d.mb(u(12.))).h(px(1.)).bg(l.line2).into_any_element(),
+        Block::Table { cols, head, rows } => {
+            // A grid whose columns are as wide as their words (a table's auto layout), as
+            // wide as it needs and no wider, lines collapsed to one, scrolled sideways when
+            // it's wider than the bubble.
+            // Copied, a row's cells a tab apart and its rows a line apart; the table a
+            // paragraph from what's before it.
+            let cell = |w: &Cell, th: bool, first: (bool, bool), n: &mut u32, window: &mut Window, app: &mut App| {
+                match first {
+                    (true, true) => cx.sel.apart((cx.order, *n)),
+                    (_, false) => cx.sel.tabbed((cx.order, *n)),
+                    _ => {}
                 }
-                Block::Image { src, alt } => inset(gap(div(), 0.)).child(inline_image(src, alt, cx, l, window, app)).into_any_element(),
-                // Drawn as itself, the room above it as any block's.
-                Block::Spaced(inner) => gap(div(), 0.).flex().flex_col().min_w_0().children(blocks(std::slice::from_ref(inner.as_ref()), n, cx, l, color, window, app)).into_any_element(),
+                let more = blocks(&w.rich.1, n, cx, l, color, window, app);
+                div()
+                    .px(u(10.))
+                    .py(u(6.))
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(l.line2)
+                    .col_span(w.span.0)
+                    .row_span(w.span.1)
+                    .map(|d| match w.align {
+                        Alignment::Center => d.text_center(),
+                        Alignment::Right => d.text_right(),
+                        _ => d.text_left(),
+                    })
+                    .when(th, |d| d.text_size(u(12.)).line_height(u(16.)))
+                    .child(words(&w.rich.0, n, cx, l, th, if th { l.ink2 } else { color }))
+                    .children(more)
+            };
+            let mut cells = vec![];
+            for (i, c) in head.iter().enumerate() {
+                cells.push(cell(c, true, (true, i == 0), n, window, app));
             }
-        })
-        .collect()
+            for (j, r) in rows.iter().enumerate() {
+                for (i, c) in r.iter().enumerate() {
+                    cells.push(cell(c, false, (head.is_empty() && j == 0, i == 0), n, window, app));
+                }
+            }
+            let h = scroll_of(format!("{}.table{}", cx.id, *n), window, app);
+            let grid = div().grid().grid_cols_max_content(*cols as u16).border_t_1().border_l_1().border_color(l.line2).text_size(u(13.)).line_height(u(16.)).children(cells);
+            inset(gap(div(), 8.))
+                .id(SharedString::from(format!("{}.table{}", cx.id, *n)))
+                .map(|d| crate::follow::across(d, &h))
+                .on_scroll(crate::app::sideways(Some(h.clone())))
+                .child(div().flex().items_start().child(grid))
+                .into_any_element()
+        }
+        Block::Image { src, alt } => inset(gap(div(), 0.)).child(inline_image(src, alt, cx, l, window, app)).into_any_element(),
+        // Drawn as itself, the room above it as any block's.
+        Block::Spaced(inner) => gap(div(), 0.).flex().flex_col().min_w_0().children(blocks(std::slice::from_ref(inner.as_ref()), n, cx, l, color, window, app)).into_any_element(),
+    }
 }
 
 /// A `$$` formula on its own (`w` is its stand-in alone): centered, a size up from the words as
@@ -1225,7 +1245,17 @@ pub fn render(doc: &Doc, cx: &Ctx, l: &Look, window: &mut Window, app: &mut App)
     // A bubble's words come after what it replies to.
     let mut n = crate::select::WORDS;
     let color = cx.ink.unwrap_or(l.ink);
-    div().flex().flex_col().min_w_0().max_w_full().children(blocks(&doc.blocks, &mut n, cx, l, color, window, app))
+    let shown = match cx.reading.as_ref().and_then(|r| r.margin.as_ref()) {
+        Some(margin) => (0..doc.blocks.len())
+            .map(|i| {
+                let from = n;
+                let drawn = block((&doc.blocks, i), &mut n, cx, l, color, window, app);
+                margin(cx.order, from..n, u(above((&doc.blocks, i), cx)), drawn, window, app)
+            })
+            .collect(),
+        None => blocks(&doc.blocks, &mut n, cx, l, color, window, app),
+    };
+    div().flex().flex_col().min_w_0().max_w_full().children(shown)
 }
 
 /// Plain words, selectable: a user's message, a reply, a quote.

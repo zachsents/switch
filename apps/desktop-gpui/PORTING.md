@@ -438,8 +438,14 @@ file became; what differs on purpose:
   blocks) with the house's math; every word selectable. A selection's popover: `define`'s senses
   and article, Ask (a new thread about the passage) and Highlight; a Wikipedia link opens its
   summary there. Threads down the right (`ask`), each passage washed in ink in the words and opened
-  by a click; highlights in yellow. Esc closes the popover, then the selection, then the thread,
-  then the window; ⌘D looks up, ⇧⌘H highlights, Return asks. `SWITCH_GPUI_PAGES=view:<app>/<name>?<key>=<value>`
+  by a click; highlights in yellow. Notes (what a thread's turn pinned with `annotate`, and
+  `seen`, other documents' notes on terms this one mentions, under their document's title) in a
+  margin right of the words, each level with its words' first line and below the note above it,
+  out of the words' flow (under their paragraph when the window is too narrow); the words keep one
+  measure beside notes; the note under the pointer darkens its words, and shows Edit and Delete
+  in its own document; a click opens its thread (another document's in its window), Edit and Delete under
+  the pointer (`editNote`, `deleteNote`). Esc closes an edit, then the popover, then the selection,
+  then the thread, then the window; ⌘D looks up, ⇧⌘H highlights, Return asks. `SWITCH_GPUI_PAGES=view:<app>/<name>?<key>=<value>`
   opens a widget's window for a look; the desktop's `open_view` tool opens one for the agent.
 - A window comes out of full screen where it went in (AppKit leaves its top under the menu bar).
 - Cutover: the Electrobun app's Keychain item doesn't answer the Rust app with prompts off, but the

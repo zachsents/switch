@@ -1,5 +1,6 @@
-//! The house's Document: a document an extension reads (`doc`), its words and threads from its
-//! tools (`tools`: `content`, `define`, `ask`, `highlight`, `unhighlight`). In its own window, the
+//! The house's Document: a document an extension reads (`doc`), its words, threads and notes from
+//! its tools (`tools`: `content`, `define`, `ask`, `highlight`, `unhighlight`, `editNote`,
+//! `deleteNote`). In its own window, the
 //! reader (`reader.rs`); in a chat or a space's column, one line, its title and size, that opens
 //! that window (the extension's `widget` with `{ doc }`).
 
@@ -13,7 +14,7 @@ use crate::widgets::window::{self, View};
 
 fn tools_of(c: &Value) -> Tools {
     let t = |k: &str| c.pointer(&format!("/tools/{k}")).and_then(Value::as_str).unwrap_or_default().to_string();
-    Tools { content: t("content"), define: t("define"), ask: t("ask"), highlight: t("highlight"), unhighlight: t("unhighlight") }
+    Tools { content: t("content"), define: t("define"), ask: t("ask"), highlight: t("highlight"), unhighlight: t("unhighlight"), edit_note: t("editNote"), delete_note: t("deleteNote") }
 }
 
 pub fn document(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -56,7 +57,10 @@ pub fn document(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyE
         version: s.number(c, "version").unwrap_or(0.) as u64,
         highlights: s.prop(c, "highlights"),
         threads: s.prop(c, "threads"),
+        notes: s.prop(c, "notes"),
+        seen: s.prop(c, "seen"),
         open: s.text(c, "open"),
+        widget: c.get("widget").and_then(Value::as_str).unwrap_or("document").to_string(),
     };
     reader.update(cx, |r, cx| r.take(data, cx));
     // The keys are the reader's from its first frame.

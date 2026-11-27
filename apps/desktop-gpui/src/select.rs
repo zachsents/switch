@@ -153,7 +153,14 @@ pub struct SelText {
     /// Each formula's place and TeX, for a copy.
     copy: Vec<(Range<usize>, String)>,
     inner: Option<SelectableText<Key>>,
+    /// Passages whose place is wanted (`spots`): each one's name and where it starts, and where
+    /// the middle of its first line went, by name, once placed.
+    spots: Vec<(String, usize)>,
+    spotted: Option<Spots>,
 }
+
+/// Where named passages went: the middle of each one's first line, in the window.
+pub type Spots = Rc<std::cell::RefCell<std::collections::HashMap<String, gpui::Pixels>>>;
 
 /// What a formula's room is made of: U+202F, a narrow space no line breaks at.
 const ROOM: char = '\u{202F}';
@@ -186,7 +193,16 @@ impl SelText {
             hover: None,
             copy: vec![],
             inner: None,
+            spots: vec![],
+            spotted: None,
         }
+    }
+
+    /// Records in `to` where each named passage (its name, where it starts) is placed.
+    pub fn spots(mut self, spots: Vec<(String, usize)>, to: Spots) -> Self {
+        self.spots = spots;
+        self.spotted = Some(to);
+        self
     }
 
     /// The formulas whose stand-ins are in the words (`math::tokened`), at their byte offsets, each
@@ -261,6 +277,9 @@ impl SelText {
         }
         for l in &mut self.links {
             *l = moved(l.start)..moved(l.end);
+        }
+        for (_, at) in &mut self.spots {
+            *at = moved(*at);
         }
         self.words = SharedString::from(words);
         self.runs = Some(new_runs);
@@ -340,7 +359,18 @@ impl Element for SelText {
 
     fn prepaint(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, state: &mut (), window: &mut Window, cx: &mut App) -> Hitbox {
         let inner = self.inner.as_mut().expect("laid out before prepaint");
-        inner.prepaint(id, inspector, bounds, state, window, cx)
+        let hitbox = inner.prepaint(id, inspector, bounds, state, window, cx);
+        if let Some(to) = &self.spotted {
+            let layout = inner.layout().clone();
+            let half = layout.line_height() / 2.;
+            let mut to = to.borrow_mut();
+            for (name, at) in &self.spots {
+                if let Some(p) = layout.position_for_index(*at) {
+                    to.insert(name.clone(), p.y + half);
+                }
+            }
+        }
+        hitbox
     }
 
     fn paint(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, state: &mut (), hitbox: &mut Hitbox, window: &mut Window, cx: &mut App) {

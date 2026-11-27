@@ -6,7 +6,9 @@
 //! passage (marked in the words, a click opens it) and its questions and answers, with a box to ask
 //! the next, never in a space's chat. Highlights are washed in yellow. Esc closes the popover, then
 //! the thread, then the window; ⌘D looks up what's selected, ⇧⌘H highlights it, Return asks about
-//! it.
+//! it. What a thread settles its answer pins to the passage as a note, in the margin beside it (under
+//! it when the window is narrow), with the notes other documents' threads made on the terms this one
+//! mentions: a click opens the thread behind one, and each can be edited or deleted.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,6 +36,8 @@ pub struct Tools {
     pub ask: String,
     pub highlight: String,
     pub unhighlight: String,
+    pub edit_note: String,
+    pub delete_note: String,
 }
 
 /// A passage, as its extension keeps it (W3C's text quote): its section, its words, and a little
@@ -77,7 +81,35 @@ struct Thread {
     waiting: bool,
 }
 
-/// What the document's widget data says: its title, size, highlights and threads.
+/// A note pinned to a passage: what one of its threads settled, or (`from`) what another document's
+/// thread settled about a term this one mentions.
+#[derive(Clone, Debug, PartialEq)]
+struct Note {
+    id: String,
+    term: String,
+    text: String,
+    url: Option<String>,
+    quote: Quote,
+    thread: Option<String>,
+    /// The document it was written in and its title, when that's another.
+    from: Option<(String, String)>,
+}
+
+impl Note {
+    fn of(v: &Value, seen: bool) -> Option<Note> {
+        Some(Note {
+            id: str_of(v, "id").to_string(),
+            term: str_of(v, "term").to_string(),
+            text: str_of(v, "text").to_string(),
+            url: v.get("url").and_then(Value::as_str).map(str::to_string),
+            quote: Quote::of(v.get("quote")?)?,
+            thread: v.get("thread").and_then(Value::as_str).map(str::to_string),
+            from: seen.then(|| (str_of(v, "doc").to_string(), str_of(v, "source").to_string())),
+        })
+    }
+}
+
+/// What the document's widget data says: its title, size, highlights, threads and notes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Data {
     pub title: String,
@@ -85,7 +117,20 @@ pub struct Data {
     pub version: u64,
     pub highlights: Value,
     pub threads: Value,
+    pub notes: Value,
+    /// Notes from other documents on the terms this one mentions.
+    pub seen: Value,
     pub open: String,
+    /// The widget that shows a document, for opening another's.
+    pub widget: String,
+}
+
+/// What a mark in the words is.
+#[derive(Clone, Copy, PartialEq)]
+enum Anchor {
+    Highlight,
+    Thread,
+    Note,
 }
 
 /// A section's words, read once.
@@ -172,10 +217,26 @@ pub struct Reader {
     /// The panel's own words, selectable apart from the document's.
     panel_sel: Sel,
     panel_scroll: gpui::ScrollHandle,
+    notes: Vec<Note>,
+    /// The run each mark was first drawn in, by what it names: where its notes go.
+    placed: Rc<RefCell<HashMap<String, Key>>>,
+    /// Where each marked passage's first line was drawn, for its note to stand level with it.
+    spots: crate::select::Spots,
+    /// The note under the pointer, which offers Edit and Delete.
+    over_note: Option<String>,
+    /// The note being edited, and its box.
+    editing: Option<(String, Entity<Textarea>)>,
+    /// The notes' words, selectable apart from the rest.
+    note_sel: Sel,
 }
 
 const MEASURE: f32 = 680.;
 const PANEL: f32 = 360.;
+/// The margin's notes: their width and the room between them and the words.
+const MARGIN: f32 = 240.;
+/// The words' measure beside notes.
+const BESIDE: f32 = 540.;
+const GUTTER: f32 = 32.;
 
 fn new_id() -> String {
     format!("th-{}", uuid::Uuid::new_v4().simple().to_string().chars().take(10).collect::<String>())
@@ -223,6 +284,27 @@ fn find(run: &str, q: &Quote) -> Option<Range<usize>> {
             run.trim_start().starts_with(last).then(|| lead..lead + last.len())
         }
     }
+}
+
+/// Where a note's words are in one run: the mention whose words either side are the quote's, or
+/// the first when the quote keeps none.
+fn place(run: &str, q: &Quote) -> Option<Range<usize>> {
+    let exact = q.exact.trim();
+    if exact.is_empty() {
+        return None;
+    }
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let before = tail(&squash(&q.prefix), 12);
+    let after = head(&squash(&q.suffix), 12);
+    let mut hits = run.match_indices(exact).map(|(i, _)| i..i + exact.len());
+    if before.is_empty() && after.is_empty() {
+        return hits.next();
+    }
+    hits.find(|r| {
+        let b = squash(&run[..r.start]);
+        let a = squash(&run[r.end..]);
+        (!before.is_empty() && (b.ends_with(&before) || b.is_empty())) || (!after.is_empty() && (a.starts_with(&after) || a.is_empty()))
+    })
 }
 
 /// A selection short enough to look up: a few words, no sentence.
@@ -277,6 +359,12 @@ impl Reader {
             held: None,
             panel_sel: Sel::new(),
             panel_scroll: gpui::ScrollHandle::new(),
+            notes: vec![],
+            placed: Rc::default(),
+            spots: Rc::default(),
+            over_note: None,
+            editing: None,
+            note_sel: Sel::new(),
         }
     }
 
@@ -335,6 +423,15 @@ impl Reader {
                     .collect(),
             })
             .collect();
+        self.notes = data
+            .notes
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|n| Note::of(n, false))
+            .chain(data.seen.as_array().into_iter().flatten().filter_map(|n| Note::of(n, true)))
+            .collect();
+        self.placed.borrow_mut().clear();
         // What the data now holds is no longer only ours.
         let held: Vec<String> = self.threads.iter().map(|t| t.id.clone()).collect();
         self.asking.retain(|id, a| a.failed.is_some() || !held.contains(id) || self.threads.iter().find(|t| &t.id == id).is_some_and(|t| !t.messages.iter().any(|m| m.user && m.text == a.question)));
@@ -386,6 +483,7 @@ impl Reader {
                         let at = r.list.logical_scroll_top();
                         r.sections = parsed.into_iter().map(|(label, doc)| Section { label, doc: Rc::new(doc) }).collect();
                         r.list.reset(r.sections.len());
+                        r.placed.borrow_mut().clear();
                         if !first {
                             r.list.scroll_to(at);
                         }
@@ -589,33 +687,208 @@ impl Reader {
     /// What's marked in a run of words: highlights in yellow, threads' passages in ink, the open
     /// one darker.
     fn marks(&self, l: &Look) -> markdown::Reading {
-        let mut anchors: Vec<(String, Quote, gpui::Hsla, bool)> = vec![];
+        let mut anchors: Vec<(String, Quote, gpui::Hsla, Anchor)> = vec![];
+        // The passage of the note under the pointer, darker, as an open thread's is.
+        let over = self.over_note.as_ref().and_then(|o| self.notes.iter().find(|n| n.id == *o)).map(|n| self.anchor_of(n));
+        let wash_of = |id: &str, open: bool| l.ink3.opacity(if open || over.as_deref() == Some(id) { 0.34 } else if l.dark { 0.26 } else { 0.15 });
+        // A note's own words first, so a highlight or a thread over them shows through.
+        for n in &self.notes {
+            let id = self.anchor_of(n);
+            if id.starts_with("note:") {
+                let wash = wash_of(&id, false);
+                anchors.push((id, n.quote.clone(), wash, Anchor::Note));
+            }
+        }
         let wash = if l.dark { l.yellow.opacity(0.28) } else { l.yellow.opacity(0.38) };
         for (id, q) in &self.highlights {
-            anchors.push((id.clone(), q.clone(), wash, false));
+            anchors.push((id.clone(), q.clone(), wash, Anchor::Highlight));
         }
         let threads = self.threads.iter().filter_map(|t| Some((t.id.clone(), t.quote.clone()?))).chain(self.asking.iter().filter_map(|(id, a)| Some((id.clone(), a.quote.clone()?))));
         for (id, q) in threads {
             let open = self.open.as_deref() == Some(id.as_str());
-            anchors.push((id, q, l.ink3.opacity(if open { 0.34 } else { 0.16 }), true));
+            let wash = wash_of(&id, open);
+            anchors.push((id, q, wash, Anchor::Thread));
         }
         let drawn = self.drawn.clone();
+        let placed = self.placed.clone();
         markdown::Reading {
             marks: Box::new(move |key, text| {
                 let mut out = vec![];
-                for (id, q, wash, thread) in &anchors {
+                for (id, q, wash, anchor) in &anchors {
                     if q.section != key.0 {
                         continue;
                     }
-                    if let Some(range) = find(text, q) {
+                    // A note's words are marked once: where they were first found.
+                    let range = if *anchor == Anchor::Note {
+                        if placed.borrow().get(id).is_some_and(|k| *k != key) {
+                            continue;
+                        }
+                        place(text, q)
+                    } else {
+                        find(text, q)
+                    };
+                    if let Some(range) = range {
                         drawn.borrow_mut().insert(id.clone(), (key, range.clone()));
-                        out.push(Mark { range, wash: *wash, id: thread.then(|| id.clone()).or_else(|| (!id.is_empty()).then(|| format!("hl:{id}"))) });
+                        placed.borrow_mut().entry(id.clone()).or_insert(key);
+                        let named = match anchor {
+                            Anchor::Highlight => (!id.is_empty()).then(|| format!("hl:{id}")),
+                            Anchor::Thread | Anchor::Note => Some(id.clone()),
+                        };
+                        out.push(Mark { range, wash: *wash, id: named });
                     }
                 }
                 out
             }),
             on_mark: Rc::new(|_, _, _| {}),
+            margin: None,
+            spots: Some(self.spots.clone()),
         }
+    }
+
+    /// What a note is drawn beside: its thread's passage when it's that, else its own words.
+    fn anchor_of(&self, n: &Note) -> String {
+        match &n.thread {
+            Some(t) if n.from.is_none() && self.threads.iter().any(|th| th.id == *t && th.quote.as_ref() == Some(&n.quote)) => t.clone(),
+            _ => format!("note:{}", n.id),
+        }
+    }
+
+    /// Whether the margin has room beside the words, else notes go under their paragraph.
+    fn margin_fits(&self, window: &Window) -> bool {
+        let column = window.viewport_size().width - if self.panel_shown() { u(PANEL).to_pixels(window.rem_size()) } else { px(0.) };
+        column >= u(BESIDE * 0.9 + 64. + MARGIN + GUTTER).to_pixels(window.rem_size())
+    }
+
+    /// What goes beside each of a section's blocks: the notes whose words are in it.
+    fn margin(&self, l: &Look, window: &Window, cx: &mut Context<Self>) -> markdown::Margin {
+        let wide = self.margin_fits(window);
+        let notes: Rc<Vec<(String, Note)>> = Rc::new(self.notes.iter().map(|n| (self.anchor_of(n), n.clone())).collect());
+        let placed = self.placed.clone();
+        let shown = Rc::new(Shown {
+            me: cx.entity().downgrade(),
+            open: self.open.clone(),
+            over: self.over_note.clone(),
+            editing: self.editing.clone(),
+            sel: self.note_sel.clone(),
+            can_edit: !self.tools.edit_note.is_empty(),
+            can_delete: !self.tools.delete_note.is_empty(),
+        });
+        let l = *l;
+        let spots = self.spots.clone();
+        // How far down the notes beside the words reach so far, each laid out below the last.
+        let floor: Rc<std::cell::Cell<Option<Pixels>>> = Rc::default();
+        let first = std::cell::Cell::new(true);
+        Box::new(move |order, keys, above, block, window, cx| {
+            let mut here: Vec<(Key, usize)> = notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (anchor, _))| {
+                    let k = *placed.borrow().get(anchor)?;
+                    (k.0 == order && keys.contains(&k.1)).then_some((k, i))
+                })
+                .collect();
+            if here.is_empty() && !wide {
+                return block;
+            }
+            let _ = above;
+            here.sort_by_key(|(k, i)| (k.1, *i));
+            let views: Vec<AnyElement> = here.iter().map(|(_, i)| note_view(&notes[*i].1, *i as u64, &shown, &l, window, cx)).collect();
+            if wide {
+                // The notes stand beside the words, out of their flow: a note never moves them.
+                let row = div().relative().mr(u(MARGIN + GUTTER)).child(block);
+                if views.is_empty() {
+                    return row.into_any_element();
+                }
+                let pinned = Pinned {
+                    notes: here.iter().map(|(_, i)| notes[*i].0.clone()).zip(views).collect(),
+                    spots: spots.clone(),
+                    floor: floor.clone(),
+                    reset: first.replace(false),
+                    gap: u(12.),
+                    head: u(8.),
+                };
+                row.child(div().absolute().top_0().left_full().w(u(MARGIN + GUTTER)).pl(u(GUTTER)).child(pinned)).into_any_element()
+            } else {
+                div().flex().flex_col().child(block).child(div().mt(u(10.)).flex().flex_col().gap(u(10.)).children(views)).into_any_element()
+            }
+        })
+    }
+
+    /// A note's click: the thread behind it, here or in its own document; else its link.
+    fn click_note(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(n) = self.notes.iter().find(|n| n.id == id).cloned() else { return };
+        match (&n.from, &n.thread, &n.url) {
+            (Some((doc, _)), thread, _) => {
+                let mut input = json!({ "doc": doc });
+                if let Some(t) = thread {
+                    input["thread"] = json!(t);
+                }
+                crate::widgets::window::open(crate::widgets::window::View { app: self.app.clone(), name: self.data.widget.clone(), input: Some(input) }, cx);
+            }
+            (None, Some(t), _) => self.open_thread(t, cx),
+            (None, None, Some(url)) => cx.open_url(url),
+            (None, None, None) => {}
+        }
+    }
+
+    fn start_edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(n) = self.notes.iter().find(|n| n.id == id) else { return };
+        let me = cx.entity().downgrade();
+        let note = id.to_string();
+        let options = TextareaOptions::default()
+            .default_value(n.text.clone())
+            .rows(1)
+            .auto_resize(true)
+            .submit_shortcut(TextareaSubmitShortcut::Enter)
+            .field_style(kit::field_style())
+            .on_submit(move |value, _, _, cx| {
+                let text = value.trim().to_string();
+                me.update(cx, |r, cx| r.save_note(&note, text, cx)).ok();
+            });
+        let field = cx.new(|cx| Textarea::new(options, window, cx));
+        field.update(cx, |t, cx| t.focus(window, cx));
+        self.editing = Some((id.to_string(), field));
+        cx.notify();
+    }
+
+    fn save_note(&mut self, id: &str, text: String, cx: &mut Context<Self>) {
+        self.editing = None;
+        cx.notify();
+        let Some(n) = self.notes.iter_mut().find(|n| n.id == id) else { return };
+        if text.is_empty() || text == n.text || self.tools.edit_note.is_empty() {
+            return;
+        }
+        // Shown at once; the data takes over when it comes.
+        n.text = text.clone();
+        let call = self.call(&self.tools.edit_note.clone(), json!({ "note": id, "text": text }), cx);
+        cx.spawn(async move |this, cx| {
+            let got = call.await;
+            this.update(cx, |r, cx| {
+                r.note = got.err();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.tools.delete_note.is_empty() {
+            return;
+        }
+        let call = self.call(&self.tools.delete_note.clone(), json!({ "note": id }), cx);
+        self.notes.retain(|n| n.id != id);
+        self.over_note = None;
+        cx.spawn(async move |this, cx| {
+            let got = call.await;
+            this.update(cx, |r, cx| {
+                r.note = got.err();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The passage of what's to be revealed, brought to the middle of the column once drawn.
@@ -651,6 +924,7 @@ impl Reader {
         let me = cx.entity().downgrade();
         let me2 = me.clone();
         let mut reading = self.marks(&l);
+        reading.margin = (!self.notes.is_empty()).then(|| self.margin(&l, window, cx));
         reading.on_mark = Rc::new(move |id: &str, window: &mut Window, cx: &mut App| {
             let id = id.to_string();
             me2.update(cx, |r, cx| {
@@ -658,6 +932,8 @@ impl Reader {
                     // A click on a highlight offers to take it away.
                     let at = point(r.last_mouse.x, r.last_mouse.y + px(14.));
                     r.pop_highlight(h.to_string(), at, r.last_mouse.y - px(14.), window, cx);
+                } else if let Some(n) = id.strip_prefix("note:") {
+                    r.click_note(n, window, cx);
                 } else {
                     r.open_thread(&id, cx);
                 }
@@ -681,6 +957,7 @@ impl Reader {
             reading: Some(Rc::new(reading)),
         };
         let words = markdown::render(&doc, &ctx, &l, window, cx);
+        let wide = self.notes.is_empty() || self.margin_fits(window);
         div()
             .w_full()
             .flex()
@@ -688,7 +965,8 @@ impl Reader {
             .child(
                 div()
                     .w_full()
-                    .max_w(u(MEASURE + 64.))
+                    // Beside notes the words keep one measure, the panel open or not.
+                    .max_w(u(if self.notes.is_empty() || !wide { MEASURE + 64. } else { BESIDE + 64. + MARGIN + GUTTER }))
                     .px(u(32.))
                     .pt(if ix == 0 { u(40.) } else if label.is_some() { u(24.) } else { u(36.) })
                     .when(ix + 1 == self.sections.len(), |d| d.pb(u(96.)))
@@ -720,6 +998,170 @@ impl Reader {
         }
         self.held = Some(id);
     }
+}
+
+/// A block's notes in the margin, each level with its passage's first line (`spots`, drawn just
+/// before), below the one above it when they'd meet.
+struct Pinned {
+    notes: Vec<(String, AnyElement)>,
+    spots: crate::select::Spots,
+    floor: Rc<std::cell::Cell<Option<Pixels>>>,
+    /// The first in its section: what's above it is another section's.
+    reset: bool,
+    gap: gpui::Rems,
+    /// Half a note's first line.
+    head: gpui::Rems,
+}
+
+impl gpui::Element for Pinned {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, window: &mut Window, cx: &mut App) -> (gpui::LayoutId, ()) {
+        let mut style = gpui::Style::default();
+        style.size.width = gpui::relative(1.).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: gpui::Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+        if self.reset {
+            self.floor.set(None);
+        }
+        let rem = window.rem_size();
+        let (gap, head) = (self.gap.to_pixels(rem), self.head.to_pixels(rem));
+        for (anchor, el) in &mut self.notes {
+            let size = el.layout_as_root(gpui::size(gpui::AvailableSpace::Definite(bounds.size.width), gpui::AvailableSpace::MinContent), window, cx);
+            let mut y = self.spots.borrow().get(anchor).map(|m| *m - head).unwrap_or(bounds.origin.y);
+            if let Some(f) = self.floor.get() {
+                y = y.max(f + gap);
+            }
+            el.prepaint_at(point(bounds.origin.x, y), window, cx);
+            self.floor.set(Some(y + size.height));
+        }
+    }
+
+    fn paint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, _: gpui::Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+        for (_, el) in &mut self.notes {
+            el.paint(window, cx);
+        }
+    }
+}
+
+/// What a margin's notes are drawn with.
+struct Shown {
+    me: WeakEntity<Reader>,
+    open: Option<String>,
+    over: Option<String>,
+    editing: Option<(String, Entity<Textarea>)>,
+    sel: Sel,
+    can_edit: bool,
+    can_delete: bool,
+}
+
+/// A note in the margin: its term, its words (or the box editing them), and the title of the
+/// document it's from when that's another; Edit and Delete under the pointer.
+fn note_view(n: &Note, order: u64, shown: &Shown, l: &Look, window: &mut Window, cx: &mut App) -> AnyElement {
+    let over = shown.over.as_deref() == Some(n.id.as_str());
+    let field = shown.editing.as_ref().filter(|(e, _)| *e == n.id).map(|(_, t)| t.clone());
+    let open = n.from.is_none() && n.thread.is_some() && shown.open == n.thread;
+    let act = |label: &'static str, id: String, delete: bool| {
+        let me = shown.me.clone();
+        kit::press(kit::button(SharedString::from(format!("reader-note-{label}-{id}")), Btn::Flat, true, l), true, move |_, window, cx| {
+            cx.stop_propagation();
+            me.update(cx, |r, cx| if delete { r.delete_note(&id, cx) } else { r.start_edit(&id, window, cx) }).ok();
+        })
+        .h(u(16.))
+        .px(u(4.))
+        .text_size(u(11.))
+        .line_height(u(14.))
+        .text_color(l.ink3)
+        .child(label)
+        .into_any_element()
+    };
+    // The term, and the document it's from where that's another (edited there, not here).
+    let acts = over && field.is_none() && n.from.is_none() && (shown.can_edit || shown.can_delete);
+    let head = div()
+        .flex()
+        .items_center()
+        .gap(u(4.))
+        .h(u(16.))
+        .text_size(u(12.))
+        .line_height(u(16.))
+        .child(div().flex_none().max_w_full().truncate().font_weight(FontWeight::SEMIBOLD).text_color(l.ink).child(SharedString::from(n.term.clone())))
+        .when_some(n.from.as_ref(), |d, (_, title)| {
+            d.child(div().flex_none().text_color(l.ink3).child("·")).child(div().flex_1().min_w_0().truncate().text_color(l.ink2).underline().child(SharedString::from(format!("{title} ↗"))))
+        })
+        .when(n.url.is_some() && n.thread.is_none(), |d| d.child(div().flex_none().text_size(u(11.)).text_color(l.ink3).child("↗")));
+    let body = match field {
+        Some(t) => Textarea::root(&t, cx).text_color(l.ink).aria_label("Note").w_full().min_w_0().text_size(u(13.)).line_height(u(19.)).into_any_element(),
+        None => {
+            let ctx = markdown::Ctx {
+                id: format!("reader-note-{}", n.id),
+                order,
+                sel: shown.sel.clone(),
+                on_link: crate::chat::reading_on_link(),
+                on_picture: crate::chat::on_picture(),
+                ink: Some(if l.dark { l.ink.opacity(0.8) } else { l.ink2 }),
+                cell: false,
+                pictures: Default::default(),
+                formulas: Default::default(),
+                reading: None,
+            };
+            // At most six lines beside the words; the thread behind it has the rest.
+            div().text_size(u(13.)).line_height(u(19.)).max_h(u(19. * 6.)).overflow_hidden().child(markdown::render(&Doc::of(&n.text), &ctx, l, window, cx)).into_any_element()
+        }
+    };
+    let me = shown.me.clone();
+    let me2 = shown.me.clone();
+    let (id, id2) = (n.id.clone(), n.id.clone());
+    div()
+        .id(SharedString::from(format!("reader-note-{}", n.id)))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(u(2.))
+        .pl(u(10.))
+        .border_l_2()
+        .border_color(if open || over { l.ink } else { l.ink3.opacity(if l.dark { 0.7 } else { 0.45 }) })
+        .when(n.thread.is_some() || n.url.is_some(), |d| d.cursor_pointer())
+        .on_hover(move |h: &bool, _, cx| {
+            let h = *h;
+            me.update(cx, |r, cx| {
+                if h {
+                    r.over_note = Some(id.clone());
+                } else if r.over_note.as_deref() == Some(id.as_str()) {
+                    r.over_note = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .on_click(move |_, window, cx| {
+            me2.update(cx, |r, cx| r.click_note(&id2, window, cx)).ok();
+        })
+        .child(head)
+        .child(body)
+        // Under the pointer, below its words: the term keeps its line.
+        .when(acts, |d| {
+            d.child(
+                div()
+                    .flex()
+                    .gap(u(2.))
+                    .ml(u(-4.))
+                    .when(shown.can_edit, |d| d.child(act("Edit", n.id.clone(), false)))
+                    .when(shown.can_delete, |d| d.child(act("Delete", n.id.clone(), true))),
+            )
+        })
+        .into_any_element()
 }
 
 /// Whole sentences of `text`, as many as fit in about `most` characters (always the first).
@@ -1119,6 +1561,12 @@ impl Reader {
         let k = &e.keystroke;
         let m = &k.modifiers;
         if k.key == "escape" {
+            if self.editing.take().is_some() {
+                window.focus(&self.focus, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if self.close_pop(cx) {
                 cx.stop_propagation();
                 return;
@@ -1192,6 +1640,7 @@ impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = Look::get(cx);
         self.sel.frame();
+        self.note_sel.frame();
         self.reveal_now();
         let column: AnyElement = if !self.sections.is_empty() {
             let sel = self.sel.clone();
