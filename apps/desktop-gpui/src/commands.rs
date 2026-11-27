@@ -182,7 +182,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         own("Go", "Spaces in Order", "⌘2–⌘9"),
         c("Go", "Previous Space", &["cmd-up"], Command::Previous),
         c("Go", "Next Space", &["cmd-down"], Command::Next),
-        own("Go", "Enclosing Space", "Esc"),
+        own("Go", "Enclosing Space", "⎋"),
         c("Go", "Back", &["cmd-["], Command::Back),
         c("Go", "Forward", &["cmd-]"], Command::Forward),
         c("Go", "Sidebar", &["cmd-j"], Command::Sidebar),
@@ -201,6 +201,10 @@ pub fn shortcuts() -> Vec<Shortcut> {
         own("Messages", "Send", "↵"),
         own("Messages", "New Line", "⇧↵"),
         own("Messages", "Edit Last", "↑"),
+        own("Messages", "Cancel Reply", "⎋"),
+        own("Messages", "Cancel Edit", "⎋"),
+        own("Messages", "Cancel Dictation", "⎋"),
+        own("Messages", "Finish Dictation", "↵"),
         s("Messages", "Pick a Message", &["alt-up"], Some("Chat && !TextField"), act!(PickUp)),
         s("Messages", "Previous Message", &["up", "k", "alt-up"], Some("Picking && !TextField"), act!(PickUp)),
         s("Messages", "Next Message", &["down", "j", "alt-down"], Some("Picking && !TextField"), act!(PickDown)),
@@ -213,7 +217,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s("Lists", "Previous Row", &["k"], Some("Thread && !TextField"), act!(PreviousRow)),
         s("Lists", "Next Row", &["j"], Some("Thread && !TextField"), act!(NextRow)),
         own("Lists", "Open", "↵"),
-        own("Lists", "Back to the Box", "Esc"),
+        own("Lists", "Back to the Box", "⎋"),
         s("Asks", "Approve", &["cmd-enter"], Some("Rail"), act!(Approve)),
         s("Asks", "Dismiss", &["cmd-backspace"], Some("Rail"), act!(Dismiss)),
         s("Asks", "Approve", &["cmd-enter"], Some("AskWindow"), act!(Approve)),
@@ -252,7 +256,7 @@ pub fn keys_of(keys: &str) -> String {
         "left" => "←".into(),
         "right" => "→".into(),
         "enter" => "↵".into(),
-        "escape" => "Esc".into(),
+        "escape" => "⎋".into(),
         "backspace" => "⌫".into(),
         "tab" => "⇥".into(),
         "space" => "Space".into(),
@@ -282,6 +286,15 @@ pub fn shown_keys(s: &Shortcut) -> String {
     let mut ks: Vec<String> = s.keys.iter().take(2).map(|k| keys_of(k)).collect();
     ks.dedup();
     ks.join("  ")
+}
+
+/// The keys a control shows beside it, by its name in the list (its first listing), so the
+/// control and the sheet can't disagree.
+pub fn keys_named(label: &str) -> &'static str {
+    static SHOWN: std::sync::LazyLock<Vec<(&'static str, String)>> = std::sync::LazyLock::new(|| {
+        shortcuts().iter().map(|s| (s.label, s.shown.map(str::to_string).unwrap_or_else(|| s.keys.first().map(|k| keys_of(k)).unwrap_or_default()))).collect()
+    });
+    SHOWN.iter().find(|(l, _)| *l == label).map(|(_, k)| k.as_str()).unwrap_or("")
 }
 
 /// The sheet's lines, by group: a name once in its group, the first keys it's listed with.

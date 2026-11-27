@@ -99,6 +99,25 @@ const keptTurns = (
   return kept
 }
 
+const field = (v: unknown, key: string): unknown =>
+  typeof v === "object" && v !== null && key in v ? Reflect.get(v, key) : undefined
+
+const SAY = "autonomy_say"
+
+/**
+ * The words of the agent's say (autonomy's), the one call whose words reach the user: called by any
+ * provider's name for it, or through the apps' `call_tool`. Empty for any other call.
+ */
+export const sayWords = (name: string, input: unknown) => {
+  const proxied = name.endsWith("call_tool")
+  const called = proxied ? field(input, "name") : name
+  const args = proxied ? field(input, "arguments") : input
+  const text = field(args, "text")
+  return typeof called === "string" && called.endsWith(SAY) && typeof text === "string"
+    ? text.trim()
+    : ""
+}
+
 /**
  * One exchange in plain words, as history_search shows it and history_read with `tools` (each call
  * and result cut short): what the experiment's history tools gave the model (.experiments/context).
@@ -124,6 +143,10 @@ export const exchangeText = (rows: readonly Item[], tools: boolean) =>
           return [`Switch: ${r.text}`]
         }
         case "tool": {
+          const words = sayWords(r.name, r.input)
+          if (words !== "" && !tools) {
+            return [`Switch said: ${words}`]
+          }
           return tools ? [`Switch called ${r.name} ${JSON.stringify(r.input).slice(0, 400)}`] : []
         }
         case "result": {

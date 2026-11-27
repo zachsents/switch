@@ -1,6 +1,6 @@
 // What the reader keeps: each document's words in a file of its own (`docs/<id>.json`, written
 // whole), and in its log the documents opened, their highlights and their threads, each a passage
-// with the questions asked about it and their answers. The same events go to the brain.
+// with the questions asked about it and Switch's answers. The same events go to the brain.
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
@@ -31,6 +31,8 @@ export const Opened = defineEvent(
     source: Schema.String,
     words: Schema.Finite,
     sections: Schema.Finite,
+    /** The space it was opened from: where its threads with Switch are. */
+    space: Schema.optionalKey(Schema.String),
   }),
 )
 
@@ -61,6 +63,10 @@ export const Asked = defineEvent(
     message: Schema.String,
     question: Schema.String,
     quote: Schema.optionalKey(Quote),
+    /** A new thread's space: where its side thread with Switch is. */
+    space: Schema.optionalKey(Schema.String),
+    /** That side thread (switch-ext-kit's `sideThread`), whose record holds the conversation. */
+    side: Schema.optionalKey(Schema.String),
   }),
 )
 
@@ -74,6 +80,7 @@ export const Answered = defineEvent(
     /** What the answer says; empty when it failed. */
     answer: Schema.String,
     failed: Schema.optionalKey(Schema.String),
+    side: Schema.optionalKey(Schema.String),
   }),
 )
 
@@ -94,6 +101,7 @@ export interface DocRow {
   readonly words: number
   readonly sections: number
   readonly opened: number
+  readonly space: string | null
 }
 
 export interface HighlightRow {
@@ -107,6 +115,7 @@ export interface ThreadRow {
   readonly id: string
   readonly doc: string
   readonly quote: string | null
+  readonly space: string | null
   readonly started: number
   readonly updated: number
 }
@@ -122,14 +131,15 @@ export interface MessageRow {
 
 const projection: Projection = {
   name: "reader",
-  version: 1,
+  version: 2,
   tables: ["docs", "highlights", "threads", "messages"],
   create: `
     CREATE TABLE docs (doc TEXT PRIMARY KEY, title TEXT NOT NULL, format TEXT NOT NULL,
-      source TEXT NOT NULL, words INTEGER NOT NULL, sections INTEGER NOT NULL, opened INTEGER NOT NULL);
+      source TEXT NOT NULL, words INTEGER NOT NULL, sections INTEGER NOT NULL, opened INTEGER NOT NULL,
+      space TEXT);
     CREATE TABLE highlights (id TEXT PRIMARY KEY, doc TEXT NOT NULL, quote TEXT NOT NULL, time INTEGER NOT NULL);
-    CREATE TABLE threads (id TEXT PRIMARY KEY, doc TEXT NOT NULL, quote TEXT, started INTEGER NOT NULL,
-      updated INTEGER NOT NULL);
+    CREATE TABLE threads (id TEXT PRIMARY KEY, doc TEXT NOT NULL, quote TEXT, space TEXT,
+      started INTEGER NOT NULL, updated INTEGER NOT NULL);
     CREATE TABLE messages (id TEXT PRIMARY KEY, thread TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
       failed TEXT, time INTEGER NOT NULL);
     CREATE INDEX messages_thread ON messages (thread, time);
@@ -137,10 +147,11 @@ const projection: Projection = {
   on: [
     on(Opened, (db, p, e) => {
       db.run(
-        `INSERT INTO docs (doc, title, format, source, words, sections, opened) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO docs (doc, title, format, source, words, sections, opened, space) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (doc) DO UPDATE SET title = excluded.title, format = excluded.format,
-           source = excluded.source, words = excluded.words, sections = excluded.sections, opened = excluded.opened`,
-        [p.doc, p.title, p.format, p.source, p.words, p.sections, e.time],
+           source = excluded.source, words = excluded.words, sections = excluded.sections,
+           opened = excluded.opened, space = coalesce(excluded.space, docs.space)`,
+        [p.doc, p.title, p.format, p.source, p.words, p.sections, e.time, p.space ?? null],
       )
     }),
     on(Highlighted, (db, p, e) => {
@@ -156,9 +167,16 @@ const projection: Projection = {
     }),
     on(Asked, (db, p, e) => {
       db.run(
-        `INSERT INTO threads (id, doc, quote, started, updated) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO threads (id, doc, quote, space, started, updated) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET updated = excluded.updated`,
-        [p.thread, p.doc, p.quote === undefined ? null : JSON.stringify(p.quote), e.time, e.time],
+        [
+          p.thread,
+          p.doc,
+          p.quote === undefined ? null : JSON.stringify(p.quote),
+          p.space ?? null,
+          e.time,
+          e.time,
+        ],
       )
       db.run(
         "INSERT OR REPLACE INTO messages (id, thread, role, text, failed, time) VALUES (?, ?, 'user', ?, NULL, ?)",

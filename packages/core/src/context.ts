@@ -15,6 +15,7 @@ import {
   MessageReacted,
   saidBy,
   seqAt,
+  sideOfThread,
   SpaceId,
   ThreadId,
   userOf,
@@ -27,6 +28,7 @@ import { isJson, messageOf } from "switch-ext-kit"
 import { Effect, Option, Schema } from "effect"
 
 import { elsewhere } from "./elsewhere.ts"
+import { isWake, sideLines, sideStable } from "./side.ts"
 import { healthLine, macsLine, openHere, surprisesFor } from "./situation.ts"
 
 export const IDENTITY = `You are Switch, the user's agent: one identity across all their spaces, aware of everything in the brain, doing the work. The user sees only what needs them.
@@ -64,6 +66,8 @@ const SPACE = "space:"
 export const threadOf = (space: SpaceId) => ThreadId.make(`${SPACE}${space}`)
 export const spaceOf = (thread: ThreadId) =>
   thread.startsWith(SPACE) ? SpaceId.make(thread.slice(SPACE.length)) : null
+/** The space a thread is in by its id: a space's master thread's, or an extension's side thread's. */
+export const homeOf = (thread: ThreadId) => spaceOf(thread) ?? sideOfThread(thread)?.space ?? null
 
 const clip = (text: string, n: number) => {
   const flat = text.replaceAll(/\s+/gu, " ").trim()
@@ -118,12 +122,23 @@ const scriptLine = (e: StoredEvent): Line | null => {
   }
 }
 
-/** An extension's event: its health has no line; a message or a record says itself. */
+/**
+ * An extension's event: its health has no line, nor its wake (a turn of its own), nor one about a
+ * side thread of its own (its `side`: the thread's record says it); a message or a record says itself.
+ */
 const extensionLine = (e: StoredEvent): Line | null | undefined => {
+  if (
+    isJson(e.payload) &&
+    typeof e.payload.side === "string" &&
+    sideOfThread(e.payload.side)?.app === e.source
+  ) {
+    return null
+  }
   // An extension's own health isn't about any space: its vitals, and its heartbeat with or without
   // a stream (the senses watch reads those).
   if (
     e.type.endsWith(".heartbeat") ||
+    isWake(e) ||
     (isJson(e.payload) &&
       typeof e.payload.stream === "string" &&
       e.payload.stream.startsWith("vitals/"))
@@ -180,7 +195,7 @@ export const line = (e: StoredEvent): Line | null => {
   // A space's master thread is tagged with its space on opening: the UI's link from thread to space.
   if (e.type === ThreadOpened.type) {
     const opened = Option.getOrNull(decodeOpened(e.payload))
-    const space = opened === null ? null : spaceOf(opened.thread)
+    const space = opened === null ? null : homeOf(opened.thread)
     return opened === null || space === null
       ? null
       : { text: `Opened ${opened.title}`, home: space }
@@ -247,7 +262,8 @@ const stored = (r: Row): StoredEvent => ({ ...r, payload: parse(r.payload) })
 const hhmm = (t: number) =>
   new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
 
-const since = (db: Database, space: SpaceId, after: number) =>
+/** `chat`: the space's own messages are kept, for a side thread, whose conversation they aren't. */
+const since = (db: Database, space: SpaceId, after: number, chat: boolean) =>
   db
     .query<Row, [string, number]>(
       `SELECT e.*, t.home FROM tags t JOIN events e ON e.seq = t.seq
@@ -261,6 +277,7 @@ const since = (db: Database, space: SpaceId, after: number) =>
     .filter((e) => !e.type.startsWith("thread."))
     .filter(
       (e) =>
+        chat ||
         !(
           e.type === MessagePosted.type &&
           (e.source !== "agent" || Option.getOrNull(decodePosted(e.payload))?.space === space)
@@ -406,7 +423,8 @@ const deltaRead = defineRead(
   "core/context/delta",
   (db, { space, thread, seen, after, noted, recall, now }: DeltaInput) => {
     const names = new Map(allSpaces(db).map((s) => [s.id, s.name]))
-    const fresh = since(db, space, after)
+    const side = spaceOf(thread) === null
+    const fresh = since(db, space, after, side)
     const raw = () =>
       fresh.map((e) => {
         const l = line(e)?.text ?? e.type
@@ -427,8 +445,13 @@ const deltaRead = defineRead(
       },
     })
     const flight = inFlight(db, thread, now)
+    // A space's own turns see what was asked in its side threads; a side thread sees the others.
+    const asides = sideLines(db, space, after, thread)
     const parts = [
       here.length > 0 ? `In this space:\n${here.join("\n")}` : "",
+      asides.length > 0
+        ? `Side threads here (asked in an extension, not in this chat; history_search finds them):\n${asides.join("\n")}`
+        : "",
       ...lately(db, fresh),
       surprisesFor(db, space, thread, seen),
       openHere(db, space, thread, now),
@@ -463,7 +486,7 @@ export const makeContext = (profile: Effect.Effect<Profile>) =>
     /** After identity in the system prompt: who the user is, the space and its core memory. */
     const stable = (t: Thread) =>
       Effect.gen(function* stabling() {
-        const space = spaceOf(t.thread)
+        const space = homeOf(t.thread)
         if (space === null) {
           // A task told only it orchestrates handed its whole job to one child, hop after hop.
           return t.parent === null ? "" : `You are a task (${t.thread}), started by ${t.parent}.`
@@ -478,15 +501,16 @@ export const makeContext = (profile: Effect.Effect<Profile>) =>
           who === "" ? "" : `User: ${who}`,
           s === undefined ? "" : `Space: ${describe(s, spaces)} (id ${s.id})`,
           core === "" ? "" : `<memory>\n${core}\n</memory>`,
+          sideStable(t.thread),
         ]
           .filter((x) => x !== "")
           .join("\n\n")
       })
 
-    /** Before a message in a space's thread. Tasks get only their task. */
+    /** Before a message in a space's thread or a side thread. Tasks get only their task. */
     const delta = (t: Thread, text: string) =>
       Effect.gen(function* delting() {
-        const space = spaceOf(t.thread)
+        const space = homeOf(t.thread)
         if (space === null) {
           return ""
         }

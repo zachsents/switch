@@ -3,7 +3,9 @@
 // them with the user's own profile: `models/decide` picks among choices, `models/complete` writes
 // text. The same connection carries an extension's action items (`ax.switch/asks`): `asks/open` and
 // `asks/close`, and the rest it asks of the host (`Host`): other extensions' tools, the user's
-// connections, and brain events it follows.
+// connections, and brain events it follows. And it reaches the agent itself (`Switch`, under
+// `ax.switch/agent`): asks it in a side thread of its own, steers a live session, reads the brain
+// within its reach.
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { Context, Deferred, Effect, Layer, Option, Queue, Schema } from "effect"
@@ -94,8 +96,15 @@ export interface ModelsService {
   readonly Models: unique symbol
 }
 
-/** Sends one request to the client and decodes its result. */
-export type Send = (method: string, params: Readonly<Record<string, unknown>>) => Promise<unknown>
+/**
+ * Sends one request to the client. With `progress`, it hears how the request is going and waits as
+ * long as that goes on.
+ */
+export type Send = (
+  method: string,
+  params: Readonly<Record<string, unknown>>,
+  progress?: (message: string) => void,
+) => Promise<unknown>
 
 /** A brain event an extension follows (`switch/follow`), as the host sends it (`switch/event`). */
 export interface Followed {
@@ -271,117 +280,221 @@ const FOLLOW_FILE = "follow.json"
 const matches = (patterns: readonly string[], type: string) =>
   patterns.some((p) => (p.endsWith("*") ? type.startsWith(p.slice(0, -1)) : p === type))
 
-const modelsLayer: Layer.Layer<ModelsService | AsksService | HostService | PeerService> =
-  Layer.effectContext(
-    Effect.gen(function* making() {
-      const ready = yield* Deferred.make<Send | null>()
-      let current: Send | null = null
-      const handlers: {
-        readonly types: readonly string[]
-        readonly handle: (e: Followed) => Effect.Effect<void>
-      }[] = []
-      const file = path.resolve(FOLLOW_FILE)
-      let after = Option.match(
-        existsSync(file) ? lastHandled(readFileSync(file, "utf-8")) : Option.none(),
-        { onNone: () => 0, onSome: (x) => x.after },
-      )
-      const heard = yield* Queue.unbounded<Followed>()
-      yield* Effect.forkScoped(
-        Effect.forever(
-          Effect.gen(function* handling() {
-            const e = yield* Queue.take(heard)
-            if (e.seq <= after) {
-              return
+/** The client capability extension a host declares when it reaches the agent for extensions. */
+export const AGENT = "ax.switch/agent"
+
+/**
+ * An ask of the agent: the user's words (`text`), asked in the extension's side thread `key` (its
+ * own name for it: 1 to 64 letters, digits, `_`, `.` or `-`) in `space` (an id or a name; Home
+ * when absent). `note` goes beside the words for the agent: what they're about (a document, the
+ * passage). `title` names the thread when it opens. `id` makes it once: the same id again (after a
+ * restart) answers from the same turn; a fresh one when absent.
+ */
+export interface SwitchAsk {
+  readonly key: string
+  readonly text: string
+  readonly space?: string
+  readonly note?: string
+  readonly title?: string
+  readonly id?: string
+}
+
+/**
+ * What the turn that took it in said back (each say, in order), its thread (`side:<app>:<space>:<key>`)
+ * and turn, and how it ended: `done`, or `interrupted`, `failed` or `limited` with `result` saying why.
+ */
+export interface SwitchAnswer {
+  readonly thread: string
+  readonly turn: string | null
+  readonly said: readonly string[]
+  readonly status: string
+  readonly result: string
+}
+
+export interface SwitchShape {
+  /**
+   * Asks the agent: a real turn of Switch's, the space's memory and context in it, in a thread the
+   * extension owns, never in the space's chat. `progress` hears its words as they stream: the turn's
+   * text so far, then what it said.
+   */
+  readonly ask: (
+    ask: SwitchAsk,
+    progress?: (soFar: string) => Effect.Effect<void>,
+  ) => Effect.Effect<SwitchAnswer, ModelError>
+  /**
+   * Words into a live session, between its tool calls, or a turn of their own: one of its own side
+   * threads, or work its manifest's `reaches.steers` names.
+   */
+  readonly steer: (thread: string, text: string) => Effect.Effect<void, ModelError>
+  /**
+   * The brain, as `brain_query` reads it, within its reach: the log's events of its own and of the
+   * types it follows (`from: "events"`), and its own side threads (`from: "work"`).
+   */
+  readonly read: (
+    query: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<readonly Readonly<Record<string, unknown>>[], ModelError>
+}
+
+/** The `Switch` service's identifier, as a requirement. */
+export interface SwitchService {
+  readonly Switch: unique symbol
+}
+
+const switchKey: Context.Service<SwitchService, SwitchShape> = Context.Service<
+  SwitchService,
+  SwitchShape
+>("switch-ext-kit/Switch")
+
+const switchAnswer = Schema.Struct({
+  thread: Schema.String,
+  turn: Schema.NullOr(Schema.String),
+  said: Schema.Array(Schema.String),
+  status: Schema.String,
+  result: Schema.String,
+})
+const rows = Schema.Struct({ rows: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)) })
+
+/** What `Models.layer` provides. */
+type HostServices = ModelsService | AsksService | HostService | PeerService | SwitchService
+
+const modelsLayer: Layer.Layer<HostServices> = Layer.effectContext(
+  Effect.gen(function* making() {
+    const ready = yield* Deferred.make<Send | null>()
+    let current: Send | null = null
+    const handlers: {
+      readonly types: readonly string[]
+      readonly handle: (e: Followed) => Effect.Effect<void>
+    }[] = []
+    const file = path.resolve(FOLLOW_FILE)
+    let after = Option.match(
+      existsSync(file) ? lastHandled(readFileSync(file, "utf-8")) : Option.none(),
+      { onNone: () => 0, onSome: (x) => x.after },
+    )
+    const heard = yield* Queue.unbounded<Followed>()
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.gen(function* handling() {
+          const e = yield* Queue.take(heard)
+          if (e.seq <= after) {
+            return
+          }
+          for (const h of handlers) {
+            if (matches(h.types, e.type)) {
+              yield* h.handle(e)
             }
-            for (const h of handlers) {
-              if (matches(h.types, e.type)) {
-                yield* h.handle(e)
-              }
-            }
-            after = e.seq
-            writeFileAtomic(file, JSON.stringify({ after }))
-          }),
-        ),
-      )
-      const refollow = (send: Send) => {
-        const types = [...new Set(handlers.flatMap((h) => h.types))]
-        if (types.length > 0) {
-          void send("switch/follow", { types, after }).catch(() => {
-            /* the next client follows again */
-          })
-        }
-      }
-      const peer: PeerShape = {
-        attach: (send) => {
-          current = send
-          Deferred.doneUnsafe(ready, Effect.succeed(send))
-          if (send !== null) {
-            refollow(send)
           }
-        },
-        heard: (raw) => {
-          const e = decodeFollowed(raw)
-          if (Option.isSome(e)) {
-            Queue.offerUnsafe(heard, e.value)
-          }
-        },
-      }
-      const ask = <A>(
-        method: string,
-        params: Readonly<Record<string, unknown>>,
-        result: Schema.Codec<A, unknown>,
-      ) =>
-        Effect.gen(function* asking() {
-          const send = yield* Deferred.await(ready).pipe(
-            Effect.timeoutOrElse({
-              duration: CONNECT_MS,
-              orElse: () => Effect.fail(new ModelError({ message: "No host connected" })),
-            }),
-          )
-          const now = current ?? send
-          if (now === null) {
-            return yield* Effect.fail(new ModelError({ message: "The host offers none" }))
-          }
-          const raw = yield* Effect.tryPromise({
-            try: async () => await now(method, params),
-            catch: failed,
-          })
-          return yield* Schema.decodeUnknownEffect(result)(raw).pipe(Effect.mapError(failed))
+          after = e.seq
+          writeFileAtomic(file, JSON.stringify({ after }))
+        }),
+      ),
+    )
+    const refollow = (send: Send) => {
+      const types = [...new Set(handlers.flatMap((h) => h.types))]
+      if (types.length > 0) {
+        void send("switch/follow", { types, after }).catch(() => {
+          /* the next client follows again */
         })
-      const models: ModelsShape = {
-        decide: (input, questions, role = "decision") =>
-          ask("models/decide", { input, questions, role }, decision),
-        complete: (role, system, prompt) =>
-          ask("models/complete", { role, system, prompt }, completion),
       }
-      const asks: AsksShape = {
-        open: (input, id) =>
-          ask("asks/open", { ask: input, ...(id !== undefined && { id }) }, opened),
-        close: (id, status) => Effect.asVoid(ask("asks/close", { id, status }, Schema.Unknown)),
-      }
-      const host: HostShape = {
-        request: ask,
-        call: (name, args) => ask("switch/call", { name, arguments: args }, record),
-        accounts: (provider) =>
-          Effect.map(ask("connections/list", { provider }, accountList), (r) =>
-            r.accounts.map((a) => a.account),
-          ),
-        token: (provider, account) =>
-          Effect.map(ask("connections/token", { provider, account }, tokenOf), (t) => t.token),
-        follow: (types, handle) =>
-          Effect.gen(function* following() {
-            handlers.push({ types, handle })
-            const all = [...new Set(handlers.flatMap((h) => h.types))]
-            yield* ask("switch/follow", { types: all, after }, Schema.Unknown)
+    }
+    const peer: PeerShape = {
+      attach: (send) => {
+        current = send
+        Deferred.doneUnsafe(ready, Effect.succeed(send))
+        if (send !== null) {
+          refollow(send)
+        }
+      },
+      heard: (raw) => {
+        const e = decodeFollowed(raw)
+        if (Option.isSome(e)) {
+          Queue.offerUnsafe(heard, e.value)
+        }
+      },
+    }
+    const ask = <A>(
+      method: string,
+      params: Readonly<Record<string, unknown>>,
+      result: Schema.Codec<A, unknown>,
+      progress?: (message: string) => void,
+    ) =>
+      Effect.gen(function* asking() {
+        const send = yield* Deferred.await(ready).pipe(
+          Effect.timeoutOrElse({
+            duration: CONNECT_MS,
+            orElse: () => Effect.fail(new ModelError({ message: "No host connected" })),
           }),
-      }
-      return Context.make(modelsKey, models).pipe(
-        Context.add(asksKey, asks),
-        Context.add(hostKey, host),
-        Context.add(Peer, peer),
-      )
-    }),
-  )
+        )
+        const now = current ?? send
+        if (now === null) {
+          return yield* Effect.fail(new ModelError({ message: "The host offers none" }))
+        }
+        const raw = yield* Effect.tryPromise({
+          try: async () => await now(method, params, progress),
+          catch: failed,
+        })
+        return yield* Schema.decodeUnknownEffect(result)(raw).pipe(Effect.mapError(failed))
+      })
+    const models: ModelsShape = {
+      decide: (input, questions, role = "decision") =>
+        ask("models/decide", { input, questions, role }, decision),
+      complete: (role, system, prompt) =>
+        ask("models/complete", { role, system, prompt }, completion),
+    }
+    const asks: AsksShape = {
+      open: (input, id) =>
+        ask("asks/open", { ask: input, ...(id !== undefined && { id }) }, opened),
+      close: (id, status) => Effect.asVoid(ask("asks/close", { id, status }, Schema.Unknown)),
+    }
+    const host: HostShape = {
+      request: ask,
+      call: (name, args) => ask("switch/call", { name, arguments: args }, record),
+      accounts: (provider) =>
+        Effect.map(ask("connections/list", { provider }, accountList), (r) =>
+          r.accounts.map((a) => a.account),
+        ),
+      token: (provider, account) =>
+        Effect.map(ask("connections/token", { provider, account }, tokenOf), (t) => t.token),
+      follow: (types, handle) =>
+        Effect.gen(function* following() {
+          handlers.push({ types, handle })
+          const all = [...new Set(handlers.flatMap((h) => h.types))]
+          yield* ask("switch/follow", { types: all, after }, Schema.Unknown)
+        }),
+    }
+    const agent: SwitchShape = {
+      ask: (input, progress) =>
+        Effect.gen(function* asking() {
+          const id = input.id ?? crypto.randomUUID()
+          const streamed = yield* Queue.unbounded<string>()
+          const telling = progress
+          if (telling !== undefined) {
+            yield* Effect.forkScoped(
+              Effect.forever(Effect.flatMap(Queue.take(streamed), (t) => telling(t))),
+            )
+          }
+          return yield* ask("switch/ask", { ...input, id }, switchAnswer, (message) => {
+            Queue.offerUnsafe(streamed, message)
+          })
+        }).pipe(Effect.scoped),
+      steer: (thread, text) =>
+        Effect.asVoid(
+          ask("switch/steer", { thread, text, id: crypto.randomUUID() }, Schema.Unknown),
+        ),
+      read: (query) => Effect.map(ask("switch/read", query, rows), (r) => r.rows),
+    }
+    return Context.make(modelsKey, models).pipe(
+      Context.add(asksKey, asks),
+      Context.add(hostKey, host),
+      Context.add(switchKey, agent),
+      Context.add(Peer, peer),
+    )
+  }),
+)
+
+/** The agent through the host: provided by `Models.layer`, which `serve` connects. */
+export const Switch: Context.Service<SwitchService, SwitchShape> & {
+  readonly layer: typeof modelsLayer
+} = Object.assign(switchKey, { layer: modelsLayer })
 
 /** The host's other services (calls, connections, follows): provided by `Models.layer`. */
 export const Host: Context.Service<HostService, HostShape> & {

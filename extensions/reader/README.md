@@ -2,7 +2,7 @@
 
 Documents of any common kind in Switch's reader: a word's definition and a name's Wikipedia article a selection away, notable terms linked, and follow-up questions each in a thread of its own.
 
-Reads Switch's published pages, web articles, PDF, EPUB, DOCX, Markdown, plain text, CSV, code, and (on macOS) RTF, DOC and ODT. Definitions come from Wiktionary, summaries from Wikipedia; a thread's answers from the user's own turn model, given the document and the passage.
+Reads Switch's published pages, web articles, PDF, EPUB, DOCX, Markdown, plain text, CSV, code, and (on macOS) RTF, DOC and ODT. Definitions come from Wiktionary, summaries from Wikipedia; a thread's answers from Switch itself (the kit's `Switch.ask`), a real turn in a side thread of the document's space, given the document and the passage: the space's chat knows of it but never shows it.
 
 A [Switch](https://github.com/zachsents/switch) extension, built on [switch-ext-kit](../../packages/kit).
 

@@ -1,6 +1,6 @@
 {
   "name": "switch-ext-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The extension convention for Switch: tools, events, widgets and a manifest, served as MCP.",
   "license": "MIT",
   "repository": {

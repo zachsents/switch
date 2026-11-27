@@ -2,7 +2,8 @@
 // offers all their tools to agent sessions as one MCP server. Apps reach the core's models through
 // it (`ax.switch/models`), so no extension holds a model key, and put action items in the user's
 // queue (`ax.switch/asks`), reach the user's connections, other extensions' tools (`switch/call`)
-// and the brain's events (`switch/follow`). A tool that speaks in the user's name
+// and the brain's events (`switch/follow`), and reach the agent itself (`ax.switch/agent`: ask it in
+// a side thread of their own, steer a live session, read the brain within their reach). A tool that speaks in the user's name
 // (`speaksForPerson`) goes through the core's outbound guard before it runs for an agent or an
 // extension (`callAs`); the core's own calls (an approval being sent, a sealed answer) and the
 // user's clients call it directly.
@@ -30,11 +31,14 @@ import {
   placements,
   redact,
   redactPicture,
+  Query,
   redactRecord,
+  SIDE,
+  sideOfThread,
   spaceFor,
   WidgetInput,
 } from "@switch/brain"
-import type { BrainShape, Incoming } from "@switch/brain"
+import type { BrainShape, Condition, Incoming } from "@switch/brain"
 import { Models } from "@switch/models"
 import type { ModelError } from "@switch/models"
 import {
@@ -144,6 +148,68 @@ export type Guard = (call: Outbound) => Promise<CallToolResult | null>
 
 /** Told once a call the guard let through went out, with what came back. */
 export type Sent = (call: Outbound, result: CallToolResult) => Promise<void>
+
+/**
+ * What an extension asks the agent (`switch/ask`): its words, the user's, in its side thread `key`
+ * in `space` (else Home), with `note` beside them for the agent (what it's about). `id` makes it
+ * once: the same id again, after a restart on either side, answers the same turn.
+ */
+export interface SideAsk {
+  readonly key: string
+  readonly text: string
+  readonly id: string
+  readonly note?: string
+  readonly title?: string
+  readonly space?: string
+}
+
+/** What the turn that took an ask in said (each say, in order), and how it ended. */
+export interface SideAnswer {
+  readonly thread: string
+  readonly turn: string | null
+  readonly said: readonly string[]
+  readonly status: string
+  readonly result: string
+}
+
+/** The agent, as extensions reach it: the core's side threads and live sessions. */
+export interface Agent {
+  readonly ask: (
+    app: string,
+    ask: SideAsk,
+    /** Its words so far, as the turn streams them. */
+    progress: (text: string) => void,
+    signal: AbortSignal,
+  ) => Promise<SideAnswer>
+  /** Words into a thread's live session, between its tool calls, or a turn of their own. */
+  readonly steer: (app: string, thread: string, text: string, id: string) => Promise<void>
+}
+
+/** The client capability extensions reach the agent by: `switch/ask`, `switch/steer`, `switch/read`. */
+const AGENT = "ax.switch/agent"
+const sideAsked = Schema.toStandardSchemaV1(
+  Schema.Struct({
+    key: Schema.String,
+    text: Schema.String.check(Schema.isMinLength(1)),
+    id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    note: Schema.optionalKey(Schema.String),
+    title: Schema.optionalKey(Schema.String),
+    space: Schema.optionalKey(Schema.String),
+  }),
+)
+const steerAsked = Schema.toStandardSchemaV1(
+  Schema.Struct({
+    thread: Schema.String,
+    text: Schema.String.check(Schema.isMinLength(1)),
+    id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  }),
+)
+const readAsked = Schema.toStandardSchemaV1(Query)
+/**
+ * How often a long ask says it's still going: the extension's request waits on its progress, so a
+ * turn that's quiet for a while (a long tool) isn't cut off.
+ */
+const ASK_BEAT_MS = 20_000
 
 /** Up to this many tools are listed to agents as they are; past it, only search and call. */
 const LISTED_MAX = 24
@@ -379,6 +445,7 @@ export interface ExtensionConnections {
 const reaches = Schema.Struct({
   calls: Schema.optionalKey(Schema.Array(Schema.String)),
   follows: Schema.optionalKey(Schema.Array(Schema.String)),
+  steers: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 const decodeReaches = Schema.decodeUnknownOption(reaches)
 /** Who asked for a tool call (`CALLER` in its `_meta`): the work's thread and space. */
@@ -418,6 +485,52 @@ export interface PictureReader extends Readonly<typeof ReaderOffer.Type> {
 /** A name against an extension's declared names: exact, or a prefix ending in `*`. */
 const allowed = (declared: readonly string[], name: string) =>
   declared.some((d) => (d.endsWith("*") ? name.startsWith(d.slice(0, -1)) : d === name))
+
+/** A type a query's condition names, as a name or a prefix ending in `*`; null for any other condition. */
+const typesNamed = (c: Condition): (string | null)[] => {
+  if (c.op === "==" && typeof c.value === "string") {
+    return [c.value]
+  }
+  if (c.op === "startsWith" && typeof c.value === "string") {
+    return [`${c.value}*`]
+  }
+  if (c.op === "in" && Array.isArray(c.value)) {
+    return c.value.map((v) => (typeof v === "string" ? v : null))
+  }
+  return [null]
+}
+
+/**
+ * A query an extension may run (`switch/read`): of the log, only its own events and the types it
+ * follows (every type condition within them, its own when it names none); of the work, only its own
+ * side threads. Why not, else.
+ */
+const scopedQuery = (q: Query, app: string, follows: readonly string[]): Query | string => {
+  const where = q.where ?? []
+  const from = q.from ?? "events"
+  if (from === "work") {
+    return {
+      ...q,
+      where: [...where, { field: "thread", op: "startsWith", value: `${SIDE}${app}:` }],
+    }
+  }
+  if (from !== "events") {
+    return `${app} reads only the log (events) and its own side threads (work)`
+  }
+  const reachable = [`${app}.*`, ...follows]
+  const types = where.filter((c) => c.field === "type")
+  const within = (t: string | null) =>
+    t !== null &&
+    (reachable.includes(t) ||
+      (!t.endsWith("*") && allowed(reachable, t)) ||
+      (t.endsWith("*") && reachable.some((r) => r.endsWith("*") && t.startsWith(r.slice(0, -1)))))
+  if (!types.flatMap(typesNamed).every(within)) {
+    return `${app} reads only its own events and those it follows (${follows.join(", ") || "none"})`
+  }
+  return types.length > 0
+    ? q
+    : { ...q, where: [...where, { field: "type", op: "startsWith", value: `${app}.` }] }
+}
 
 const decodeWidget = Schema.decodeUnknownOption(widget)
 const decodeNeeds = Schema.decodeUnknownOption(Schema.Struct({ needs: Schema.Array(need) }))
@@ -600,6 +713,8 @@ export class Gateway extends Context.Service<
     readonly connections?: ExtensionConnections
     /** The space a thread's work is in: what an agent's call tells the tool it calls (`CALLER`). */
     readonly spaceOf?: (thread: string) => Promise<string>
+    /** The agent, for extensions to ask and steer (`ax.switch/agent`). */
+    readonly agent?: Agent
   }) =>
     Layer.effect(
       Gateway,
@@ -844,6 +959,7 @@ export class Gateway extends Context.Service<
                       [EVENTS]: {},
                       [MODELS]: {},
                       [ASKS]: {},
+                      ...(options.agent === undefined ? {} : { [AGENT]: {} }),
                       ...(options.connections === undefined ? {} : { [CONNECTIONS]: {} }),
                     },
                   },
@@ -956,6 +1072,68 @@ export class Gateway extends Context.Service<
                 relaying("follow", relay(from, before, through))
                 return { types: [...following] }
               })
+              // The agent itself: an ask in the extension's own side thread, answered by a real
+              // turn, its words streamed as progress; words into a live session (its own side
+              // threads, or the work `reaches.steers` names); and the brain read within its reach.
+              const { agent } = options
+              if (agent !== undefined) {
+                client.setRequestHandler("switch/ask", { params: sideAsked }, async (p, ctx) => {
+                  const token = ctx.mcpReq._meta?.progressToken
+                  let step = 0
+                  let last = ""
+                  const tell = (message: string) => {
+                    if (token === undefined) {
+                      return
+                    }
+                    step += 1
+                    void ctx.mcpReq
+                      .notify({
+                        method: "notifications/progress",
+                        params: { progressToken: token, progress: step, message },
+                      })
+                      .catch(() => {
+                        /* it went: asking again with the id picks the answer up */
+                      })
+                  }
+                  const beat = setInterval(() => {
+                    tell(last)
+                  }, ASK_BEAT_MS)
+                  try {
+                    const got = await agent.ask(
+                      plug.name,
+                      p,
+                      (text) => {
+                        last = text
+                        tell(text)
+                      },
+                      ctx.mcpReq.signal,
+                    )
+                    return { ...got, said: [...got.said] }
+                  } finally {
+                    clearInterval(beat)
+                  }
+                })
+                client.setRequestHandler("switch/steer", { params: steerAsked }, async (p) => {
+                  const { steers = [] } = await reach()
+                  if (sideOfThread(p.thread)?.app !== plug.name && !allowed(steers, p.thread)) {
+                    throw new Error(`${plug.name} doesn't reach ${p.thread}`)
+                  }
+                  await agent.steer(plug.name, p.thread, p.text, p.id)
+                  return {}
+                })
+                client.setRequestHandler("switch/read", { params: readAsked }, async (q) => {
+                  const { follows = [] } = await reach()
+                  const scoped = scopedQuery(q, plug.name, follows)
+                  if (typeof scoped === "string") {
+                    throw new TypeError(scoped)
+                  }
+                  const found = await Effect.runPromise(Effect.result(brain.query(scoped)))
+                  if (Result.isFailure(found)) {
+                    throw new Error(found.failure.reason)
+                  }
+                  return { rows: [...found.success.rows] }
+                })
+              }
               // The fingerprints of the secrets it holds (the vault's), in place of the last it gave:
               // every event, log line, tool result and send is matched against them (brain's
               // redact.ts), the values never leaving it. Kept while it's away.

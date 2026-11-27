@@ -1,17 +1,29 @@
 // Reader: documents of any common kind, read in Switch's own reader, with a word's definition and
 // a name's Wikipedia article a selection away, and follow-up questions each in a thread of its own,
-// anchored to its passage and answered with the document in mind, never in the space's chat.
+// anchored to its passage: asked of Switch itself (switch-ext-kit's `Switch.ask`), a real turn in a
+// side thread of the document's space, which the space's chat knows of but never shows.
 import { Effect, Schema } from "effect"
 import {
   AppEvents,
+  Caller,
   defineApp,
   defineEvent,
   Host,
   Models,
+  Progress,
+  sideThread,
+  Switch,
   SWITCH_CATALOG,
   tool,
 } from "switch-ext-kit"
-import type { Draft } from "switch-ext-kit"
+import type {
+  AppEventsService,
+  Draft,
+  HostService,
+  LogService,
+  ModelsService,
+  SwitchService,
+} from "switch-ext-kit"
 
 import { words } from "./formats.ts"
 import type { Parsed } from "./formats.ts"
@@ -182,6 +194,7 @@ const open = tool(
       }
       const doc = docId(source)
       const before = load(doc)
+      const caller = yield* Caller
       const stored: Stored = {
         doc,
         source,
@@ -203,6 +216,7 @@ const open = tool(
           source,
           words: stored.words,
           sections: stored.sections.length,
+          ...(caller.space !== null && { space: caller.space }),
         }),
       )
       yield* Effect.forkDetach(Effect.ignore(linkTerms(stored), { log: "Warn" }))
@@ -266,6 +280,51 @@ const stored = (doc: string) =>
     return s
   })
 
+/** The space a document was opened from, else null. */
+const spaceOfDoc = (doc: string) =>
+  read(
+    (db) =>
+      db.query<{ space: string | null }, [string]>("SELECT space FROM docs WHERE doc = ?").get(doc)
+        ?.space ?? null,
+  )
+
+/**
+ * Questions whose answer never came (the reader or Switch restarted while it was coming): asked
+ * again with the same id, so Switch's answer is read from the turn that took them in.
+ */
+export const resume = Effect.gen(function* resuming() {
+  const waiting = yield* read((db) =>
+    db
+      .query<
+        {
+          thread: string
+          doc: string
+          quote: string | null
+          space: string | null
+          message: string
+          text: string
+        },
+        []
+      >(
+        `SELECT t.id AS thread, t.doc, t.quote, t.space, m.id AS message, m.text FROM threads t
+         JOIN messages m ON m.id = (SELECT id FROM messages WHERE thread = t.id ORDER BY time DESC, rowid DESC LIMIT 1)
+         WHERE m.role = 'user'`,
+      )
+      .all(),
+  )
+  yield* Effect.forEach(
+    waiting,
+    (w) =>
+      Effect.gen(function* again() {
+        const s = load(w.doc)
+        if (s !== null) {
+          yield* askSwitch(s, w.thread, w.message, w.text, quoteOf(w.quote), w.space)
+        }
+      }),
+    { concurrency: 4, discard: true },
+  )
+})
+
 const threadsOf = (doc: string | null, only?: string) =>
   read((db) => {
     const threads =
@@ -283,6 +342,7 @@ const threadsOf = (doc: string | null, only?: string) =>
         id: t.id,
         doc: t.doc,
         quote: quoteOf(t.quote),
+        space: t.space,
         started: t.started,
         updated: t.updated,
         waiting: all.at(-1)?.role === "user",
@@ -456,73 +516,114 @@ const highlights = tool(
 
 // --- Threads ---
 
-/** Most of a document's words a thread's answer is given. */
-const BUDGET = 90_000
+/** About how much of the document goes beside a question: the passage's section and its neighbours. */
+const AROUND = 12_000
 
-/** The document as the answer reads it: all of it when it fits, else around the passage. */
-const contextOf = (s: Stored, section: number | undefined) => {
+/** The document around `section`: that section, then those either side while they fit. */
+const aroundOf = (s: Stored, section: number) => {
   const all = s.sections.map((sec) => {
     const label = sec.label ?? ""
-    if (label === "") {
-      return sec.markdown
-    }
-    return `[${s.format === "pdf" ? "Page " : ""}${label}]\n${sec.markdown}`
+    return label === ""
+      ? sec.markdown
+      : `[${s.format === "pdf" ? "Page " : ""}${label}]\n${sec.markdown}`
   })
-  const whole = all.join("\n\n")
-  if (whole.length <= BUDGET) {
-    return whole
-  }
-  const at = Math.min(Math.max(section ?? 0, 0), all.length - 1)
-  const picked = new Set<number>([0, at])
-  let size = (all[0]?.length ?? 0) + (all[at]?.length ?? 0)
-  for (let d = 1; d < all.length && size < BUDGET; d += 1) {
+  const at = Math.min(Math.max(section, 0), all.length - 1)
+  const picked = new Set<number>([at])
+  let size = all[at]?.length ?? 0
+  for (let d = 1; d < all.length && size < AROUND; d += 1) {
     for (const i of [at - d, at + d]) {
       const part = all[i]
-      if (part !== undefined && !picked.has(i) && size + part.length <= BUDGET) {
+      if (part !== undefined && !picked.has(i) && size + part.length <= AROUND) {
         picked.add(i)
         size += part.length
       }
     }
   }
   return [...picked]
-    .toSorted((a, b) => a - b)
+    .toSorted((x, y) => x - y)
     .map((i) => all[i])
     .join("\n\n[…]\n\n")
 }
 
-type Thread = Effect.Success<ReturnType<typeof threadsOf>>[number]
-
-/** The passage a thread is about, as the answer reads it. */
+/** The passage a thread is about, as Switch reads it. */
 const passageOf = (s: Stored, quote: Passage) => {
   const label = s.sections[quote.section]?.label ?? ""
   const where = label === "" ? "" : ` (${s.format === "pdf" ? "page " : ""}${label})`
-  return `The passage this thread is about${where}:\n<passage>\n${quote.prefix ?? ""}[[${quote.exact}]]${quote.suffix ?? ""}\n</passage>\n(The words in [[ ]] are what the reader selected.)`
+  return `The passage this thread is about${where}:\n<passage>\n${quote.prefix ?? ""}[[${quote.exact}]]${quote.suffix ?? ""}\n</passage>\n(The words in [[ ]] are what they selected.)`
 }
 
-/** What the answer is asked: the document, the passage, the thread so far and the question. */
-const promptOf = (
-  s: Stored,
-  quote: Passage | null | undefined,
-  existing: Thread | undefined,
-  question: string,
-) => {
-  const history = (existing?.messages ?? [])
-    .filter((m) => m.failed === undefined)
-    .map((m) => `${m.role === "user" ? "Reader" : "You"}: ${m.text}`)
-    .join("\n\n")
+/**
+ * What goes beside the user's question for Switch: the document, the passage and the words around
+ * it. The whole document is a call away (reader_content), so a long one isn't sent with every
+ * question.
+ */
+const noteOf = (s: Stored, quote: Passage | null | undefined) => {
   const author = s.author ?? ""
   return [
-    `Document: ${s.title}${author === "" ? "" : ` by ${author}`} (${s.format})`,
-    `<document>\n${contextOf(s, quote?.section)}\n</document>`,
+    `They're reading "${s.title}"${author === "" ? "" : ` by ${author}`} (${s.format}, doc ${s.doc}) in the reader, and ask about it there. All of it: reader_content with doc ${s.doc}.`,
     quote === null || quote === undefined ? "" : passageOf(s, quote),
-    history === "" ? "" : `The thread so far:\n${history}`,
-    `Reader: ${question}`,
+    `<document-excerpt>\n${aroundOf(s, quote?.section ?? 0)}\n</document-excerpt>`,
+    "Answer in Markdown (math as $…$ or $$…$$), as briefly as the question allows.",
   ]
     .filter((p) => p !== "")
     .join("\n\n")
 }
 
-const SYSTEM = `You answer a reader's follow-up questions about a document they're reading, in a thread of its own about one passage. Answer the question directly and briefly, from the document where it speaks to it and from what you know where it doesn't, saying which when it matters. Write Markdown; math as $…$ or $$…$$. No preamble, no restating the question, no em dashes.`
+/** What a thread's answer says once Switch's turn is over, or why there's none. */
+const answered = (said: readonly string[], status: string, result: string) => {
+  const answer = said.join("\n\n").trim()
+  if (answer !== "") {
+    return { answer }
+  }
+  return { answer: "", failed: status === "done" ? "No answer" : result || "Can't answer now" }
+}
+
+/** A reader thread's side thread with Switch, in its space (else Home). */
+const sideOf = (thread: string, space: string | null) =>
+  sideThread("reader", space ?? "home", thread)
+
+/** A question asked of Switch about a thread's passage, answered (or failed) in the log. */
+const askSwitch = (
+  s: Stored,
+  thread: string,
+  message: string,
+  question: string,
+  quote: Passage | null | undefined,
+  space: string | null,
+) =>
+  Effect.gen(function* asking() {
+    const agent = yield* Switch
+    const progress = yield* Progress
+    const got = yield* Effect.result(
+      agent.ask(
+        {
+          key: thread,
+          id: message,
+          text: question,
+          note: noteOf(s, quote),
+          title: `${s.title}${quote === null || quote === undefined ? "" : `: “${quote.exact.slice(0, 60)}”`}`,
+          ...(space !== null && { space }),
+        },
+        (soFar) => progress(soFar),
+      ),
+    )
+    const result =
+      got._tag === "Success"
+        ? answered(got.success.said, got.success.status, got.success.result)
+        : { answer: "", failed: got.failure.message || "Can't answer now" }
+    const side = sideOf(thread, space)
+    yield* happen(
+      Answered.make({
+        doc: s.doc,
+        thread,
+        message: `${message}-answer`,
+        answer: result.answer,
+        ...(result.failed !== undefined && { failed: result.failed }),
+        ...(side !== null && { side }),
+      }),
+    )
+    return result
+  })
 
 /** A thread id a client made itself, so it can show the thread before its answer comes. */
 const NEW_THREAD = /^th-[0-9a-z]{6,32}$/u
@@ -531,13 +632,14 @@ const ask = tool(
   "ask",
   {
     description:
-      "Asks a follow-up question about a document in a thread of its own, never in a space's chat: a new thread about `quote` (a passage), or the next question in `thread`; a new `thread` id (`th-` and 6 to 32 lowercase letters or digits) starts that thread. Waits for the answer, written with the document and the passage in mind.",
+      "Asks Switch a follow-up question about a document in a thread of its own, never in a space's chat: a new thread about `quote` (a passage), or the next question in `thread`; a new `thread` id (`th-` and 6 to 32 lowercase letters or digits) starts that thread. A real turn of Switch's in a side thread of `space` (else the space the document was opened from, else Home), with the document and the passage beside the question; waits for its answer.",
     closed: true,
     input: Schema.Struct({
       doc: Schema.String,
       question: Schema.String,
       thread: Schema.optionalKey(Schema.String),
       quote: Schema.optionalKey(Quote),
+      space: Schema.optionalKey(Schema.String),
     }),
   },
   (input) =>
@@ -554,36 +656,27 @@ const ask = tool(
         return yield* Effect.fail(new Error(`No thread ${input.thread}`))
       }
       const quote = existing?.quote ?? input.quote
+      const message = id("m")
+      // A thread stays in the space it started in: the asker's, else the document's.
+      const caller = yield* Caller
+      const space =
+        existing === undefined
+          ? (input.space ?? caller.space ?? (yield* spaceOfDoc(s.doc)))
+          : existing.space
+      const side = sideOf(thread, space)
       yield* happen(
         Asked.make({
           doc: s.doc,
           thread,
-          message: id("m"),
+          message,
           question,
           ...(existing === undefined && quote !== undefined && quote !== null && { quote }),
+          ...(existing === undefined && space !== null && { space }),
+          ...(side !== null && { side }),
         }),
       )
-      const prompt = promptOf(s, quote, existing, question)
-      const models = yield* Models
-      const got = yield* Effect.result(models.complete("turn", SYSTEM, prompt))
-      const message = id("m")
-      const answer = got._tag === "Success" ? got.success.text.trim() : ""
-      const failed = got._tag === "Failure" ? got.failure.message || "Can't answer now" : undefined
-      yield* happen(
-        Answered.make({
-          doc: s.doc,
-          thread,
-          message,
-          answer,
-          ...(failed !== undefined && { failed }),
-        }),
-      )
-      return {
-        thread,
-        answer,
-        ...(failed !== undefined && { failed }),
-        view: viewOf(s.doc, thread),
-      }
+      const result = yield* askSwitch(s, thread, message, question, quote, space)
+      return { thread, ...result, view: viewOf(s.doc, thread) }
     }),
 )
 
@@ -649,13 +742,16 @@ const tools = {
   unhighlight: "unhighlight",
 }
 
-export const readerApp = defineApp({
+/** What its tools run on: the kit's services, through the host. */
+type Needs = AppEventsService | HostService | LogService | ModelsService | SwitchService
+
+export const readerApp = defineApp<Needs>({
   name: "reader",
   version: "1",
   // A published page by its id or title.
   reaches: { calls: ["brain_pages"] },
   instructions:
-    "A reader for documents of any common kind: open one (`open`), show it to the user (its `view`), and ask about it in threads of their own.",
+    "A reader for documents of any common kind: open one (`open`), show it to the user (its `view`), and ask Switch about it in threads of their own.",
   tools: [
     open,
     documents,

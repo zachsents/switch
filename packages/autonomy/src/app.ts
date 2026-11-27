@@ -24,6 +24,7 @@ import {
   safeName,
   SpaceCoverSet,
   spaceFor,
+  sideOfThread,
   SpaceId,
   spaceNamed,
   TurnId,
@@ -1379,6 +1380,7 @@ const saidLately = (db: Database, space: string, since: number) =>
 // answers the user's words to it, never its parent's prompt or follow-ups (brain heard.ts). The
 // reply check reads it first. Unlike there, a turn the agent started itself may say what the user
 // should hear, and it notifies them as a reply does: his words, "I definitely want the agent to be able to message me if it needs to".
+// In an extension's side thread it answers there, never in the chat.
 // Work the senses woke stays apart, as Switchboard's wake role did (sb/mcp.rs:472-481 refused its
 // say): only news the user needs now passes (gate.ts NEWS), and no bypass takes it past.
 const sayTool = tool(
@@ -1414,8 +1416,14 @@ const sayTool = tool(
             "In a task, say answers the user's words to it, and none have reached it: what's for them goes in your report, or an item when it needs their hands.",
         })
       }
+      // In an extension's side thread (brain's ids.ts), what's said goes back to the extension,
+      // read from this call in the record: never a message in the space's chat.
+      const side = sideOfThread(thread) !== null
+      if (side && (input.files ?? []).length > 0) {
+        return yield* new Rejected({ reason: "In a side thread, say takes words only" })
+      }
       const now = Date.now()
-      const lately = yield* brain.read(saidLatelyRead, space, now - REPEAT_MS)
+      const lately = side ? [] : yield* brain.read(saidLatelyRead, space, now - REPEAT_MS)
       const again = lately.find((m) => repeats(text, m.text))
       if (again !== undefined) {
         return { said: false, why: dropped(now - again.time, again.text) }
@@ -1448,6 +1456,9 @@ const sayTool = tool(
           reason: `Before this goes to the user: ${verdict.reasons.join(" ")}${sensed ? "" : ` ${BYPASS}`}`,
           check: true,
         })
+      }
+      if (side) {
+        return { said: true, thread }
       }
       const attachments = yield* Effect.all(
         (input.files ?? []).map((file) =>

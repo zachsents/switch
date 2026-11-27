@@ -14,9 +14,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, Global,
+    AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, WeakEntity, Window, div, img, prelude::*, px,
+    Styled, Window, div, img, prelude::*, px,
 };
 use serde_json::{Value, json};
 use ui_sdk::components::input::{Textarea, TextareaOptions, TextareaSubmitShortcut};
@@ -125,20 +125,6 @@ pub struct ChatBox {
     width: Rc<std::cell::Cell<gpui::Pixels>>,
 }
 
-/// Every box made, by place, so a reply's Reply finds the one for its space.
-#[derive(Default)]
-struct Boxes(Vec<(String, WeakEntity<ChatBox>)>);
-impl Global for Boxes {}
-
-/// Puts the cursor in a space's box.
-pub fn focus_box_of(space: &str, window: &mut Window, cx: &mut App) {
-    let place = format!("space:{space}");
-    let found = cx.try_global::<Boxes>().and_then(|b| b.0.iter().find(|(p, _)| *p == place).and_then(|(_, w)| w.upgrade()));
-    if let Some(b) = found {
-        b.update(cx, |b, cx| b.focus(window, cx));
-    }
-}
-
 /// Dictated stretches as a draft keeps them.
 fn spans_json(spans: &[Span]) -> Option<Value> {
     (!spans.is_empty()).then(|| Value::Array(spans.iter().map(|s| json!({ "start": s.start, "end": s.end })).collect()))
@@ -175,7 +161,6 @@ impl ChatBox {
                 )
             })
         };
-        cx.default_global::<Boxes>().0.push((opts.place.clone(), weak.clone()));
         let d = dict::entity(cx);
         cx.observe(&d, |b: &mut ChatBox, _, cx| {
             if b.heard_base.is_none() && b.listening(cx).is_some() {
@@ -422,6 +407,17 @@ impl ChatBox {
         cx.notify();
     }
 
+    /// The system's file panel, its files to this box.
+    pub fn pick_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        cx.spawn_in(window, async move |b, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                b.update_in(cx, |b, window, cx| b.attach(files::choose_paths(&paths), window, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     fn remove(&mut self, id: &str, cx: &mut Context<Self>) {
         self.files.retain(|c| c.id != id);
         outbox::drop_file(id);
@@ -580,17 +576,36 @@ impl ChatBox {
             }
             self.replies = next;
         }
-        if let Some(at) = replying::entity(cx).update(cx, |r, _| r.take_focus(&space))
-            && let Some((_, f)) = self.replies.get(at)
-        {
-            let f = f.clone();
-            f.update(cx, |t, cx| t.focus(window, cx));
-        }
         self.keep(cx);
+    }
+
+    /// The reply just attached takes the keys, its caret at the end, once the box draws: after
+    /// whatever else the press that attached it moved the focus to (a menu closing, a pick).
+    fn focus_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = self.replies_of.clone() else { return };
+        let Some(at) = replying::entity(cx).update(cx, |r, _| r.take_focus(&space)) else { return };
+        let Some((_, f)) = self.replies.get(at) else { return };
+        let field = f.read(cx).field().clone();
+        field.update(cx, |t, cx| {
+            let end = t.len();
+            t.set_selection_range(end, end, ui_sdk::native::SelectionDirection::None, window, cx);
+            t.focus(window, cx);
+        });
+    }
+
+    /// The keys are in the box: its words or one of its replies.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.is_focused(window, cx) || self.replies.iter().any(|(_, f)| f.read(cx).field().read(cx).is_focused(window))
     }
 }
 
 const KIND: [(FileKind, &str); 5] = [(FileKind::Image, "IMG"), (FileKind::Video, "VID"), (FileKind::Audio, "AUD"), (FileKind::Model, "3D"), (FileKind::File, "FILE")];
+
+/// A quote as its row shows it: one line of its words, a link's label for the link.
+fn quoted(text: &str) -> String {
+    static LINK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\[([^\]]*)\]\([^)]*\)").expect("link"));
+    LINK.replace_all(text, "$1").split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 /// A row above the box: what went wrong with the last one sent, or with dictation.
 fn note(text: String, on_click: Option<Rc<dyn Fn(&mut App)>>, l: &Look) -> AnyElement {
@@ -637,6 +652,7 @@ impl Render for ChatBox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = Look::get(cx);
         self.seed(window, cx);
+        self.focus_reply(window, cx);
         self.take_heard(window, cx);
         if dict::can_dictate() {
             let weak = cx.entity().downgrade();
@@ -695,12 +711,13 @@ impl Render for ChatBox {
                 .text_color(l.ink3)
                 .child(div().min_w_0().truncate().child(SharedString::from(self.opts.placeholder.clone())))
                 .when(!focused, |d| {
-                    d.child(div().flex_none().rounded(px(2.)).border_1().border_color(l.line2).px(px(4.)).text_size(u(11.)).line_height(px(16.)).text_color(l.ink3).child("/"))
+                    d.child(kit::keys("To the Message Box", &l))
                 })
         });
         let send = kit::button("send", Btn::Go, ready, &l).aria_label("Send")
             .when(ready, |d| d.on_click(cx.listener(|b, _, window, cx| b.submit(window, cx))))
-            .child("Send");
+            .child("Send")
+            .child(kit::keys("Send", &l).pt(px(1.)).text_color(l.white).opacity(0.7));
         let keys: AnyElement = match &listening {
             Some(heard) => div()
                 .flex()
@@ -708,16 +725,19 @@ impl Render for ChatBox {
                 .items_center()
                 .gap(u(8.))
                 .child(meter(&heard.levels, heard.status != Status::Listening, beat, &l))
-                .child(kit::button("dictate-cancel", Btn::Flat, true, &l).aria_label("Cancel").w(u(22.)).px_0().on_click(|_, _, cx| dict::cancel(cx)).child(chat_marks::drawn("cancel", px(16.), l.ink2)))
-                .child(kit::button("dictate-done", Btn::Key, !(heard.status == Status::Stopping), &l).aria_label("Done").on_click(|_, _, cx| dict::stop(cx)).child(chat_marks::drawn("done", px(16.), l.ink)))
+                .child(kit::button("dictate-cancel", Btn::Flat, true, &l).aria_label("Cancel").gap(u(4.)).on_click(|_, _, cx| dict::cancel(cx)).child(chat_marks::drawn("cancel", px(16.), l.ink2)).child(kit::keys("Cancel Dictation", &l)))
+                .child(kit::button("dictate-done", Btn::Key, !(heard.status == Status::Stopping), &l).aria_label("Done").gap(u(4.)).on_click(|_, _, cx| dict::stop(cx)).child(chat_marks::drawn("done", px(16.), l.ink)).child(kit::keys("Finish Dictation", &l)))
                 .into_any_element(),
             None => div()
                 .flex()
                 .flex_none()
                 .items_end()
                 .gap(u(6.))
+                .when(self.opts.attach, |d| {
+                    d.child(kit::button("attach", Btn::Flat, true, &l).aria_label("Attach Files").gap(u(4.)).on_click(cx.listener(|b, _, window, cx| b.pick_files(window, cx))).child(chat_marks::drawn("attach", px(16.), l.ink2)).child(kit::keys("Attach Files", &l)))
+                })
                 .when(can_dictate, |d| {
-                    d.child(kit::button("dictate", Btn::Flat, true, &l).aria_label("Dictate").w(u(22.)).px_0().on_click(cx.listener(|b, _, window, cx| b.dictate(window, cx))).child(chat_marks::drawn("mic", px(16.), l.ink2)))
+                    d.child(kit::button("dictate", Btn::Flat, true, &l).aria_label("Dictate").gap(u(4.)).on_click(cx.listener(|b, _, window, cx| b.dictate(window, cx))).child(chat_marks::drawn("mic", px(16.), l.ink2)).child(kit::keys("Dictate", &l)))
                 })
                 .child(send)
                 .into_any_element(),
@@ -728,13 +748,15 @@ impl Render for ChatBox {
         };
         let m = model(cx).read(cx);
         let ask_of = |id: &str| m.brain.items.find(id).map(|a| (a.title.clone(), m.brain.spaces.get(&a.space).map(|s| s.name.clone()).unwrap_or_else(|| "Home".into())));
+        let wide = self.width.get() >= l.z(768.);
+        let side = if wide { (self.width.get() - l.z(720.)) / 2. } else { px(0.) };
         let pairs: Vec<AnyElement> = self
             .replies
             .iter()
             .enumerate()
             .map(|(i, (r, f))| {
                 let head: AnyElement = match r {
-                    Reply::Quote { text, .. } => div().min_w_0().flex_1().border_l_2().border_color(l.ink3).pl(u(8.)).line_clamp(2).whitespace_normal().child(SharedString::from(text.clone())).into_any_element(),
+                    Reply::Quote { text, .. } => div().min_w_0().flex_1().border_l_2().border_color(l.ink3).pl(u(8.)).truncate().child(SharedString::from(quoted(text))).into_any_element(),
                     Reply::Ask { id, title, .. } => {
                         let (name, space) = ask_of(id).unwrap_or_else(|| (title.clone().unwrap_or_default(), String::new()));
                         div()
@@ -756,8 +778,8 @@ impl Render for ChatBox {
                     .min_w_0()
                     .items_start()
                     .gap(u(8.))
-                    .pr(u(4.))
-                    .pl(u(12.))
+                    // On the box's own edges, so the quote lines up with the words under it.
+                    .map(|d| if wide { d.px(side.max(px(12.))) } else { d.pr(u(10.)).pl(u(12.)) })
                     .border_b(px(l.w2))
                     .border_color(l.line2)
                     .child(
@@ -773,9 +795,9 @@ impl Render for ChatBox {
                             .cursor_text()
                             .on_click(move |_, window, cx| focus_field.update(cx, |t, cx| t.focus(window, cx)))
                             .child(div().flex().min_h(u(24.)).min_w_0().items_center().text_size(u(12.)).line_height(u(16.)).text_color(l.ink2).child(head))
-                            .child(div().pl(u(10.)).child(Textarea::root(f, cx).aria_label("Reply").w_full().max_h(u(160.)).min_h(u(22.)).py(px(1.)).text_size(u(14.)).line_height(u(20.)).text_color(l.ink))),
+                            .child(div().child(Textarea::root(f, cx).aria_label("Reply").w_full().max_h(u(160.)).min_h(u(22.)).py(px(1.)).text_size(u(14.)).line_height(u(20.)).text_color(l.ink))),
                     )
-                    .child(kit::button(SharedString::from(format!("reply-remove-{i}")), Btn::Flat, true, &l).aria_label("Remove").mt(u(6.)).on_click(move |_, _, cx| replying::detach(&space, i, cx)).child("✕"))
+                    .child(kit::button(SharedString::from(format!("reply-remove-{i}")), Btn::Flat, true, &l).aria_label("Remove").gap(u(4.)).mt(u(6.)).on_click(move |_, _, cx| replying::detach(&space, i, cx)).child("✕").child(kit::keys("Cancel Reply", &l)))
                     .into_any_element()
             })
             .collect();
@@ -850,8 +872,6 @@ impl Render for ChatBox {
         let error = self.error.clone();
         let stopped = self.stopped.clone();
         let editing = self.editing;
-        let wide = self.width.get() >= l.z(768.);
-        let side = if wide { (self.width.get() - l.z(720.)) / 2. } else { px(0.) };
         let width = self.width.clone();
         div()
             .id(SharedString::from(format!("box-{}", self.opts.place)))
@@ -873,13 +893,17 @@ impl Render for ChatBox {
                     cx.stop_propagation();
                 }
             }))
-            // Esc drops a dictation, else puts an edit down; else it's the window's (up a space).
+            // Esc drops a dictation, else puts an edit down, else the reply it's in; else it's the
+            // window's (up a space).
             .on_action(cx.listener(|b, _: &crate::commands::Escape, window, cx| {
-                // An edit's Esc is the box's own field's; in a reply row it's the window's.
+                let reply = b.replies.iter().position(|(_, f)| f.read(cx).field().read(cx).is_focused(window));
                 if b.listening(cx).is_some() {
                     dict::cancel(cx);
                 } else if b.editing && b.is_focused(window, cx) {
                     b.cancel_edit(window, cx);
+                } else if let (Some(at), Some(space)) = (reply, b.replies_of.clone()) {
+                    replying::detach(&space, at, cx);
+                    b.focus(window, cx);
                 } else {
                     cx.propagate();
                 }
@@ -898,7 +922,7 @@ impl Render for ChatBox {
                         .border_b(px(l.w2))
                         .border_color(l.line2)
                         .child(div().flex_1().child("Editing"))
-                        .child(kit::button("edit-cancel", Btn::Key, true, &l).on_click(cx.listener(|b, _, window, cx| b.cancel_edit(window, cx))).aria_label("Cancel").child("Cancel")),
+                        .child(kit::button("edit-cancel", Btn::Key, true, &l).on_click(cx.listener(|b, _, window, cx| b.cancel_edit(window, cx))).aria_label("Cancel").child("Cancel").child(kit::keys("Cancel Edit", &l))),
                 )
             })
             .when_some(error, |d, e| d.child(note(e, None, &l)))

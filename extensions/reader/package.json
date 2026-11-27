@@ -26,7 +26,7 @@
     "fflate": "^0.8.3",
     "linkedom": "^0.18.15",
     "mammoth": "^1.13.0",
-    "switch-ext-kit": "^0.2.0",
+    "switch-ext-kit": "^0.2.1",
     "turndown": "^7.2.5",
     "turndown-plugin-gfm": "^1.0.2",
     "unpdf": "^2.2.3"

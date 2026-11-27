@@ -54,7 +54,8 @@ Switch is the agent. **Switchboard** is its client: the desktop and iPhone apps.
 1. **One live session per thread.** A stream-json process while the thread is active; `--resume` otherwise. Follow-ups keep the agent's own tool calls in its history: about 4s, against 9s for a fresh session.
 2. **Delta before each message.** A triaged "since you last looked" note, scoped to the space (about 500 chars), placed in the user message, since a resumed session keeps its system prompt.
 3. **Mid-turn: only "wake" items,** delivered between tool calls. Noise never derailed a run.
-4. **Compaction and fresh starts build a transcript, never a summary.**
+4. **Side threads.** An extension asks Switch in a thread of its own in a space (`side:<extension>:<space>:<key>`, the kit's `Switch.ask`): the same agent, memory and context, its say going back to the extension, never into the space's chat. The space's turns see its latest words, and history_search finds them. An extension also puts words into a live session (`Switch.steer`), wakes a turn with its `<name>.wake` event, and reads the brain within its reach (`Switch.read`).
+5. **Compaction and fresh starts build a transcript, never a summary.**
    - Every exchange verbatim; tool I/O only for the last few.
    - Summaries invented motives.
 

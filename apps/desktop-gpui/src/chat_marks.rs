@@ -42,6 +42,7 @@ pub fn load(name: &str) -> Option<String> {
         "like" => on_16(&format!(r#"<path d="{LIKE}" fill="black"/>"#)),
         "dislike" => on_16(&format!(r#"<path transform="rotate(180 8 8)" d="{LIKE}" fill="black"/>"#)),
         "mic" => on_16(r#"<g fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25"/><path d="M3.25 7.5 a4.75 4.75 0 0 0 9.5 0 M8 12.25 V14.5"/></g>"#),
+        "attach" => stroked("M13 7.5 L7.75 12.75 a3 3 0 0 1 -4.25 -4.25 L9 3 a2 2 0 0 1 2.85 2.85 L6.5 11.2 a1 1 0 0 1 -1.4 -1.4 L10 4.9", 1.4),
         "cancel" => stroked("M4 4 L12 12 M12 4 L4 12", 1.5),
         "done" => stroked("M3.5 8.5 L6.5 11.5 L12.5 4.5", 1.5),
         "play" => on_256(PLAY),

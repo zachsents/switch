@@ -178,6 +178,26 @@ account)` for a connection it needs, `request` for anything else, and `follow(ty
 brain's events (named in `reaches.follows`): each handled once, in order, resuming after the last
 one handled (`follow.json` in its folder) on every new client.
 
+## The agent
+
+`Switch` (provided by `Models.layer`) reaches Switch itself, through a host that declares
+`ax.switch/agent`:
+
+- `ask({ key, text, space?, note?, title?, id? }, progress?)` asks the agent: a real turn of
+  Switch's (its memory, tools and the space's context) in the extension's own side thread `key` in
+  `space` (Home when absent), with `note` beside the user's words. What it says comes back
+  (`said`, with the turn's `status`), never in the space's chat; the space's own turns see these
+  threads and `history_search` finds them. `progress` hears the words as they stream. The same `id`
+  again (after a restart) answers from the turn that took it in. The thread is
+  `side:<extension>:<space>:<key>`.
+- `steer(thread, text)` puts words into a live session, between its tool calls, or a turn of their
+  own: the extension's own side threads, or work its manifest's `reaches.steers` names (`task-*`).
+- `read(query)` reads the brain as `brain_query` does, within its reach: the log's events of its own
+  and the types it follows, and its own side threads (`from: "work"`).
+
+An event of its own named `<name>.wake` (or `<name>.<part>.wake`), with `{ text, space? }`, always
+wakes a turn in that space (else Home) with `text`, as the senses wake one: not left to triage.
+
 ## Ported appendages
 
 An extension ported from a Switchboard appendage emits what the shim made of its events:

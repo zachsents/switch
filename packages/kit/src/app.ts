@@ -39,8 +39,9 @@ export const VERSION = "ax.switch/version"
 export const CONNECTIONS = "ax.switch/connections"
 /**
  * What an extension reaches beyond itself, in its handshake: other extensions' tools it calls
- * (`switch/call`) and the brain's event types it follows (`switch/follow`), each a name or a
- * prefix ending in `*`. Nothing else is answered.
+ * (`switch/call`), the brain's event types it follows (`switch/follow`) and the work whose live
+ * sessions it may steer beyond its own side threads (`switch/steer`), each a name or a prefix
+ * ending in `*`. Nothing else is answered.
  */
 export const REACHES = "ax.switch/reaches"
 /**
@@ -268,7 +269,7 @@ export interface App<R = never> {
   readonly version: string
   readonly instructions?: string
   readonly connections: readonly Need[]
-  /** What it reaches beyond itself (`REACHES`): tools it calls, brain event types it follows. */
+  /** What it reaches beyond itself (`REACHES`): tools it calls, events it follows, work it steers. */
   readonly reaches?: Reaches
   readonly tools: readonly Tool<R>[]
   /** Its own events plus the UI analytics family, which every app publishes. */
@@ -276,10 +277,15 @@ export interface App<R = never> {
   readonly widgets: readonly WidgetDef[]
 }
 
-/** Tools an extension calls (`switch/call`) and brain event types it follows (`switch/follow`). */
+/**
+ * Tools an extension calls (`switch/call`), brain event types it follows (`switch/follow`), and
+ * threads whose live sessions it steers beyond its own side threads (`switch/steer`): `task-*`,
+ * `space:*`, or one.
+ */
 export interface Reaches {
   readonly calls?: readonly string[]
   readonly follows?: readonly string[]
+  readonly steers?: readonly string[]
 }
 
 export const defineApp = <R = never>(app: {
@@ -578,6 +584,8 @@ const again = (name: string, finished: boolean): CallToolResult =>
       }
 
 const anything = Schema.toStandardSchemaV1(Schema.Record(Schema.String, Schema.Unknown))
+/** How long a request that says how it's going may go without a word before it's given up. */
+const PROGRESS_SILENCE_MS = 90_000
 const streamParams = Schema.toStandardSchemaV1(
   Schema.Struct({
     name: Schema.String,
@@ -619,6 +627,7 @@ export const serve: <R>(
               [REACHES]: {
                 ...(app.reaches.calls !== undefined && { calls: [...app.reaches.calls] }),
                 ...(app.reaches.follows !== undefined && { follows: [...app.reaches.follows] }),
+                ...(app.reaches.steers !== undefined && { steers: [...app.reaches.steers] }),
               },
             }),
           },
@@ -794,8 +803,26 @@ export const serve: <R>(
     // Models through the client, once it's connected. A client that doesn't answer them (no
     // `ax.switch/models`) fails each request, and the call with it.
     const peer = yield* Effect.serviceOption(Peer)
-    const send = async (method: string, params: Readonly<Record<string, unknown>>) =>
-      await mcp.server.request({ method, params: { ...params } }, anything)
+    // A request that says how it's going (`progress`) waits as long as it does: each word of it
+    // starts the wait again.
+    const send = async (
+      method: string,
+      params: Readonly<Record<string, unknown>>,
+      progress?: (message: string) => void,
+    ) =>
+      await mcp.server.request(
+        { method, params: { ...params } },
+        anything,
+        progress === undefined
+          ? undefined
+          : {
+              timeout: PROGRESS_SILENCE_MS,
+              resetTimeoutOnProgress: true,
+              onprogress: (p) => {
+                progress(p.message ?? "")
+              },
+            },
+      )
     // MCP's own hooks, not DOM targets.
     Object.assign(mcp.server, {
       onclose: () => {

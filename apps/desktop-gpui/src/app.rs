@@ -385,19 +385,8 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &AttachFiles, window, cx| {
                 let Some(Page::Space(space)) = this.boxed.clone() else { return };
                 let Some(chat) = this.chats.get(&space).cloned() else { return };
-                let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
-                cx.spawn_in(window, async move |_, cx| {
-                    if let Ok(Ok(Some(paths))) = paths.await {
-                        chat.update_in(cx, |c, window, cx| {
-                            let chosen = crate::files::choose_paths(&paths);
-                            let b = c.chatbox.clone();
-                            b.update(cx, |b, cx| b.attach(chosen, window, cx));
-                            c.focus_box(window, cx);
-                        })
-                        .ok();
-                    }
-                })
-                .detach();
+                let b = chat.read(cx).chatbox.clone();
+                b.update(cx, |b, cx| b.pick_files(window, cx));
             }))
             // A paste with nothing focused goes to the page's box, as one from its column does.
             .on_action(cx.listener(|this, _: &ui_sdk::native::text_field::Paste, window, cx| match this.boxed.clone() {

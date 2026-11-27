@@ -45,7 +45,8 @@ export {
   touches,
 } from "./query.ts"
 export type { Found, QuerySource } from "./query.ts"
-export { EventId, ItemId, SpaceId, ThreadId, TurnId } from "./ids.ts"
+export { SIDE } from "switch-ext-kit"
+export { EventId, ItemId, sideOfThread, sideThread, SpaceId, ThreadId, TurnId } from "./ids.ts"
 export type { BrainConfig, BrainShape, Command, Incoming, Receipt, Snapshot } from "./brain.ts"
 export { defineCommand, defineEvent, eventFromJsonSchema, on, Rejected } from "./defs.ts"
 export type {

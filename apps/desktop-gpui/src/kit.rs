@@ -52,6 +52,11 @@ pub fn data(d: Div) -> Div {
 }
 
 /// A button in a look. `on` false is disabled: dimmed, and it takes no press.
+/// A control's keys, bare beside it: a glyph, no keycap.
+pub fn keys(label: &str, l: &Look) -> Div {
+    div().flex_none().text_size(u(12.)).line_height(u(16.)).font_weight(FontWeight::NORMAL).text_color(l.ink3).child(crate::commands::keys_named(label))
+}
+
 pub fn button(id: impl Into<ElementId>, look: Btn, on: bool, l: &Look) -> Stateful<Div> {
     let d = div().id(id.into()).role(gpui::Role::Button).flex().flex_none().items_center().justify_center().gap(u(6.)).whitespace_nowrap();
     let key = |d: Stateful<Div>| d.h(u(22.)).rounded(u(4.)).px(u(8.)).text_size(u(12.)).line_height(u(16.)).font_weight(FontWeight::MEDIUM);

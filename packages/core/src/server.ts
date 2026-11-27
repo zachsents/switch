@@ -99,6 +99,7 @@ import { alarmsWorker } from "./alarms.ts"
 import { clocksWorker } from "./clocks.ts"
 import { limitTold, limitsWorker } from "./limits.ts"
 import { claudeCodeLayer, LateSessions } from "./claude-code.ts"
+import { makeAgent } from "./side.ts"
 import {
   Connections,
   connectionsApp,
@@ -371,6 +372,7 @@ const layerGateway = Layer.unwrap(
       sent: yield* outboundSent,
       connections: yield* extensionConnections,
       spaceOf: async (thread) => await Effect.runPromise(brain.read(spaceOfThreadRead, thread)),
+      agent: yield* makeAgent,
     })
   }),
 )

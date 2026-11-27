@@ -39,7 +39,7 @@ import { Context, Effect, Layer, Option, Schema } from "effect"
 import { judge } from "./bypass.ts"
 import type { Judgment } from "./bypass.ts"
 import { storedDial } from "./dial-values.ts"
-import { field, jsonOf, list, text as said } from "./json.ts"
+import { field, jsonOf, list, strings, text as said } from "./json.ts"
 
 export const EXIT_NAMES = [
   "reply",
@@ -266,9 +266,12 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
         // (16 of the 28 bypassed); this one, past three sentences, to 27 at 0.6 and 14 at 0.75 (4
         // of the 28). A reply of three sentences or fewer isn't asked (`applies`), as the question
         // says and the model didn't heed (11 of the 67), and a redraft that cut it isn't asked
-        // again (`once`).
+        // again (`once`). Nov 27: on the first 30 replies in two spaces after that, it still sent
+        // back 4, and 2 more were bypassed, with the bar pinned at 0.6 by a dial left at its old
+        // default and `once` reading no names (fixed in `takenUp`). Replayed on 344 replies with the
+        // user's rules beside each, as it reads them live: 22 objections at 0.75, 15 at 0.8.
         ask: "Would the user want this reply cut because it holds padding: a preamble, their ask restated, a recap of the steps I took, hedges, or repetition? No when what it holds is what they asked for: the numbers, the detail or explanation they asked for, an answer to each of their questions. Never a reply of three sentences or fewer.",
-        at: 0.75,
+        at: 0.8,
         applies: (text) => sentences(text) > 3,
         once: true,
         reason:
@@ -284,7 +287,10 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
         // before the bar went back to its default 0.9.
         ask: "Does it stop short where I could have gone further first, without the user: something I could still check, try, look up, fix or prepare myself, which the reply reports, proposes or asks about instead? Not when it answers what they asked or delivers a result, when what's left needs them (their decision, approval, preference, money, hands, or words sent in their name), or when the rest is under way already in a task or a watch.",
         // On Switchboard's replies (Nov 16–19), 0.6 objected to 54% of those the user let stand; 0.9 to none.
-        at: 0.9,
+        // Nov 27: replayed on 344 replies of Nov 24-27 with the user's rules beside each, 14 reach
+        // 0.9 and 7 reach 0.93; those between were a reply naming the task doing the rest now
+        // (0.90 live) and answers labeled as from memory, which the user's rules read for.
+        at: 0.93,
         reason: "Take it further first: do what you can without them, then reply with the result.",
         dial: "Go-further bar",
       },
@@ -1026,20 +1032,27 @@ const refusedLatelyRead = defineRead("autonomy/gate/refused-lately", refusedLate
  * now cut by a tenth or more: they aren't asked of it again. Nov 26: 15 of the 67 replies sent back
  * as long were sent back again after a cut, and 28 came back on a bypass.
  */
-const takenUp = (db: Database, exit: Exit, key: string, text: string, now: number) => {
+export const takenUp = (db: Database, exit: Exit, key: string, text: string, now: number) => {
   const once = CHECKS[exit].criteria.filter((c) => c.once === true).map((c) => c.name)
   if (once.length === 0) {
     return []
   }
   const last = db
-    .query<{ id: string; acted: string; pass: number }, [string, string, number]>(
-      "SELECT id, acted, pass FROM gate_decisions WHERE exit = ? AND key = ? AND time > ? ORDER BY time DESC LIMIT 1",
+    .query<{ id: string; acted: string; pass: number }, [string, string, number, number]>(
+      "SELECT id, acted, pass FROM gate_decisions WHERE exit = ? AND key = ? AND time > ? AND time <= ? ORDER BY time DESC LIMIT 1",
     )
-    .get(exit, key, now - ANSWERS_MS)
+    .get(exit, key, now - ANSWERS_MS, now)
   if (!last || last.pass !== 0) {
     return []
   }
-  const acted = new Set(list(jsonOf(last.acted)).map((a) => said(a)))
+  // A list of names, which jsonOf (the first object in a model's reply) reads as {}.
+  let names: unknown = []
+  try {
+    names = JSON.parse(last.acted)
+  } catch {
+    return []
+  }
+  const acted = new Set(strings(names))
   const before = db
     .query<{ n: number | null }, [string]>(
       "SELECT length(json_extract(payload, '$.text')) AS n FROM events WHERE id = ?",

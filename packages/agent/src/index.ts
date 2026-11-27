@@ -3,7 +3,9 @@ export type { ClockState } from "./clocks.ts"
 export {
   agentConfig,
   allThreads,
+  carriedOn,
   getThread,
+  itemsAfter,
   MODES,
   modelOfThread,
   modelOfTurn,
@@ -13,6 +15,7 @@ export {
   ThreadSettled,
   ThreadStaged,
   threadStages,
+  TurnDelta,
   TurnEnded,
   TurnInjected,
   TurnModel,
@@ -36,7 +39,7 @@ export type {
   Waiting,
 } from "./events.ts"
 export type { TurnEnd } from "./events.ts"
-export { exchangeText, reasonOf } from "./transcript.ts"
+export { exchangeText, reasonOf, sayWords } from "./transcript.ts"
 export {
   guarded,
   Hosts,

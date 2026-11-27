@@ -79,7 +79,7 @@ export type {
   StoredEvent,
 } from "./log.ts"
 export { manifest, need, readManifest } from "./manifest.ts"
-export { Asks, ASKS, Host, ModelError, Models, MODELS, Peer } from "./models.ts"
+export { AGENT, Asks, ASKS, Host, ModelError, Models, MODELS, Peer, Switch } from "./models.ts"
 export type {
   AskAttachment,
   AskDraft,
@@ -101,12 +101,17 @@ export type {
   Question,
   Role,
   Send,
+  SwitchAnswer,
+  SwitchAsk,
+  SwitchService,
+  SwitchShape,
 } from "./models.ts"
 export type { Manifest, Need } from "./manifest.ts"
 export { chain, isJson, readOnly, switchboard } from "./shim.ts"
 export type { Filter, Json } from "./shim.ts"
 export { OUTBOX_FILE, serveStdio } from "./stdio.ts"
 export { writeFileAtomic } from "./files.ts"
+export { SIDE, sideOfThread, sideThread } from "./side.ts"
 export { defineRecord, RecordPayload } from "./record.ts"
 export type { Envelope, RecordEvent, RecordShape } from "./record.ts"
 export { BACKED_OUT_MS, BackedOut, Dwelled, left, Switched, uiEvents, Viewed } from "./ui.ts"

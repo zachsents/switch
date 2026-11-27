@@ -276,7 +276,6 @@ impl ReactMenu {
             && let Some(q) = t.quote.clone()
         {
             crate::replying::attach(&t.space, Reply::Quote { seq: t.seq, text: q, reply: None }, cx);
-            crate::chatbox::focus_box_of(&t.space, window, cx);
         }
         self.shut(true, window, cx);
     }

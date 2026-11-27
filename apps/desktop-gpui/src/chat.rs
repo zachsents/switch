@@ -327,7 +327,7 @@ impl ChatView {
             }
             // Its search and keys gone with it, the focus comes back to the column (the box keeps
             // its own): keys typed next go where a page's would.
-            if !this.chatbox.read(cx).is_focused(window, cx) {
+            if !this.chatbox.read(cx).has_focus(window, cx) {
                 window.focus(&this.focus, cx);
             }
             window.refresh();
@@ -451,11 +451,10 @@ impl ChatView {
     }
 
     /// R or ↵ on the line picked: a reply to it in the box.
-    fn reply_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reply_picked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some((line, _)) = self.picked_line() else { return };
         crate::replying::attach(&self.space, Reply::Quote { seq: line.seq, text: general_of(&line), reply: None }, cx);
         self.unpick(cx);
-        crate::chatbox::focus_box_of(&self.space, window, cx);
     }
 
     /// T on the line picked: the reactions menu over it.
@@ -929,11 +928,10 @@ impl ChatView {
             return c.clone();
         }
         let c = crate::asks::card::make(item.clone(), window, cx);
-        // Its Reply attaches it to the space's box (replying.rs) and puts the cursor there.
+        // Its Reply attaches it to the space's box (replying.rs), whose reply field takes the cursor.
         c.update(cx, |c, _| {
-            c.on_reply = Some(std::rc::Rc::new(|item: &ActionItem, window: &mut Window, cx: &mut App| {
+            c.on_reply = Some(std::rc::Rc::new(|item: &ActionItem, _: &mut Window, cx: &mut App| {
                 crate::replying::attach(&item.space, crate::brain::Reply::Ask { id: item.id.clone(), title: Some(item.title.clone()), reply: None }, cx);
-                crate::chatbox::focus_box_of(&item.space, window, cx);
             }));
         });
         let k = key.to_string();
@@ -994,6 +992,11 @@ impl ChatView {
             return;
         }
         let pressing = !self.focus.is_focused(window);
+        // A message picked takes its own letters (R replies, T reacts…): they're its bindings',
+        // which come after this listener, so none goes to the box meanwhile.
+        if self.picked.is_some() && !m.platform {
+            return;
+        }
         if self.typed_outside(e, pressing, window, cx) {
             return cx.stop_propagation();
         }

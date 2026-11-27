@@ -7,10 +7,12 @@ import type { Database } from "bun:sqlite"
 import {
   exchangeText,
   reasonOf,
+  sayWords,
   TurnInjected,
   turnItems,
   TurnStarted,
   TurnText,
+  TurnTool,
 } from "@switch/agent"
 import { ItemOpened, MemoryWritten, spaceOfWork } from "@switch/autonomy"
 import {
@@ -20,6 +22,7 @@ import {
   MessagePosted,
   MessageRead,
   on,
+  sideOfThread,
   SpaceId,
   ThreadId,
   whoOf,
@@ -60,9 +63,11 @@ const put = (db: Database, kind: Kind, ref: string, row: number, text: string) =
 // part of it, so it ends in a character no work's name has: "space:a." isn't in "space:a-b.".
 const workOf = (thread: string) => `${thread}.`
 
-// A space's or a task's: a work with a history. A model's one-off run (a triage, a check) has
-// none, and its prompts were 274 MB of the log's words on Nov 25: indexed, a third of the brain.
-const isWork = (thread: ThreadId) => spaceOf(thread) !== null || thread.startsWith("task-")
+// A space's, a task's or an extension's side thread: a work with a history. A model's one-off run
+// (a triage, a check) has none, and its prompts were 274 MB of the log's words on Nov 25: indexed,
+// a third of the brain.
+const isWork = (thread: ThreadId) =>
+  spaceOf(thread) !== null || thread.startsWith("task-") || sideOfThread(thread) !== null
 
 // An exchange's words are never revised: no ref to replace them by.
 const said = (db: Database, row: number, thread: ThreadId, text: string) => {
@@ -103,6 +108,10 @@ export const found: Projection = {
     }),
     on(TurnText, (db, p, e) => {
       said(db, e.seq, p.thread, p.text)
+    }),
+    // What it said to the user: in a side thread, its only answer.
+    on(TurnTool, (db, p, e) => {
+      said(db, e.seq, p.thread, sayWords(p.name, p.input))
     }),
     on(TurnInjected, (db, p, e) => {
       if (p.kind === "steer") {
@@ -279,8 +288,9 @@ const exchangeOf = (db: Database, turn: string, tools: boolean) => {
 }
 
 /**
- * A work's exchanges that match any of `words`, best first, each cut short; a task's, with its
- * space's: what it's for was said there (on Nov 24 tasks searched their own few turns for it).
+ * A work's exchanges that match any of `words`, best first, each cut short; a task's or a side
+ * thread's, with its space's: what it's for was said there (on Nov 24 tasks searched their own few
+ * turns for it). A space's, with its side threads': what the user asked in its extensions.
  */
 const searchHistory = (db: Database, thread: ThreadId, words: string) => {
   const match = anyOf(wordsOf(words))
@@ -288,8 +298,13 @@ const searchHistory = (db: Database, thread: ThreadId, words: string) => {
     return []
   }
   const space = spaceOfWork(db, thread)
-  const works = [...new Set([thread, ...(space === null ? [] : [threadOf(space)])])]
-    .map((w) => `"${workOf(w).replaceAll('"', '""')}"`)
+  const own = spaceOf(thread)
+  const works = [
+    ...[...new Set([thread, ...(space === null ? [] : [threadOf(space)])])].map(workOf),
+    // Every side thread's id has its space between colons (`side:<app>:<space>:<key>`).
+    ...(own === null ? [] : [`:${own}:`]),
+  ]
+    .map((w) => `"${w.replaceAll('"', '""')}"`)
     .join(" OR ")
   // Its works' rows and the words, both from the index.
   const turns = db

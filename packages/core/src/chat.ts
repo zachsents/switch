@@ -22,6 +22,7 @@ import {
   MessageRead,
   PEER,
   react,
+  spaceFor,
   whoOf,
 } from "@switch/brain"
 import type {
@@ -40,6 +41,7 @@ import { CoreConfig } from "./config.ts"
 import { threadOf } from "./context.ts"
 import { dictatedNote } from "./dictated.ts"
 import { effortOf, preRead, situation } from "./preread.ts"
+import { isWake, WakeAsked } from "./side.ts"
 import { ThreadSteered, ThreadStopped } from "./steer.ts"
 
 const decodePosted = Schema.decodeUnknownOption(MessagePosted.payload)
@@ -47,6 +49,7 @@ const decodeSteered = Schema.decodeUnknownOption(ThreadSteered.payload)
 const decodeStopped = Schema.decodeUnknownOption(ThreadStopped.payload)
 const decodeEdited = Schema.decodeUnknownOption(MessageEdited.payload)
 const decodeReacted = Schema.decodeUnknownOption(MessageReacted.payload)
+const decodeWake = Schema.decodeUnknownOption(WakeAsked)
 
 // Before the first message of the user's not yet read: its pre-read runs beside its turn, so the
 // cursor can pass it before it's done.
@@ -139,6 +142,11 @@ const situationRead = defineRead("core/chat/situation", (db, space: SpaceId) =>
 
 /** A thread's record, else null. */
 const threadRead = defineRead("core/chat/thread", (db, thread: ThreadId) => getThread(db, thread))
+
+/** The space a wake names, else Home. */
+const wakeSpaceRead = defineRead("core/chat/wake-space", (db, given: string | undefined) =>
+  spaceFor(db, given, null),
+)
 
 /** The user's rules in a space for these words, and the effort a turn takes by default. */
 const userEffortRead = defineRead("core/chat/user-effort", (db, space: SpaceId, words: string) => {
@@ -378,7 +386,27 @@ Answer this instead; what you said to the old words is gone from their chat.`,
     )
   })
 
+  // An extension's wake (side.ts `isWake`): a turn in its space, as the senses wake one.
+  const woke = Effect.fnUntraced(function* waking(e: StoredEvent) {
+    const w = Option.getOrNull(decodeWake(e.payload))
+    if (w === null) {
+      return
+    }
+    const space = yield* brain.read(wakeSpaceRead, w.space)
+    yield* waits(
+      sessions.wake(
+        threadOf(space),
+        `${e.source}, an extension, wakes you:\n\n${w.text}`,
+        "sensed",
+        `chat:${String(e.seq)}`,
+      ),
+    )
+  })
+
   const on = (e: StoredEvent) => {
+    if (isWake(e)) {
+      return woke(e)
+    }
     if (e.type === MessageReacted.type) {
       return reacted(e)
     }
@@ -448,6 +476,7 @@ Answer this instead; what you said to the old words is gone from their chat.`,
   return yield* react(
     "chat",
     (e) =>
+      isWake(e) ||
       e.type === MessageReacted.type ||
       (e.type === MessagePosted.type && e.source !== "agent") ||
       e.type === ThreadSteered.type ||

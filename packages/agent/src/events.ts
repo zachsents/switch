@@ -613,6 +613,16 @@ export const items = (db: Database, thread: ThreadId): Item[] =>
     .all(thread)
     .map((r) => ({ ...decodeBody(r.body), turn: r.turn }))
 
+/** A thread's entries after `after`, in log order, each with when it was recorded. */
+export const itemsAfter = (db: Database, thread: string, after: number) =>
+  db
+    .query<{ turn: TurnId; body: string; time: number }, [string, number]>(
+      `SELECT i.turn, i.body, e.time FROM thread_items i JOIN events e ON e.seq = i.seq
+       WHERE i.thread = ? AND i.seq > ? ORDER BY i.seq`,
+    )
+    .all(thread, after)
+    .map((r) => ({ ...decodeBody(r.body), turn: r.turn, time: r.time }))
+
 /** One turn's entries, in log order, by its span (core/src/view.ts `turn_spans`). */
 export const turnItems = (db: Database, turn: string): Item[] =>
   db
@@ -746,7 +756,7 @@ export const threads: Projection = {
     {
       name: "work",
       description:
-        "Threads: thread (\"space:<id>\" for a space's chat, else a task), parent, title, status (idle, running, done, waiting, interrupted, failed, limited; waiting: its turn ended but its work goes on, a watch of its own open or a script it set running; done: nothing of it goes on), result (its last reply), cost_usd, ended_at, link (its page in the apps: a space's chat is its space's).",
+        "Threads: thread (\"space:<id>\" for a space's chat, \"side:<extension>:<space>:<key>\" for an extension's side thread, else a task), parent, title, status (idle, running, done, waiting, interrupted, failed, limited; waiting: its turn ended but its work goes on, a watch of its own open or a script it set running; done: nothing of it goes on), result (its last reply), cost_usd, ended_at, link (its page in the apps: a space's chat is its space's).",
       select: `SELECT thread, parent, title, CASE WHEN ${WAITING} THEN 'waiting' ELSE status END AS status, turn, result, cost_usd, ended_at, CASE WHEN thread LIKE 'space:%' THEN 'switchboard://space/' || substr(thread, 7) ELSE 'switchboard://thread/' || thread END AS link, rowid AS n FROM threads`,
       columns: [
         "thread",

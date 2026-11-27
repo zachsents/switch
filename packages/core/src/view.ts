@@ -48,7 +48,7 @@ import type { EventId, Projection, StoredEvent, View, TurnId } from "@switch/bra
 import { Option, Schema } from "effect"
 
 import { accountLabels } from "./account-schema.ts"
-import { line, recordLine, spaceOf } from "./context.ts"
+import { homeOf, line, recordLine } from "./context.ts"
 import { listed } from "./credentials.ts"
 import { profilesState } from "./profiles.ts"
 import { learnedLines, memoriesPage, runningActivities, systemPage } from "./system.ts"
@@ -74,7 +74,7 @@ export const threadSpaces: Projection = {
     on(ThreadOpened, (db, p, e) => {
       db.query(
         "INSERT OR IGNORE INTO thread_spaces (thread, parent, opened, home) VALUES (?, ?, ?, ?)",
-      ).run(p.thread, p.parent, e.seq, spaceOf(p.thread))
+      ).run(p.thread, p.parent, e.seq, homeOf(p.thread))
     }),
     on(SpaceTagged, (db, p) => {
       db.query("UPDATE thread_spaces SET home = ? WHERE opened = ?").run(p.home, p.seq)
