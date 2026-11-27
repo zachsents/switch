@@ -1,6 +1,7 @@
 //! Switch's own A2UI catalog (the desktop's `widgets/catalog.tsx`): the house components, drawn as
 //! DESIGN.md says, beside A2UI's basic catalog. Its charts are `charts/`.
 
+pub mod document;
 pub mod feed;
 pub mod gallery;
 pub mod lines;
@@ -27,6 +28,7 @@ pub fn draw(name: &str, c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App)
         "Check" => lines::check(c, ctx, window, cx),
         "Entry" => lines::entry(c, ctx, window, cx),
         "Playing" => playing::playing(c, ctx, window, cx),
+        "Document" => document::document(c, ctx, window, cx),
         _ => return None,
     })
 }

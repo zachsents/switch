@@ -658,7 +658,7 @@ impl AskCard {
                 .cursor_text()
                 .child(div().text_size(u(14.)).line_height(u(20.)).font_weight(FontWeight::MEDIUM).text_color(l.ink).child(title))
                 .when_some(doc, |d, doc| {
-                    let ctx = markdown::Ctx { id: id.clone(), order: 0, sel: sel.clone(), on_link: crate::chat::on_link(), on_picture: crate::chat::on_picture(), ink: Some(l.ink2), cell: false, pictures: Default::default(), formulas: Default::default() };
+                    let ctx = markdown::Ctx { id: id.clone(), order: 0, sel: sel.clone(), on_link: crate::chat::on_link(), on_picture: crate::chat::on_picture(), ink: Some(l.ink2), cell: false, pictures: Default::default(), formulas: Default::default(), reading: None };
                     d.child(div().text_size(u(13.)).line_height(u(16.)).text_color(l.ink2).child(markdown::render(&doc, &ctx, &l, window, cx)))
                 })
                 .into_any_element()

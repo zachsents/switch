@@ -26,15 +26,17 @@ pub struct WidgetWindow {
     view: View,
     key: String,
     focus: FocusHandle,
+    /// Made roomier for a document, once.
+    grown: bool,
 }
 
 /// Opens a widget's window.
-pub fn open(view: View, cx: &mut App) {
+pub fn open(view: View, cx: &mut App) -> Option<gpui::AnyWindowHandle> {
     let bounds = crate::platform::windows::safe(Bounds::centered(None, size(px(1000.), px(740.)), cx), cx);
     let title: SharedString = view.name.clone().into();
     // Timed from the ask to its first frame, in the desktop log.
     let opened_at = std::time::Instant::now();
-    let _ = cx.open_window(
+    cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions { title: Some(title), appears_transparent: true, traffic_light_position: Some(point(px(10.), px(8.))) }),
@@ -48,7 +50,9 @@ pub fn open(view: View, cx: &mut App) {
             window.focus(&focus, cx);
             w
         },
-    );
+    )
+    .ok()
+    .map(Into::into)
 }
 
 impl WidgetWindow {
@@ -58,7 +62,7 @@ impl WidgetWindow {
         cx.observe(&Host::entity(cx), |_, _, cx| cx.notify()).detach();
         let pictures = WebPictures::entity(cx);
         cx.observe(&pictures, |_, _, cx| cx.notify()).detach();
-        WidgetWindow { view, key, focus: cx.focus_handle() }
+        WidgetWindow { view, key, focus: cx.focus_handle(), grown: false }
     }
 }
 
@@ -79,11 +83,18 @@ impl WidgetWindow {
         host.update(cx, |h, cx| h.want_any(&key, source, cx));
         let surface = host.read(cx).surface(&self.key);
         let failure = host.read(cx).failure(&self.key).map(str::to_string);
+        // A document fills the window, under its own title, and scrolls itself; it's given room to
+        // read beside its threads once, as it first shows.
+        let mut fills: Option<String> = None;
         let content = match surface {
             Some(s) => {
                 let mut ctx = Ctx::new(&self.key, s, l);
                 ctx.in_window = true;
-                render::surface(&ctx, window, cx)
+                fills = render::fills(&ctx);
+                match fills {
+                    Some(_) => render::build(&crate::a2ui::Child { id: "root".into(), base: String::new() }, &ctx, window, cx),
+                    None => render::surface(&ctx, window, cx),
+                }
             }
             // A failed load throws into the window's boundary (widget-window.tsx): its fallback,
             // the failure reported, and Retry asks again.
@@ -93,6 +104,15 @@ impl WidgetWindow {
             }
             None => div().px(u(8.)).py(u(8.)).text_size(u(12.)).text_color(l.ink2).child("Loading…").into_any_element(),
         };
+        if fills.is_some() && !self.grown {
+            self.grown = true;
+            let screen = window.display(cx).map(|d| d.visible_bounds().size);
+            let want = size(px(1240.), px(880.));
+            let to = screen.map(|s| size(want.width.min(s.width - px(40.)), want.height.min(s.height - px(40.)))).unwrap_or(want);
+            if to.width > window.bounds().size.width {
+                window.resize(to);
+            }
+        }
         div()
             .track_focus(&self.focus)
             .on_key_down(|e: &KeyDownEvent, window, _| {
@@ -126,9 +146,12 @@ impl WidgetWindow {
                             window.start_window_move();
                         }
                     })
-                    .child(div().min_w_0().truncate().font_family(SIGN).font_weight(FontWeight::BOLD).text_size(u(15.)).line_height(u(15.)).child(SharedString::from(self.view.name.to_uppercase()))),
+                    .child(div().min_w_0().truncate().font_family(SIGN).font_weight(FontWeight::BOLD).text_size(u(15.)).line_height(u(15.)).child(SharedString::from(fills.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| self.view.name.clone()).to_uppercase()))),
             )
-            .child(div().flex_1().min_h_0().child(crate::kit::pane_scroll("cell", None, content, window, cx)))
+            .child(match fills {
+                Some(_) => div().flex_1().min_h_0().child(content),
+                None => div().flex_1().min_h_0().child(crate::kit::pane_scroll("cell", None, content, window, cx)),
+            })
             .child(ui_sdk::foundation::platform::live_regions(window))
     }
 }

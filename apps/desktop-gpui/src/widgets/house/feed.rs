@@ -6,34 +6,42 @@
 //! while the source fails, whose words show in its place. Each feed's last frame is kept in memory,
 //! so a feed shown again within ten seconds paints it on its first frame, then the live one as it
 //! comes.
+//!
+//! A frame is decoded here, off the main thread, and drawn as the picture it decoded to; the one it
+//! replaces is taken out of every window's atlas. gpui keeps whatever it decodes for an `Image`,
+//! and its texture, for as long as the app runs: a camera drawn that way kept every frame it was
+//! ever sent, gigabytes an hour.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AnyElement, App, Context, Image, IntoElement, ObjectFit, ParentElement, Styled, StyledImage, Window, div, img};
+use gpui::{AnyElement, App, Context, ImageSource, IntoElement, ObjectFit, ParentElement, RenderImage, Styled, StyledImage, Window, div, img};
 use serde_json::{Map, Value};
 
 use crate::look::u;
 use crate::net::Net;
 use crate::time::now_ms;
 use crate::widgets::house::record;
-use crate::widgets::media::sniff;
 use crate::widgets::render::Ctx;
 
 /// A frame older than this is no longer live: the picture shows nothing rather than it.
 const LIVE_MS: f64 = 10_000.;
+/// The size a frame is decoded to, in pixels on its longest side: a widget's width on a Retina
+/// screen.
+const DECODED: u32 = 1280;
 
 #[derive(Clone)]
 struct Frame {
-    image: Arc<Image>,
+    image: Arc<RenderImage>,
     at: f64,
     tag: String,
 }
 
 base::kept_local! {
-    /// Each feed's last frame, in memory only.
+    /// Each feed's last frame, in memory only: the one place a frame is held from one draw to the
+    /// next, so a frame no longer here is drawn nowhere and its texture can go.
     static LAST: RefCell<HashMap<String, Frame>> = RefCell::new(HashMap::new());
 }
 
@@ -42,12 +50,27 @@ fn live(at: f64) -> bool {
 }
 
 pub struct Feeding {
-    frame: Option<Frame>,
+    key: String,
     error: Option<String>,
 }
 
+/// The feed's last frame, kept or let go; one let go leaves every window's atlas.
+fn keep(key: &str, frame: Option<Frame>, cx: &mut App) {
+    let old = LAST.with(|m| {
+        let mut m = m.borrow_mut();
+        match frame {
+            Some(f) => m.insert(key.to_string(), f),
+            None => m.remove(key),
+        }
+    });
+    let shown = LAST.with(|m| m.borrow().get(key).map(|f| f.image.id));
+    if let Some(old) = old.filter(|o| Some(o.image.id) != shown) {
+        cx.drop_image(old.image, None);
+    }
+}
+
 /// The feed's frame now; none when there's no live one.
-async fn frame_now(net: Net, app: String, tool: String, args: Map<String, Value>, held: Option<Frame>) -> Result<Option<Frame>, String> {
+async fn frame_now(net: Net, decoder: gpui::BackgroundExecutor, app: String, tool: String, args: Map<String, Value>, held: Option<Frame>) -> Result<Option<Frame>, String> {
     let mut route = format!("/widgets/{app}/{tool}?as=picture");
     if let Some(h) = &held {
         route.push_str(&format!("&have={}", crate::widgets::host::urlencode(&h.tag)));
@@ -66,8 +89,9 @@ async fn frame_now(net: Net, app: String, tool: String, args: Map<String, Value>
     if answer.body.is_empty() || !live(at) {
         return Ok(None);
     }
-    let Some(format) = sniff(&answer.body) else { return Ok(None) };
-    Ok(Some(Frame { image: Arc::new(Image::from_bytes(format, answer.body)), at, tag }))
+    let body = answer.body;
+    let Some(image) = decoder.spawn(async move { crate::pictures::still(&body, DECODED) }).await else { return Ok(None) };
+    Ok(Some(Frame { image, at, tag }))
 }
 
 /// A feed's frames, asked for from when it's first drawn (or first looked at to see whether its cell
@@ -79,21 +103,17 @@ fn feeding(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> gpui::Ent
     let every = c.get("every").and_then(Value::as_f64).unwrap_or(1000.).max(250.);
     let key = format!("{app}/{tool}/{}", Value::Object(args.clone()));
     ctx.state(c, &format!("feed:{key}"), window, cx, move |_, cx: &mut Context<Feeding>| {
-        let first = LAST.with(|m| m.borrow().get(&key).cloned()).filter(|f| live(f.at));
         let net = cx.global::<Net>().clone();
+        let decoder = cx.background_executor().clone();
+        let held_key = key.clone();
         cx.spawn(async move |this, cx| {
             loop {
-                let held = this.read_with(cx, |f, _| f.frame.clone()).ok().flatten().or_else(|| LAST.with(|m| m.borrow().get(&key).cloned()));
-                let got = frame_now(net.clone(), app.clone(), tool.clone(), args.clone(), held).await;
-                if let Ok(Some(f)) = &got {
-                    LAST.with(|m| m.borrow_mut().insert(key.clone(), f.clone()));
-                } else if let Ok(None) = &got {
-                    LAST.with(|m| m.borrow_mut().remove(&key));
-                }
+                let held = LAST.with(|m| m.borrow().get(&key).cloned());
+                let got = frame_now(net.clone(), decoder.clone(), app.clone(), tool.clone(), args.clone(), held).await;
                 let alive = this.update(cx, |me, cx| {
                     match got {
                         Ok(f) => {
-                            me.frame = f;
+                            keep(&key, f, cx);
                             me.error = None;
                         }
                         Err(e) => me.error = Some(e),
@@ -107,7 +127,7 @@ fn feeding(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> gpui::Ent
             }
         })
         .detach();
-        Feeding { frame: first, error: None }
+        Feeding { key: held_key, error: None }
     })
 }
 
@@ -115,7 +135,8 @@ fn feeding(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> gpui::Ent
 fn now(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> (Option<Frame>, Option<String>) {
     let state = feeding(c, ctx, window, cx);
     let s = state.read(cx);
-    (s.frame.clone().filter(|f| live(f.at) && s.error.is_none()), s.error.clone())
+    let frame = LAST.with(|m| m.borrow().get(&s.key).cloned()).filter(|f| live(f.at) && s.error.is_none());
+    (frame, s.error.clone())
 }
 
 /// Whether it has anything to show: a live frame, or what went wrong.
@@ -130,7 +151,7 @@ pub fn feed(c: &Value, ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyEleme
     let (frame, error) = now(c, ctx, window, cx);
     let mut d = div().relative().w_full().overflow_hidden().bg(l.black);
     d.style().aspect_ratio = Some(ratio);
-    d.children(frame.map(|f| img(f.image).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover)))
+    d.children(frame.map(|f| img(ImageSource::Render(f.image)).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover)))
         .children(error.map(|e| {
             div().absolute().top_0().left_0().size_full().flex().items_center().justify_center().px(u(8.)).text_size(u(12.)).line_height(u(16.)).text_color(l.white).child(e)
         }))

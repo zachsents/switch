@@ -173,6 +173,39 @@ export interface Playing {
   readonly next: string
 }
 
+/**
+ * A document its extension reads: in a chat or a space, a line that opens it; in a window of its
+ * own (its `widget` with `{ doc }`), the reader, its words a section at a time from `tools.content`
+ * (`{ doc }` gives `{ sections: [{ label?, markdown }] }`), a selection's lookup from `tools.define`
+ * (`{ term | url, doc }`), threads asked with `tools.ask` (`{ doc, thread, question, quote? }`) and
+ * highlights with `tools.highlight` and `tools.unhighlight`. A passage (`quote`) is
+ * `{ section, exact, prefix?, suffix? }`.
+ */
+export interface Document {
+  readonly doc: Bound<string>
+  readonly title: Bound<string>
+  /** Its kind (`pdf` numbers its pages). */
+  readonly format?: Bound<string>
+  /** Its size, in a few words. */
+  readonly detail?: Bound<string>
+  /** Moves when its words change, so they're read again. */
+  readonly version?: Bound<number>
+  readonly highlights?: Bound<readonly unknown[]>
+  readonly threads?: Bound<readonly unknown[]>
+  /** A thread to show open. */
+  readonly open?: Bound<string>
+  readonly threadCount?: Bound<number>
+  /** The widget that is the document in its own window. */
+  readonly widget: string
+  readonly tools: {
+    readonly content: string
+    readonly define?: string
+    readonly ask?: string
+    readonly highlight?: string
+    readonly unhighlight?: string
+  }
+}
+
 /** A line to write in: Enter calls `action` with `args` and the words under `field`. */
 export interface Entry {
   readonly placeholder?: Bound<string>
@@ -287,6 +320,7 @@ export interface SwitchParts {
   readonly Check: Check
   readonly Entry: Entry
   readonly Playing: Playing
+  readonly Document: Document
   readonly BarChart: BarChart
   readonly LineChart: LineChart
   readonly AreaChart: AreaChart
@@ -398,6 +432,25 @@ export const SWITCH_PARTS: { readonly [K in keyof SwitchParts]: Schema.Codec<Swi
     back: Schema.String,
     toggle: Schema.String,
     next: Schema.String,
+  }),
+  Document: Schema.Struct({
+    doc: text,
+    title: text,
+    format: Schema.optionalKey(text),
+    detail: Schema.optionalKey(text),
+    version: Schema.optionalKey(number),
+    highlights: Schema.optionalKey(bound(Schema.Array(Schema.Unknown))),
+    threads: Schema.optionalKey(bound(Schema.Array(Schema.Unknown))),
+    open: Schema.optionalKey(text),
+    threadCount: Schema.optionalKey(number),
+    widget: Schema.String,
+    tools: Schema.Struct({
+      content: Schema.String,
+      define: Schema.optionalKey(Schema.String),
+      ask: Schema.optionalKey(Schema.String),
+      highlight: Schema.optionalKey(Schema.String),
+      unhighlight: Schema.optionalKey(Schema.String),
+    }),
   }),
   BarChart: Schema.Struct({
     ...lines,

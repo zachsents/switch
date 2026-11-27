@@ -1386,7 +1386,7 @@ const sayTool = tool(
   {
     closed: true,
     description:
-      "Say something to the user: the only way your words reach them. Your other text is your own. It goes to this conversation, and notifies them when they're away. A result, an answer or a real question, never an acknowledgement or progress (react; a task's stage). `files`: paths on this machine to show with it. `detail`: optional and rare, the long version opened on demand; it never repeats the text.",
+      "Say something to the user: the only way your words reach them. Your other text is your own. It goes to this conversation, and notifies them when they're away. A result, an answer or a real question, never an acknowledgement or progress (react; a task's stage): the answer first, in as few sentences as hold it. `files`: paths on this machine to show with it. `detail`: optional and rare, the long version opened on demand; it never repeats the text.",
     input: Schema.Struct({
       text: Schema.String,
       files: Schema.optionalKey(Schema.Array(Schema.String)),

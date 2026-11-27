@@ -244,6 +244,15 @@ fn decode(bytes: &[u8], hint: Option<ImageFormat>, max: u32) -> Option<Shown> {
     Some(Shown::Render(Arc::new(RenderImage::new(frames)), cost))
 }
 
+/// A still or animated picture decoded at `max` pixels on its longest side, for a picture drawn
+/// once and let go by whoever holds it (`App::drop_image`), such as a camera's frame.
+pub fn still(bytes: &[u8], max: u32) -> Option<Arc<RenderImage>> {
+    match decode(bytes, None, max)? {
+        Shown::Render(r, _) => Some(r),
+        Shown::Vector(..) => None,
+    }
+}
+
 impl Pictures {
     pub fn init(cx: &mut App) {
         let e = cx.new(|_| Pictures {

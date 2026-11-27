@@ -9,6 +9,7 @@ mod app;
 mod asks;
 mod smooth;
 mod said;
+mod reader;
 mod reading;
 mod remend;
 mod quiet;

@@ -127,7 +127,7 @@ pub fn component<'a>(ctx: &'a Ctx, id: &str) -> Option<(Rc<Value>, String, Strin
 /// one (as `build` draws it).
 fn part_of(name: &str, catalog: &str) -> &'static str {
     const BASIC: &[&str] = &["Text", "Image", "Icon", "Video", "AudioPlayer", "Row", "Column", "List", "Card", "Tabs", "Modal", "Divider", "Button", "TextField", "CheckBox", "ChoicePicker", "Slider", "DateTimeInput"];
-    const HOUSE: &[&str] = &["Line", "Row", "Pick", "Slot", "Field", "Feed", "Gallery", "Title", "Check", "Entry", "Playing"];
+    const HOUSE: &[&str] = &["Line", "Row", "Pick", "Slot", "Field", "Feed", "Gallery", "Title", "Check", "Entry", "Playing", "Document"];
     const CHARTS: &[&str] = &["BarChart", "LineChart", "AreaChart", "Sparkline", "DonutChart", "ScatterChart", "Histogram", "CalendarHeatmap", "Meter"];
     let basic = BASIC.contains(&name);
     let house = HOUSE.contains(&name);
@@ -208,6 +208,12 @@ pub fn build(child: &Child, ctx: &Ctx, window: &mut Window, cx: &mut App) -> Any
         .unwrap_or_else(|| div().into_any_element())
 }
 
+/// What a surface whose root fills its window (a Document) is called, the window's band naming it.
+pub fn fills(ctx: &Ctx) -> Option<String> {
+    let (c, name, catalog) = component(ctx, "root")?;
+    (part_of(&name, &catalog) == "house" && name == "Document").then(|| ctx.scope.text(&c, "title"))
+}
+
 /// A surface drawn from its root.
 pub fn surface(ctx: &Ctx, window: &mut Window, cx: &mut App) -> AnyElement {
     let root = Child { id: "root".into(), base: String::new() };
@@ -282,6 +288,7 @@ fn shows(ctx: &Ctx, id: &str, depth: usize, window: &mut Window, cx: &mut App) -
         ("house", "Gallery") => !crate::widgets::house::gallery::pictures(&c, ctx, cx).is_empty(),
         // Its keys' glyphs.
         ("house", "Playing") | ("chart", _) | ("page", _) => true,
+        ("house", "Document") => said("title"),
         _ => false,
     }
 }

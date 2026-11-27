@@ -110,7 +110,8 @@ impl Net {
         let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio"));
         let (tx, rx) = mpsc::unbounded_channel();
         let auth = Arc::new(RwLock::new(None));
-        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).build().expect("http");
+        // Named, as sites like Wikimedia ask: a request with no User-Agent is refused there.
+        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).user_agent(concat!("Switch/", env!("CARGO_PKG_VERSION"))).build().expect("http");
         let callers = Arc::new(Mutex::new(HashMap::new()));
         {
             let (ui, tx) = (ui.clone(), tx.clone());
@@ -207,8 +208,10 @@ impl Net {
         let auth = self.auth();
         let http = self.http.clone();
         self.rt.spawn(async move {
-            // A quiet copy reads, and writes nothing to the core.
-            if crate::outbox::quiet() && method != reqwest::Method::GET && method != reqwest::Method::HEAD {
+            // A quiet copy reads, and writes nothing to the core; with `SWITCH_GPUI_CALLS=1` it
+            // calls extensions' tools for their widgets, to try a widget that acts.
+            let widget_call = route.starts_with("/widgets/") && std::env::var("SWITCH_GPUI_CALLS").is_ok_and(|v| v == "1");
+            if crate::outbox::quiet() && !widget_call && method != reqwest::Method::GET && method != reqwest::Method::HEAD {
                 return Err("Quiet: not sent".to_string());
             }
             let auth = auth.ok_or("Can't reach the core")?;

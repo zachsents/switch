@@ -13,6 +13,9 @@ The drive's layout (Archive/README.txt says it too):
                                                      item, job; a link has symlink in place of
                                                      archive, bytes and sha256)
   Archive/restores.jsonl                             one line per item copied back
+  Archive/pruned.jsonl                               one line per path deleted off the drive on
+                                                     purpose later (path, why, at, by); its files
+                                                     no longer count as archived
 """
 
 import fcntl
@@ -57,11 +60,11 @@ def sha256(path, nocache=True):
     return h.hexdigest()
 
 
-def manifest(volume):
-    """Every line of the manifest, in order (a torn last line is left out)."""
+def jsonl(path):
+    """A list file's lines, in order (a torn last line is left out)."""
     lines = []
     try:
-        with open(manifest_path(volume), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -72,6 +75,36 @@ def manifest(volume):
                     continue
     except FileNotFoundError:
         pass
+    return lines
+
+
+def pruned(volume):
+    """The paths deliberately deleted off the drive since they were archived (Archive/pruned.jsonl:
+    {path relative to the drive, why, at, by}), as absolute paths."""
+    out = []
+    for e in jsonl(os.path.join(archive_root(volume), "pruned.jsonl")):
+        p = (e.get("path") or "").strip("/")
+        if p:
+            out.append(os.path.join(volume, p))
+    return out
+
+
+def under(path, roots):
+    return any(path == r or path.startswith(r + "/") for r in roots)
+
+
+def manifest(volume):
+    """Every line of the manifest that's still on the drive, in order: an archive path written
+    relative to the drive is made absolute, and a file under a pruned path is left out."""
+    gone = pruned(volume)
+    lines = []
+    for e in jsonl(manifest_path(volume)):
+        a = e.get("archive")
+        if a and not os.path.isabs(a):
+            e["archive"] = a = os.path.join(volume, a)
+        if a and under(a, gone):
+            continue
+        lines.append(e)
     return lines
 
 

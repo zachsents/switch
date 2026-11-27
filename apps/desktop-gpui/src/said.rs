@@ -423,7 +423,7 @@ pub fn said(p: Said, sh: &Shared, l: &Look, window: &mut Window, cx: &mut App) -
     } else {
         // The agent's words as Markdown: its detail, or past a screen's worth, opens from More.
         let doc = p.doc.clone().unwrap_or_else(|| Rc::new(Doc::of(p.text)));
-        let ctx = Ctx { id: key.clone(), order: p.order, sel: sh.sel.clone(), on_link: sh.on_link.clone(), on_picture: sh.on_picture.clone(), ink: None, cell: false, pictures: Default::default(), formulas: Default::default() };
+        let ctx = Ctx { id: key.clone(), order: p.order, sel: sh.sel.clone(), on_link: sh.on_link.clone(), on_picture: sh.on_picture.clone(), ink: None, cell: false, pictures: Default::default(), formulas: Default::default(), reading: None };
         let md = markdown::render(&doc, &ctx, l, window, cx);
         let max = l.z(24. * 20.);
         let clamped = sh.clamped.borrow().get(&key).copied().unwrap_or(false);

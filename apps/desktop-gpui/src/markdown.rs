@@ -56,8 +56,8 @@ enum Block {
     Para(Inline),
     /// Words straight in a container (a tight list's item, a `div`): no space around them.
     Plain(Inline),
-    /// Its words, and what's in it past words (a picture), under them.
-    Heading(Inline, Vec<Block>),
+    /// Its level (1 to 6), its words, and what's in it past words (a picture), under them.
+    Heading(u8, Inline, Vec<Block>),
     List { start: Option<u64>, items: Vec<Vec<Block>> },
     /// A task's box, checked or not, before its words.
     Task(bool, Inline, Vec<Block>),
@@ -236,7 +236,19 @@ pub fn cited_space(href: &str) -> Option<String> {
 /// What raw HTML in the words may be, as rehype-sanitize's default (GitHub's) schema lets it
 /// through Streamdown, with `tel:` (Streamdown's), links here (`switchboard:`) and citations
 /// (`switch:`) besides.
-static CLEAN: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+static CLEAN: LazyLock<ammonia::Builder<'static>> = LazyLock::new(cleaner);
+
+/// A document's, the same with its pictures' bytes in place (`data:`, an EPUB's or a DOCX's), never
+/// a link's.
+static CLEAN_READING: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut b = cleaner();
+    b.add_url_schemes(["data"]).attribute_filter(|element, attribute, value| {
+        if attribute == "href" && element == "a" && value.trim_start().to_ascii_lowercase().starts_with("data:") { None } else { Some(value.into()) }
+    });
+    b
+});
+
+fn cleaner() -> ammonia::Builder<'static> {
     let tags = [
         "a", "b", "blockquote", "br", "code", "dd", "del", "details", "div", "dl", "dt", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "input", "ins", "kbd", "li", "ol", "p", "picture", "pre", "q", "rp", "rt", "ruby", "s", "samp", "section", "source", "span", "strike", "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "tt", "ul", "var",
     ];
@@ -263,7 +275,7 @@ static CLEAN: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         .link_rel(None)
         .clean_content_tags(["script", "style"].into_iter().collect());
     b
-});
+}
 
 /// Builds blocks from the sanitized page, as Streamdown's components draw its elements.
 struct Reader {
@@ -373,7 +385,8 @@ impl Reader {
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 let (w, more) = inline_of(n, st);
-                self.put(Block::Heading(w, more));
+                let level = t[1..].parse().unwrap_or(1);
+                self.put(Block::Heading(level, w, more));
             }
             "ul" | "ol" => {
                 let start = (t == "ol").then(|| attr(n, "start").and_then(|s| s.parse().ok()).unwrap_or(1));
@@ -524,6 +537,15 @@ impl Reader {
 
 impl Doc {
     pub fn of(text: &str) -> Self {
+        Self::read(text, &CLEAN)
+    }
+
+    /// A document's words: its pictures may be its own bytes.
+    pub fn reading(text: &str) -> Self {
+        Self::read(text, &CLEAN_READING)
+    }
+
+    fn read(text: &str, clean: &ammonia::Builder<'static>) -> Self {
         // Its math held out first, so the Markdown leaves its TeX be; then unfinished Markdown
         // closed, in every message, as Streamdown's `parseIncompleteMarkdown` (its remend, over the
         // whole text).
@@ -546,7 +568,7 @@ impl Doc {
             }
         });
         pulldown_cmark::html::push_html(&mut html, gfm_footnotes(autolinked(events)).into_iter());
-        let clean = CLEAN.clean(&html).to_string();
+        let clean = clean.clean(&html).to_string();
         let page = scraper::Html::parse_fragment(&clean);
         let root = page.root_element();
         let blocks = blocks_in(&root, false)
@@ -709,6 +731,47 @@ pub struct Ctx {
     pub pictures: Rc<Vec<crate::viewer::Item>>,
     /// The words' formulas (`render` fills them).
     pub formulas: Rc<Vec<crate::math::Formula>>,
+    /// Drawn as a document is read: headings sized by level, room between blocks, and passages
+    /// marked.
+    pub reading: Option<Rc<Reading>>,
+}
+
+/// A passage marked in a run of words: its bytes there, its wash, and what a click on it names.
+pub struct Mark {
+    pub range: Range<usize>,
+    pub wash: gpui::Hsla,
+    pub id: Option<String>,
+}
+
+/// How a document's words are read: the passages marked in each run (by its key and words), and
+/// what a click on one does.
+pub struct Reading {
+    pub marks: Box<dyn Fn((u64, u32), &str) -> Vec<Mark>>,
+    pub on_mark: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+}
+
+/// Runs split where marks start and end, the marked parts washed.
+fn washed(runs: Vec<TextRun>, marks: &[Mark]) -> Vec<TextRun> {
+    if marks.is_empty() {
+        return runs;
+    }
+    let mut out = vec![];
+    let mut at = 0;
+    for r in runs {
+        let end = at + r.len;
+        let mut cuts: Vec<usize> = marks.iter().flat_map(|m| [m.range.start, m.range.end]).filter(|c| *c > at && *c < end).collect();
+        cuts.push(end);
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut from = at;
+        for cut in cuts {
+            let wash = marks.iter().rev().find(|m| m.range.start <= from && m.range.end >= cut).map(|m| m.wash);
+            out.push(TextRun { len: cut - from, background_color: wash.or(r.background_color), ..r.clone() });
+            from = cut;
+        }
+        at = end;
+    }
+    out
 }
 
 /// Every picture in `list`, in order, however deep.
@@ -716,7 +779,7 @@ fn pictures_in(list: &[Block], out: &mut Vec<crate::viewer::Item>) {
     for b in list {
         match b {
             Block::Image { src, alt } => out.push(picture_item(src, alt)),
-            Block::Heading(_, more) | Block::Task(_, _, more) | Block::Quote(more) | Block::Group(more) => pictures_in(more, out),
+            Block::Heading(_, _, more) | Block::Task(_, _, more) | Block::Quote(more) | Block::Group(more) => pictures_in(more, out),
             Block::Details { summary, body, .. } => {
                 pictures_in(&summary.1, out);
                 pictures_in(body, out);
@@ -761,7 +824,8 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
             color: if cite.is_some() || s.dim { l.ink2 } else { color },
             background_color: (s.code || cite.is_some()).then_some(l.bg),
             underline: match (s.link.is_some() || s.linkish, cite.is_some(), s.underline) {
-                (true, false, _) => Some(UnderlineStyle { thickness: px(1.), color: Some(l.ink3), wavy: false }),
+                // A document's many links underlined faintly, so its paragraphs don't read as stripes.
+                (true, false, _) => Some(UnderlineStyle { thickness: px(1.), color: Some(if cx.reading.is_some() { l.line1 } else { l.ink3 }), wavy: false }),
                 (_, _, true) => Some(UnderlineStyle { thickness: px(1.), color: Some(color), wavy: false }),
                 _ => None,
             },
@@ -781,6 +845,16 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
     }
     let key = (cx.order, *n);
     *n += 1;
+    let marks = cx.reading.as_ref().map(|r| (r.marks)(key, &w.text)).unwrap_or_default();
+    let runs = washed(runs, &marks);
+    for m in &marks {
+        if let Some(id) = &m.id
+            && !links.iter().any(|r: &Range<usize>| r.start < m.range.end && m.range.start < r.end)
+        {
+            links.push(m.range.clone());
+            acts.push(Act::Mark(id.clone()));
+        }
+    }
     let id = SharedString::from(format!("{}.w{}", cx.id, key.1));
     let math: Vec<_> = w.text.char_indices().filter_map(|(i, c)| crate::math::formula_of(c, &cx.formulas).map(|f| (i, f.clone(), color))).collect();
     let text = if math.is_empty() {
@@ -792,10 +866,16 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
         return text.into_any_element();
     }
     let on_link = cx.on_link.clone();
+    let on_mark = cx.reading.as_ref().map(|r| r.on_mark.clone());
     let copies = acts.iter().map(|a| matches!(a, Act::Copy(_))).collect();
     text.looks(copies, l.hover).links(links, move |i, window, cx| match acts.get(i) {
         Some(Act::Link(url)) => on_link(url, window, cx),
         Some(Act::Copy(words)) => cx.write_to_clipboard(ClipboardItem::new_string(words.clone())),
+        Some(Act::Mark(id)) => {
+            if let Some(f) = &on_mark {
+                f(id, window, cx);
+            }
+        }
         None => {}
     })
     .into_any_element()
@@ -804,16 +884,28 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
 enum Act {
     Link(String),
     Copy(String),
+    /// A marked passage: what it names.
+    Mark(String),
 }
 
 /// A block's margins above and below, as the house's classes give them (`my-2`, `mt-3 mb-1`, `my-3`).
-fn margins(b: &Block) -> (f32, f32) {
+fn margins(b: &Block, reading: bool) -> (f32, f32) {
+    if reading {
+        return match b {
+            Block::Heading(1 | 2, ..) => (32., 12.),
+            Block::Heading(..) => (24., 8.),
+            Block::Rule => (24., 24.),
+            Block::Para(_) | Block::List { .. } | Block::Code(_) | Block::Quote(_) | Block::Table { .. } | Block::Image { .. } => (14., 14.),
+            Block::Plain(_) | Block::Group(_) | Block::Details { .. } | Block::Task(..) => (0., 0.),
+            Block::Spaced(inner) => (margins(inner, true).0, 16.),
+        };
+    }
     match b {
         Block::Heading(..) => (12., 4.),
         Block::Rule => (12., 12.),
         Block::Para(_) | Block::List { .. } | Block::Code(_) | Block::Quote(_) | Block::Table { .. } | Block::Image { .. } => (8., 8.),
         Block::Plain(_) | Block::Group(_) | Block::Details { .. } | Block::Task(..) => (0., 0.),
-        Block::Spaced(inner) => (margins(inner).0, 16.),
+        Block::Spaced(inner) => (margins(inner, false).0, 16.),
     }
 }
 
@@ -823,7 +915,8 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
         .map(|(i, b)| {
             // Margins between blocks collapse, as a page's do: the larger of the two; none at the
             // ends (`first:mt-0 last:mb-0`).
-            let above = if cx.cell { 0. } else { i.checked_sub(1).map(|j| margins(&list[j]).1.max(margins(b).0)).unwrap_or(0.) };
+            let reading = cx.reading.is_some();
+            let above = if cx.cell { 0. } else { i.checked_sub(1).map(|j| margins(&list[j], reading).1.max(margins(b, reading).0)).unwrap_or(0.) };
             // In a cell, each block's own inset and space (text.tsx's components).
             let inset = |d: gpui::Div| if cx.cell { d.mx(u(8.)).my(u(4.)) } else { d };
             let gap = |d: gpui::Div, _: f32| d.when(above > 0., |d| d.mt(u(above)));
@@ -835,7 +928,7 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
                     inset(gap(div(), 8.)).child(shown).into_any_element()
                 }
                 Block::Para(w) if cx.cell => div().px(u(8.)).py(u(4.)).child(words(w, n, cx, l, false, color)).into_any_element(),
-                Block::Heading(w, more) if cx.cell => {
+                Block::Heading(_, w, more) if cx.cell => {
                     let more = blocks(more, n, cx, l, color, window, app);
                     div().flex().flex_col().child(div().flex().items_center().min_h(u(24.)).px(u(8.)).child(words(w, n, cx, l, true, l.ink))).children(more).into_any_element()
                 }
@@ -865,10 +958,18 @@ fn blocks(list: &[Block], n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
                     let body = shown.then(|| div().flex().flex_col().min_w_0().children(blocks(body, n, cx, l, color, window, app)));
                     div().flex().flex_col().min_w_0().child(head).children(body).into_any_element()
                 }
-                Block::Heading(w, more) => {
+                Block::Heading(level, w, more) => {
                     cx.sel.apart((cx.order, *n));
                     let more = blocks(more, n, cx, l, color, window, app);
-                    gap(div(), 0.).when(last, |d| d.mb(u(4.))).child(words(w, n, cx, l, true, color)).children(more).into_any_element()
+                    // A document's headings step down in size by level; a message's are a weight up.
+                    let sized = |d: gpui::Div| match (cx.reading.is_some(), level) {
+                        (false, _) => d,
+                        (true, 1) => d.text_size(u(26.)).line_height(u(32.)),
+                        (true, 2) => d.text_size(u(21.)).line_height(u(28.)),
+                        (true, 3) => d.text_size(u(18.)).line_height(u(24.)),
+                        (true, _) => d.text_size(u(16.)).line_height(u(24.)),
+                    };
+                    sized(gap(div(), 0.).when(last, |d| d.mb(u(4.)))).child(words(w, n, cx, l, true, color)).children(more).into_any_element()
                 }
                 Block::Task(done, w, more) => div()
                     .flex()
@@ -1022,12 +1123,13 @@ fn math_block(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, color: gpui::Hsla, wi
         .map(|d| crate::follow::across(d, &h))
         .on_scroll(crate::app::sideways(Some(h.clone())))
         .child(
+            // Centred while it fits; wider than the column, it starts at the left and scrolls
+            // (a centred one would lose its left side past the edge).
             div()
                 .flex()
-                .justify_center()
                 .min_w(gpui::relative(1.))
                 .py(u(4.))
-                .child(img(gpui::ImageSource::Render(d.image.clone())).flex_none().w(px(d.width)).h(px(d.height + d.depth))),
+                .child(img(gpui::ImageSource::Render(d.image.clone())).flex_none().mx_auto().w(px(d.width)).h(px(d.height + d.depth))),
         )
         .into_any_element()
 }
@@ -1046,7 +1148,7 @@ fn inline_image(src: &str, alt: &str, cx: &Ctx, l: &Look, window: &mut Window, a
         crate::attached::mount(&format!("{}.img.{src}", cx.id), &hash, window, app);
     }
     let shown = picture_of(src, (f32::from(l.z(720.)) * window.scale_factor()).ceil() as u32, app);
-    let h = l.z(240.);
+    let h = if cx.reading.is_some() { l.z(360.) } else { l.z(240.) };
     match shown {
         Some(Err(())) => div().text_color(l.ink2).child(if alt.is_empty() { name } else { alt.to_string() }).into_any_element(),
         found => {

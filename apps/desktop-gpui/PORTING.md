@@ -428,7 +428,19 @@ file became; what differs on purpose:
 - A quiet copy (`SWITCH_GPUI_QUIET=1`) writes nothing to the core (socket, HTTP, uploads, sign-ins,
   credentials), keeps its data and reports in a folder of its own (`switch-gpui-quiet-<pid>`, swept
   once it's gone) and sends no reports. The app's reports are its own file, never the Electrobun
-  app's `~/.switch/desktop-reports.json`.
+  app's `~/.switch/desktop-reports.json`. With `SWITCH_GPUI_CALLS=1` it calls extensions' tools for
+  their widgets (`POST /widgets/<app>/<tool>`), to try a widget that acts.
+- The house's Document (`widgets/house/document.rs`, `reader.rs`, new here): an extension's
+  document (the reader extension's), in a chat or a column a line that opens it, in its own window
+  the reader, filling it under its title. Its words come from the extension's `content` tool a
+  section at a time (a list, so a book scrolls), drawn as Markdown read as a document
+  (`markdown::Doc::reading`: pictures' own bytes let in; headings sized by level, room between
+  blocks) with the house's math; every word selectable. A selection's popover: `define`'s senses
+  and article, Ask (a new thread about the passage) and Highlight; a Wikipedia link opens its
+  summary there. Threads down the right (`ask`), each passage washed in ink in the words and opened
+  by a click; highlights in yellow. Esc closes the popover, then the selection, then the thread,
+  then the window; ⌘D looks up, ⇧⌘H highlights, Return asks. `SWITCH_GPUI_PAGES=view:<app>/<name>?<key>=<value>`
+  opens a widget's window for a look; the desktop's `open_view` tool opens one for the agent.
 - A window comes out of full screen where it went in (AppKit leaves its top under the menu bar).
 - Cutover: the Electrobun app's Keychain item doesn't answer the Rust app with prompts off, but the
   desktop's `~/.switch/desktop-credential.json` holds a credential its core takes on both Macs, so

@@ -4,6 +4,7 @@
 //!
 //! - `screenshot`: a picture of Switch's window as it is now, even behind other windows, drawn by
 //!   the app (snapshot.rs), so it asks for no Screen Recording.
+//! - `open_view`: an extension's widget in a window of its own (a document in the reader).
 //! - `notify`: a macOS notification about a space, held back while that space is in front, and
 //!   shown here only if the user sends them to this Mac and, while the app is in front, only if they
 //!   aren't quiet then (the brain's `pref notifications`).
@@ -35,6 +36,8 @@ const EVENTS: &str = "io.modelcontextprotocol/events";
 enum Ask {
     Screenshot(oneshot::Sender<Result<String, String>>),
     Notify(Notice, oneshot::Sender<bool>),
+    /// An extension's widget, in a window of its own.
+    OpenView(crate::widgets::window::View, oneshot::Sender<bool>),
 }
 
 #[derive(Clone)]
@@ -67,6 +70,21 @@ fn tools() -> Vec<Tool> {
             })),
         )
         .with_annotations(ToolAnnotations::new().read_only(false)),
+        Tool::new(
+            "open_view",
+            "Opens an extension's widget in a window of its own on this Mac, in front: `app` and `name` as a tool's `view` gives them, with its `input`.",
+            object(json!({
+                "type": "object",
+                "properties": {
+                    "app": { "type": "string" },
+                    "name": { "type": "string" },
+                    "input": { "type": "object" }
+                },
+                "required": ["app", "name"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(false)),
     ]
 }
 
@@ -85,7 +103,7 @@ impl ServerHandler for Desktop {
         let mut extensions = std::collections::BTreeMap::new();
         extensions.insert(EVENTS.to_string(), json!({ "listChanged": false }).as_object().cloned().unwrap_or_default());
         let caps = ServerCapabilities::builder().enable_tools().enable_resources().enable_extensions_with(extensions).build();
-        ServerConfig::new(caps).with_server_info(Implementation::new("desktop", "1")).with_instructions("Switch's window on this Mac: look at it, or notify the user.")
+        ServerConfig::new(caps).with_server_info(Implementation::new("desktop", "1")).with_instructions("Switch's window on this Mac: look at it, open a widget in a window of its own, or notify the user.")
     }
 
     async fn list_tools(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListToolsResult, McpError> {
@@ -111,6 +129,14 @@ impl ServerHandler for Desktop {
                 let _ = self.ui.unbounded_send(Ask::Notify(Notice { title, body: s("body"), subtitle: s("subtitle"), space: s("space") }, tx));
                 let shown = rx.await.unwrap_or(false);
                 let v = json!({ "shown": shown });
+                answer(v.clone(), vec![ContentBlock::text(v.to_string())])
+            }
+            "open_view" => {
+                let (Some(app), Some(name)) = (s("app"), s("name")) else { return Err(McpError::invalid_params("app and name are required", None)) };
+                let view = crate::widgets::window::View { app, name, input: input.get("input").filter(|i| i.is_object()).cloned() };
+                let (tx, rx) = oneshot::channel();
+                let _ = self.ui.unbounded_send(Ask::OpenView(view, tx));
+                let v = json!({ "opened": rx.await.unwrap_or(false) });
                 answer(v.clone(), vec![ContentBlock::text(v.to_string())])
             }
             _ => return Err(McpError::method_not_found::<rmcp::model::CallToolRequestMethod>()),
@@ -150,6 +176,11 @@ fn heard(ask: Ask, cx: &mut App) {
                 return;
             }
             post(n);
+            let _ = tx.send(true);
+        }
+        Ask::OpenView(view, tx) => {
+            crate::widgets::window::open(view, cx);
+            cx.activate(true);
             let _ = tx.send(true);
         }
     }

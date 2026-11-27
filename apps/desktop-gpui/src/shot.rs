@@ -324,6 +324,19 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 if let Some(w) = cx.update(|cx| cx.windows().into_iter().last()) {
                     shoot = w;
                 }
+            } else if let Some(rest) = page.strip_prefix("view:") {
+                // `view:<app>/<name>` or `view:<app>/<name>?<key>=<value>&…` (its input's words):
+                // that widget in a window of its own, which steps after it go to.
+                let (which, input) = rest
+                    .split_once('?')
+                    .map(|(w, q)| (w.to_string(), Some(serde_json::Value::Object(q.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string()))).collect()))))
+                    .unwrap_or((rest.to_string(), None));
+                let (app, name) = which.split_once('/').map(|(a, n)| (a.to_string(), n.to_string())).unwrap_or_default();
+                let opened = cx.update(|cx| crate::widgets::window::open(crate::widgets::window::View { app, name, input }, cx));
+                cx.background_executor().timer(Duration::from_millis(2500)).await;
+                if let Some(w) = opened {
+                    shoot = w;
+                }
             } else if let Some(rest) = page.strip_prefix("narrow:").or_else(|| page.strip_prefix("wide:")).or_else(|| page.strip_prefix("width").and_then(|r| r.split_once(':').map(|(_, sp)| sp))) {
                 // `width<px>:<space>`: the window that wide.
                 let w = if page.starts_with("narrow:") { 600. } else if let Some(n) = page.strip_prefix("width").and_then(|r| r.split(':').next()).and_then(|n| n.parse::<f32>().ok()) { n } else { 1240. };

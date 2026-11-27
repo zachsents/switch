@@ -70,7 +70,18 @@ interface Criterion {
    * approval (core asks.ts). What any other criterion there objects to is the agent's to fix.
    */
   readonly theirs?: boolean
+  /** Asked only of what it applies to: a plain rule in code, where the model didn't heed one. */
+  readonly applies?: (text: string) => boolean
+  /** Asked once of a work: a redraft after it sent the work back, cut by a tenth or more, isn't. */
+  readonly once?: boolean
 }
+
+/**
+ * Sentences, as a reader counts them: each ending in ".", "!" or "?" before a space, and each line
+ * (a list's item is one), so "0.5 mm" or a link's dots don't split one.
+ */
+export const sentences = (text: string) =>
+  text.split(/(?<=[.!?])\s+|\n+/u).filter((s) => s.trim() !== "" && /[\p{L}\p{N}]/u.test(s)).length
 
 const GUIDE =
   "You are the gate of Switch, the user's personal agent. Before something leaves (a reply to the user, an action item " +
@@ -177,11 +188,13 @@ const HANDS: Criterion = {
 // limit in the record. Read against what the turn looked up (`lookedUp`).
 export const UNSUPPORTED: Criterion = {
   name: "unsupported",
-  ask: "Does it state as found that something in the world or the records doesn't exist or didn't happen (no note, no reply, no way to reach someone, nothing found, none left), or why something happened (what caused it, stopped it, or made it fail or go quiet), when nothing this turn looked up or that came in (listed) shows it: no call read that very thing, or the one that did looked at less than it claims (one channel of several, a window of time, other words)? Not what I am or did myself, and not what the user just told me.",
+  ask: "Does it state as found that something in the user's world or records doesn't exist or didn't happen (no note, no reply, no way to reach someone, nothing found, none left), or why something there happened (what caused it, stopped it, or made it fail or go quiet), when nothing this turn looked up or that came in (listed) shows it: no call read that very thing, or the one that did looked at less than it claims (one channel of several, a window of time, other words)? Not general or technical knowledge, an explanation, advice or an opinion; not a cause or absence it marks as a guess or unconfirmed; not what I am or did myself, what the user just told me, or what the reply attributes to a record or search it names.",
   // On the four (each with its turn's lookups and what woke it): 0.96 "no note", 0.90 "usage limits
   // paused work", 0.76 the customer "hasn't replied", 0.75 the unreachable contact (a bypass reason,
   // read as a reply). On 60 other says of Nov 21-23, 5 at 0.75 and up: four a cause or absence with no lookup
-  // for it, one that said where it had looked (0.80).
+  // for it, one that said where it had looked (0.80). Nov 26: it sent back 23 of 300 replies (Nov
+  // 24-26), 14 bypassed (an explainer from general knowledge, a guess labeled as one, a search the
+  // reply names); replayed, the wording before this one objects to 18 at 0.75, this one to 8.
   at: 0.75,
   reason:
     "Look it up first (every channel, all of the history, or the thing's own record, logs or status), then say what you searched: where, for which words, over what span. Or say what you saw and that you don't know yet.",
@@ -247,9 +260,17 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
         // Bypassed 14 times on Nov 23 ("already one sentence"). On 107 replies of Nov 21-23 (all 17
         // bypassed, 60 others it objected to, 30 it passed), labeled blind: at the tuned 0.5 this
         // wording objects to 4 of the 5 padded and 38 of the 101 that aren't; the old one to 4 and 68.
-        // Measured at the tuner's 0.5, before the bar went back to its default 0.6.
-        ask: "Is there padding in this reply that the user would want cut: a preamble, their ask restated, a recap of the steps I took, hedges, or headers and lists where a sentence would do? Not length that carries what they asked for (the numbers, the detail, an answer to each question), and never a reply of three sentences or fewer.",
-        at: 0.6,
+        // Nov 26: it sent back 67 of 300 replies (Nov 24-26), most for a third time on the same
+        // answer, and 28 of those came back on a bypass ("already three sentences", "two questions,
+        // one line each"). Replayed on those 300, the wording before this one objects to 50 at 0.6
+        // (16 of the 28 bypassed); this one, past three sentences, to 27 at 0.6 and 14 at 0.75 (4
+        // of the 28). A reply of three sentences or fewer isn't asked (`applies`), as the question
+        // says and the model didn't heed (11 of the 67), and a redraft that cut it isn't asked
+        // again (`once`).
+        ask: "Would the user want this reply cut because it holds padding: a preamble, their ask restated, a recap of the steps I took, hedges, or repetition? No when what it holds is what they asked for: the numbers, the detail or explanation they asked for, an answer to each of their questions. Never a reply of three sentences or fewer.",
+        at: 0.75,
+        applies: (text) => sentences(text) > 3,
+        once: true,
         reason:
           "Cut it to what they need: the answer or result first, in as few sentences as hold it.",
         dial: "Long-reply bar",
@@ -269,7 +290,11 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
       },
       {
         name: "promise",
-        ask: 'Does it announce later work, a later report or check, a deadline or an ETA ("I\'ll check back", "once it lands I\'ll…", "I\'ll let you know", "about 10 minutes")?',
+        // Nov 26: it sent back 25 of 300 replies (Nov 24-26), 12 of them bypassed: nearly all said
+        // what a running task was doing, or what follows once the user acts on a card. Replayed on
+        // the 300, the wording before this one objects to 40 at 0.6; this one to 3, still catching
+        // "I'll send you before/after frames once it's live" (1.0).
+        ask: 'Does it promise a later message, report, check or follow-up from me ("I\'ll check back", "I\'ll let you know", "I\'ll ping you", "I\'ll send it once it\'s live"), or give a deadline or an ETA of my own making ("about 10 minutes")? Not saying what is under way now (a task working on it, a job running with its own estimate, a watch set), what happens once the user acts on a card ("approve it and I\'ll…"), or steps for the user to take.',
         at: 0.6,
         reason:
           "Don't announce it: deliver when it's ready, with an expectation (expect tool) to keep it if none is open.",
@@ -288,7 +313,12 @@ const CHECKS: Readonly<Record<Exit, Check>> = {
         reason:
           "Put it in their queue as an ask (action_item), or follow the open one that covers it.",
       },
-      HANDS,
+      {
+        ...HANDS,
+        // Nov 26: of the 10 replies it sent back in 300 (Nov 24-26), most asked a real question the
+        // user answers in the chat (a photo of the screen he was standing at, which option).
+        ask: `${HANDS.ask} Nor a real question they answer here in the chat: what they want, which option, what they see.`,
+      },
       UNSUPPORTED,
     ],
   },
@@ -853,7 +883,9 @@ export const reading = (exit: Exit, input: Reading) =>
     const models = yield* Models
     const check = CHECKS[exit]
     const criteria = [
-      ...check.criteria.filter((c) => !(input.without ?? []).includes(c.name)),
+      ...check.criteria.filter(
+        (c) => !(input.without ?? []).includes(c.name) && (c.applies?.(input.text) ?? true),
+      ),
       ...(input.also ?? []),
       ...(input.rules ?? []).map(ruleCriterion),
     ]
@@ -989,6 +1021,37 @@ const refusedLately = (db: Database, exit: Exit, key: string, now: number) =>
 
 const refusedLatelyRead = defineRead("autonomy/gate/refused-lately", refusedLately)
 
+/**
+ * The criteria asked once (`once`) that sent this work back last, in the last hour, which a redraft
+ * now cut by a tenth or more: they aren't asked of it again. Nov 26: 15 of the 67 replies sent back
+ * as long were sent back again after a cut, and 28 came back on a bypass.
+ */
+const takenUp = (db: Database, exit: Exit, key: string, text: string, now: number) => {
+  const once = CHECKS[exit].criteria.filter((c) => c.once === true).map((c) => c.name)
+  if (once.length === 0) {
+    return []
+  }
+  const last = db
+    .query<{ id: string; acted: string; pass: number }, [string, string, number]>(
+      "SELECT id, acted, pass FROM gate_decisions WHERE exit = ? AND key = ? AND time > ? ORDER BY time DESC LIMIT 1",
+    )
+    .get(exit, key, now - ANSWERS_MS)
+  if (!last || last.pass !== 0) {
+    return []
+  }
+  const acted = new Set(list(jsonOf(last.acted)).map((a) => said(a)))
+  const before = db
+    .query<{ n: number | null }, [string]>(
+      "SELECT length(json_extract(payload, '$.text')) AS n FROM events WHERE id = ?",
+    )
+    .get(`gate:${last.id}`)?.n
+  return typeof before === "number" && text.trim().length <= before * 0.9
+    ? once.filter((name) => acted.has(name))
+    : []
+}
+
+const takenUpRead = defineRead("autonomy/gate/taken-up", takenUp)
+
 /** The bypass given, as recorded: early when nothing refused this work in the last hour. */
 const bypassGiven = (exit: Exit, input: Gated) =>
   Effect.gen(function* giving() {
@@ -1102,7 +1165,11 @@ export const gate = (exit: Exit, input: Gated) =>
     if (dashed !== null && bypass === null) {
       return yield* dashRefused(exit, input, dashed, given)
     }
-    const { probabilities, acted, ms, cost } = yield* reading(exit, input)
+    const cut = yield* brain.read(takenUpRead, exit, input.key, input.text, Date.now())
+    const { probabilities, acted, ms, cost } = yield* reading(
+      exit,
+      cut.length === 0 ? input : { ...input, without: [...(input.without ?? []), ...cut] },
+    )
     // What a withholding criterion caught never goes, bypass or not.
     const withheld = acted.some((c) => c.withholds === true)
     const raised: Raised[] = [
