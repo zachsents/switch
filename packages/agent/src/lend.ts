@@ -393,3 +393,99 @@ export const lentHost = (owner: Host, machine: Machine): Host | null => {
     },
   }
 }
+
+const readJson = (file: string): Record<string, unknown> => {
+  try {
+    const got = decodeJson(readFileSync(file, "utf-8"))
+    return Option.isSome(got) ? got.value : {}
+  } catch {
+    return {}
+  }
+}
+const text = (v: unknown) => (typeof v === "string" ? v : "")
+
+/**
+ * Who a login in `home` is, as its CLI keeps it there: Claude's `oauthAccount` email, Codex's ID
+ * token's email; "" when it doesn't say. Read from the files, so a signed-out login says too.
+ */
+export const loginEmail = (provider: string, home: string): string => {
+  if (provider === "claude") {
+    const account = readJson(path.join(home, ".claude.json")).oauthAccount
+    return typeof account === "object" && account !== null
+      ? text(Reflect.get(account, "emailAddress")).toLowerCase()
+      : ""
+  }
+  if (provider === "codex") {
+    const { tokens } = readJson(path.join(home, "auth.json"))
+    const jwt =
+      typeof tokens === "object" && tokens !== null ? text(Reflect.get(tokens, "id_token")) : ""
+    const claims = decodeJson(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf-8"))
+    return Option.isSome(claims) ? text(claims.value.email).toLowerCase() : ""
+  }
+  return ""
+}
+
+/** Whether a login in `home` holds a credential at all (signed in or lapsed). */
+export const hasLogin = (provider: string, home: string) =>
+  Effect.gen(function* checking() {
+    if (provider === "claude") {
+      return (yield* readClaude(home)) !== null
+    }
+    return existsSync(path.join(home, "auth.json"))
+  })
+
+/** A Claude login's Keychain item, gone with it (its home removed without signing out). */
+export const forgetLogin = (provider: string, home: string) =>
+  provider === "claude" && process.platform === "darwin"
+    ? Effect.asVoid(
+        run([
+          "/usr/bin/security",
+          "delete-generic-password",
+          "-a",
+          userInfo().username,
+          "-s",
+          claudeService(home),
+        ]),
+      )
+    : Effect.void
+
+/**
+ * The login signed in at `from` made `to`'s, in place: `to`'s sessions and settings stay, its
+ * credential and who it is are `from`'s. Refreshes of `to` wait for it. False when `from` has none.
+ */
+export const moveLogin = (provider: string, from: string, to: string) =>
+  locked(
+    to,
+    Effect.gen(function* moving() {
+      if (provider === "claude") {
+        const stored = yield* readClaude(from)
+        if (
+          stored === null ||
+          !(yield* writeClaude(
+            to,
+            process.platform === "darwin" ? "keychain" : "file",
+            stored.whole,
+          ))
+        ) {
+          return false
+        }
+        release(to)
+        const account = readJson(path.join(from, ".claude.json")).oauthAccount
+        if (account !== undefined) {
+          const file = path.join(to, ".claude.json")
+          writeFileAtomic(
+            file,
+            JSON.stringify({ ...readJson(file), oauthAccount: account }, null, 2),
+            { mode: 0o600 },
+          )
+        }
+        return true
+      }
+      const file = path.join(from, "auth.json")
+      if (!existsSync(file)) {
+        return false
+      }
+      writeFileAtomic(path.join(to, "auth.json"), readFileSync(file, "utf-8"), { mode: 0o600 })
+      return true
+    }),
+  )

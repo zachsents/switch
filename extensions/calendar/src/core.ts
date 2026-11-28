@@ -7,11 +7,19 @@ import { Effect } from "effect"
 
 const url = () => `${process.env.SWITCH_URL ?? "http://127.0.0.1:4871"}/apps`
 
+/** The extension's credential, which a core on another machine wants (loopback alone needs none). */
+const headers = (): Record<string, string> =>
+  process.env.SWITCH_TOKEN === undefined
+    ? {}
+    : { authorization: `Bearer ${process.env.SWITCH_TOKEN}` }
+
 let connected: Promise<Client> | null = null
 
 const connect = async () => {
   const client = new Client({ name: "calendar", version: "1" })
-  await client.connect(new StreamableHTTPClientTransport(new URL(url())))
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(url()), { requestInit: { headers: headers() } }),
+  )
   return client
 }
 

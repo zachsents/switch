@@ -42,6 +42,8 @@ pub struct Mark {
     pub part: PartReaction,
     pub lines: Vec<Bounds<Pixels>>,
     pub end: Point<Pixels>,
+    /// The bubble's width, which the badge keeps inside.
+    pub width: Pixels,
 }
 
 /// What every bubble in a column shares: its selection, where each bubble was laid out (its
@@ -247,7 +249,9 @@ fn part_marks(seq: u64, right: bool, ink: Hsla, sh: &Shared, l: &Look) -> Vec<An
         .flat_map(|m| {
             let c = color(&m.part);
             let mut out: Vec<AnyElement> = m.lines.iter().map(|b| div().absolute().left(b.left()).top(b.bottom() - px(1.)).w(b.size.width).h(px(2.)).bg(c).into_any_element()).collect();
-            out.push(div().absolute().left(m.end.x - px(4.)).top(m.end.y - px(12.)).child(tapback::badge(&m.part.reaction, m.part.user, ink, true, l)).into_any_element());
+            // At the words' end, its ring in from the bubble's edge when they end at it.
+            let x = (m.end.x - l.z(4.)).min(m.width - l.z(20. + 6.));
+            out.push(div().absolute().left(x).top(m.end.y - l.z(12.)).child(tapback::badge(&m.part.reaction, m.part.user, ink, true, l)).into_any_element());
             out
         })
         .collect()
@@ -263,7 +267,7 @@ fn measure_parts(seq: u64, order: u64, parts: Vec<PartReaction>, sh: Shared) -> 
                     let (lines, end) = sh.sel.find(order, &p.text);
                     let end = end?;
                     let off = |b: Bounds<Pixels>| Bounds::new(b.origin - bounds.origin, b.size);
-                    Some(Mark { part: p.clone(), lines: lines.into_iter().map(off).collect(), end: end - bounds.origin })
+                    Some(Mark { part: p.clone(), lines: lines.into_iter().map(off).collect(), end: end - bounds.origin, width: bounds.size.width })
                 })
                 .collect();
             let mut held = sh.marks.borrow_mut();

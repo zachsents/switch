@@ -21,7 +21,7 @@ use crate::model::model;
 use crate::mutations::{Adding, urlencode};
 use crate::nav::Beat;
 use crate::net::Net;
-use crate::queries::{self, AccountFlow, AccountView, CliView, QueryState, RegistryAgent};
+use crate::queries::{self, AccountView, CliView, QueryState, RegistryAgent, SignInView};
 
 /// Whether Add provider is open.
 struct AddOpen(bool);
@@ -33,7 +33,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     let models = if ready { queries::models(cx) } else { QueryState { data: None, error: None, fetching: false } };
     let accounts = if ready { queries::accounts(cx) } else { QueryState { data: None, error: None, fetching: false } };
     let open = window.use_keyed_state(eid("providers-adding"), cx, |_, _| AddOpen(false));
-    let (all, clis) = accounts.data.as_ref().map(|a| (a.accounts.clone(), a.clis.clone())).unwrap_or_default();
+    let (all, clis, sign_ins) = accounts.data.as_ref().map(|a| (a.accounts.clone(), a.clis.clone(), a.sign_ins.clone())).unwrap_or_default();
     let capabilities = models.data.as_ref().map(|m| m.accounts.clone()).unwrap_or_default();
     let error = accounts.error.clone().or_else(|| models.error.clone());
     // Nothing read yet, and no error (`isPending`).
@@ -55,7 +55,8 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
         col.push(kit::ui(div()).flex().h(u(24.)).items_center().px(u(8.)).text_color(l.ink2).border_b(px(l.w2)).border_color(l.line2).child("Loading").into_any_element());
     }
     for s in sections(&all, &clis, &capabilities) {
-        col.push(provider_section(&s, window, cx));
+        let flows: Vec<SignInView> = sign_ins.iter().filter(|f| f.provider == s.provider).cloned().collect();
+        col.push(provider_section(&s, &flows, window, cx));
     }
     if ready {
         if open.read(cx).0 {
@@ -87,9 +88,9 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
 }
 
 /// A provider (T3 Code's provider card, laid flat): its CLI, each of its accounts on a line, and the
-/// models they offer; Add account for a provider that keeps logins in homes makes one at the core,
-/// for every machine, and starts its sign-in on its row.
-fn provider_section(s: &Section, window: &mut Window, cx: &mut App) -> AnyElement {
+/// models they offer. Add account, for a provider whose logins Switch keeps, opens its sign-in page
+/// at once; who signs in is the account, a new line or one already here signed in again.
+fn provider_section(s: &Section, flows: &[SignInView], window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
     let step = Beat::step(cx);
     let adding = act::act(format!("add-account-{}", s.key), window, cx);
@@ -98,11 +99,12 @@ fn provider_section(s: &Section, window: &mut Window, cx: &mut App) -> AnyElemen
         (a.pending, a.error.clone())
     };
     let label = if s.provider == "acp" { s.key.clone() } else { provider_label(&s.provider) };
+    let ready = s.cli.as_ref().is_some_and(|c| !c.version.is_empty());
     let action = is_login_provider(&s.provider).then(|| {
-        let (provider, sign_in) = (s.provider.clone(), s.cli.as_ref().is_some_and(|c| !c.version.is_empty()));
-        kit::press(kit::button(eid(format!("add-account-{}", s.key)), Btn::Flat, !pending, &l), !pending, move |_, _, cx| {
-            let task = model(cx).update(cx, |m, cx| m.add_account(&provider, sign_in, cx));
-            let task = act::then_accounts(task, cx);
+        let (provider, adding) = (s.provider.clone(), adding.clone());
+        let on = !pending && ready && flows.is_empty();
+        kit::press(kit::button(eid(format!("add-account-{}", s.key)), Btn::Flat, on, &l), on, move |_, _, cx| {
+            let task = model(cx).update(cx, |m, cx| m.add_account(&provider, cx));
             act::settle(&adding, task, |_, _| {}, cx);
         })
         .when(pending, |d| d.child(kit::spin(step, &l)))
@@ -115,6 +117,9 @@ fn provider_section(s: &Section, window: &mut Window, cx: &mut App) -> AnyElemen
     }
     for r in &s.rows {
         rows.push(account_row(r, W48, window, cx));
+    }
+    for f in flows {
+        rows.push(sign_in_row(f, &adding, W48, window, cx));
     }
     if let Some(e) = error {
         rows.push(action_error(&e, &l));
@@ -171,161 +176,92 @@ fn standing_mark(id: &str, s: &Standing, l: &Look) -> Option<AnyElement> {
     Some(div().id(eid(format!("standing-{id}"))).flex().flex_none().child(glyph).tooltip(crate::band::tip(s.words.clone())).into_any_element())
 }
 
-/// An account on its line under its provider (T3 Code's account row): its label, how it stands and
-/// how much of its limit it has used; for an account added here, its sign-in and Remove, which asks
-/// first.
+/// An account on its line under its provider (T3 Code's account row): who it is, how it stands and
+/// how much of its limit it has used; for one added here, Remove, which asks first.
 fn account_row(r: &Row, w: f32, window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
     let id = r.account.id.clone();
     let removing = act::act(format!("account-remove-{id}"), window, cx);
-    let (pending, error) = {
-        let a = removing.read(cx);
-        (a.pending, a.error.clone())
-    };
-    let mut end = div().ml_auto().flex().flex_wrap().items_center().justify_end().gap(u(8.));
-    if r.account.added {
-        let ready = r.cli.as_ref().is_some_and(|c| !c.version.is_empty());
-        end = end.children(sign_in(&r.account, ready, window, cx));
-        let at = id.clone();
-        end = end.child(kit::confirm(format!("account-remove-{id}"), "Remove", &format!("Remove {}?", r.label), !pending, move |_, cx| act::account_action(&removing, &at, "remove", json!({}), cx), window, cx));
-    }
+    let error = removing.read(cx).error.clone();
+    let at = id.clone();
+    let remove = r.account.added.then(|| kit::confirm_quiet(format!("account-remove-{id}"), "Remove", &format!("Remove {}?", r.label), move |_, cx| act::account_action(&removing, &at, "remove", json!({}), cx), window, cx));
     kit::setting(r.label.clone(), w, &l)
         .child(
             kit::controls()
                 .children(standing_mark(&id, &r.standing, &l))
                 .child(kit::ui(div()).min_w_0().truncate().text_color(l.ink).child(r.standing.words.clone()))
                 .when_some(r.standing.used, |d, used| d.child(kit::data(div()).text_color(l.ink).child(format!("{used}%"))))
-                .child(end)
+                .child(div().ml_auto().flex().items_center().children(remove))
                 .when_some(error, |d, e| d.child(action_error(&e, &l))),
         )
         .into_any_element()
 }
 
-fn start_label(starting: bool, signed_in: bool) -> &'static str {
-    if starting {
-        "Starting"
-    } else if signed_in {
-        "Change account"
-    } else {
-        "Sign in"
-    }
-}
-
-/// An account added here, signed in from here, on its row (T3 Code's account row): Sign in opens the
-/// provider's sign-in page in the browser. Claude's page gives a code back, typed in the field under
-/// it; a device sign-in (Codex's, FX's) shows its code here to type on the page, and is done when
-/// the page has it. Signed in, Change account or Sign out.
-fn sign_in(account: &AccountView, ready: bool, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+/// A sign-in under way, on its line under its provider's accounts: Claude's page gives a code back,
+/// typed here (concealed, never kept) and handed to the core; a device sign-in (Codex's, FX's) shows
+/// the code to type on the page, and is done once the page has it. Open goes to the page again.
+/// What went wrong is the provider's Add account's, so it stays once a sign-in that failed is gone.
+fn sign_in_row(flow: &SignInView, completing: &Entity<act::Act>, w: f32, window: &mut Window, cx: &mut App) -> AnyElement {
     let l = Look::get(cx);
-    let id = account.id.clone();
-    let starting = act::act(format!("account-start-{id}"), window, cx);
-    let cancelling = act::act(format!("account-cancel-{id}"), window, cx);
-    let signing_out = act::act(format!("account-signout-{id}"), window, cx);
-    let (s, c, o) = (starting.read(cx), cancelling.read(cx), signing_out.read(cx));
-    let busy = s.pending || c.pending || o.pending;
-    let error = s.error.clone().or_else(|| c.error.clone()).or_else(|| o.error.clone());
-    let start_pending = s.pending;
-    let signed_in = matches!(account.status.as_str(), "connected" | "limited");
-    let mut out: Vec<AnyElement> = vec![];
-    match &account.flow {
-        None => {
-            let on = !busy && ready;
-            let at = id.clone();
-            out.push(
-                kit::press(kit::button(eid(format!("account-start-{id}")), if signed_in { Btn::Key } else { Btn::Go }, on, &l), on, move |_, _, cx| act::account_action(&starting, &at, "start", json!({}), cx))
-                    .aria_label(start_label(start_pending, signed_in))
-                    .child(start_label(start_pending, signed_in))
-                    .into_any_element(),
-            );
-        }
-        Some(flow) => {
-            let url = flow.url.clone();
-            out.push(kit::button(eid(format!("account-open-{id}")), Btn::Key, true, &l).on_click(move |_, _, cx| cx.open_url(&url)).aria_label("Open browser").child("Open browser").into_any_element());
-            let (at, flow_id) = (id.clone(), flow.flow_id.clone());
-            out.push(
-                kit::press(kit::button(eid(format!("account-cancel-{id}")), Btn::Flat, !busy, &l), !busy, move |_, _, cx| act::account_action(&cancelling, &at, "cancel", json!({ "flowId": flow_id }), cx))
-                    .aria_label("Cancel").child("Cancel")
-                    .into_any_element(),
-            );
-            if flow.code.is_empty() {
-                out.push(completion(account, flow, window, cx));
-            }
-        }
-    }
-    if signed_in && account.flow.is_none() {
-        let on = !busy && ready;
-        let at = id.clone();
-        out.push(kit::press(kit::button(eid(format!("account-signout-{id}")), Btn::Key, on, &l), on, move |_, _, cx| act::account_action(&signing_out, &at, "signout", json!({}), cx)).aria_label("Sign out").child("Sign out").into_any_element());
-    }
-    if let Some(flow) = account.flow.as_ref().filter(|f| !f.code.is_empty()) {
-        out.push(kit::data(div()).text_color(l.ink).child(kit::selectable(format!("code-{}", account.id), flow.code.clone(), window, cx)).into_any_element());
-    }
-    if let Some(e) = error {
-        out.push(action_error(&e, &l));
-    }
-    out
-}
-
-/// The code a sign-in page gives back, typed here once and never kept: Continue hands it to the
-/// core.
-fn completion(account: &AccountView, flow: &AccountFlow, window: &mut Window, cx: &mut App) -> AnyElement {
-    let l = Look::get(cx);
-    let key = format!("{}-{}", account.id, flow.flow_id);
-    let completing = act::act(format!("account-complete-{key}"), window, cx);
-    let input = window.use_keyed_state(eid(format!("account-code-{key}")), cx, |window, cx| {
-        Input::new(
-            InputOptions::default().kind(TextFieldKind::Password).placeholder("Code").field_style(kit::field_style()),
-            window,
-            cx,
-        )
-    });
+    let step = Beat::step(cx);
+    let key = flow.flow_id.clone();
+    let completing = completing.clone();
+    let cancelling = act::act(format!("sign-in-cancel-{key}"), window, cx);
     let (pending, error) = {
-        let a = completing.read(cx);
-        (a.pending, a.error.clone())
+        let (a, c) = (completing.read(cx), cancelling.read(cx));
+        (a.pending || c.pending, c.error.clone())
     };
-    let (id, flow_id) = (account.id.clone(), flow.flow_id.clone());
-    let submit = {
-        let (input, completing) = (input.clone(), completing.clone());
-        move |window: &mut Window, cx: &mut App| {
-            if completing.read(cx).pending {
-                return;
+    let url = flow.url.clone();
+    let open = kit::button(eid(format!("sign-in-open-{key}")), Btn::Flat, true, &l).on_click(move |_, _, cx| cx.open_url(&url)).aria_label("Open").child("Open");
+    let cancel_key = key.clone();
+    let cancel = kit::press(kit::button(eid(format!("sign-in-cancel-{key}")), Btn::Flat, !pending, &l), !pending, move |_, _, cx| act::account(&cancelling, format!("/auth/sign-ins/{}/cancel", urlencode(&cancel_key)), json!({}), cx))
+        .aria_label("Cancel")
+        .child("Cancel");
+    let mut controls = kit::controls();
+    if flow.code.is_empty() {
+        let input = window.use_keyed_state(eid(format!("sign-in-code-{key}")), cx, |window, cx| {
+            Input::new(InputOptions::default().kind(TextFieldKind::Password).placeholder("Code").field_style(kit::field_style()), window, cx)
+        });
+        let submit = {
+            let (input, completing, key) = (input.clone(), completing.clone(), key.clone());
+            move |window: &mut Window, cx: &mut App| {
+                let code = input.read(cx).get_value().trim().to_string();
+                if completing.read(cx).pending || code.is_empty() {
+                    return;
+                }
+                input.update(cx, |i, cx| {
+                    i.clear(ChangeOptions::default(), window, cx);
+                });
+                act::account(&completing, format!("/auth/sign-ins/{}/complete", urlencode(&key)), json!({ "code": code }), cx);
             }
-            let code = input.read(cx).get_value().trim().to_string();
-            input.update(cx, |i, cx| {
-                i.clear(ChangeOptions::default(), window, cx);
-            });
-            act::account_action(&completing, &id, "complete", json!({ "flowId": flow_id, "code": code }), cx);
-        }
-    };
-    let enter = submit.clone();
-    div()
-        .flex()
-        .min_w_0()
-        .w_full()
-        .flex_wrap()
-        .items_center()
-        .gap(u(8.))
-        .on_key_down(move |e: &KeyDownEvent, window, cx| {
-            if e.keystroke.key == "enter" {
-                enter(window, cx);
-                cx.stop_propagation();
-            }
-        })
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_w_0()
-                .h(u(22.))
-                .items_center()
-                .px(u(6.))
-                .text_size(u(13.))
-                .line_height(u(16.))
-                .text_color(l.ink)
-                .child(Input::root(&input, cx).text_color(l.ink).aria_label(format!("{} sign-in code", account.id)).w_full()),
-        )
-        .child(kit::press(kit::button(eid(format!("account-continue-{key}")), Btn::Go, !pending, &l), !pending, move |_, window, cx| submit(window, cx)).aria_label("Continue").child("Continue"))
-        .when_some(error, |d, e| d.child(action_error(&e, &l)))
+        };
+        let enter = submit.clone();
+        controls = controls
+            .on_key_down(move |e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "enter" {
+                    enter(window, cx);
+                    cx.stop_propagation();
+                }
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h(u(22.))
+                    .items_center()
+                    .px(u(6.))
+                    .text_size(u(13.))
+                    .line_height(u(16.))
+                    .text_color(l.ink)
+                    .child(Input::root(&input, cx).text_color(l.ink).aria_label("Sign-in code").w_full()),
+            )
+            .child(kit::press(kit::button(eid(format!("sign-in-continue-{key}")), Btn::Go, !pending, &l), !pending, move |_, window, cx| submit(window, cx)).when(pending, |d| d.child(kit::spin(step, &l))).aria_label("Continue").child("Continue"));
+    } else {
+        controls = controls.child(kit::data(div()).flex_1().text_color(l.ink).child(kit::selectable(format!("sign-in-device-{key}"), flow.code.clone(), window, cx)));
+    }
+    kit::setting("Sign in", w, &l)
+        .child(controls.child(open).child(cancel).when_some(error, |d, e| d.child(action_error(&e, &l))))
         .into_any_element()
 }
 

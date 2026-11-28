@@ -6,8 +6,7 @@ import { Accounts } from "./account-service.ts"
 import { web } from "./web.ts"
 
 const Flow = Schema.Struct({ flowId: Schema.String.check(Schema.isMinLength(1)) })
-const Complete = Schema.Struct({
-  ...Flow.fields,
+const Code = Schema.Struct({
   code: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
 })
 const json = (value: unknown, status = 200) =>
@@ -49,7 +48,27 @@ export const accountsRoute = Layer.unwrap(
         "/auth/accounts",
         privateWeb(async (request) => {
           const input = Schema.decodeUnknownSync(NewAccount)(await request.json())
-          return await respond(accounts.add(input.provider, input.id))
+          return await respond(accounts.begin(input.provider))
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/auth/sign-ins/:flow/:action",
+        privateWeb(async (request) => {
+          const parts = new URL(request.url).pathname.split("/")
+          const flowId = Schema.decodeUnknownSync(Flow.fields.flowId)(parts[3])
+          switch (parts.at(4) ?? "") {
+            case "complete": {
+              const input = Schema.decodeUnknownSync(Code)(await request.json())
+              return await respond(accounts.finish(flowId, input.code))
+            }
+            case "cancel": {
+              return await respond(accounts.cancel(flowId))
+            }
+            default: {
+              return json({ error: "Unknown sign-in action" }, 404)
+            }
+          }
         }),
       ),
       HttpRouter.add(
@@ -58,30 +77,9 @@ export const accountsRoute = Layer.unwrap(
         privateWeb(async (request) => {
           const parts = new URL(request.url).pathname.split("/")
           const id = Schema.decodeUnknownSync(AccountId)(parts[3])
-          const action = parts.at(4) ?? ""
-          switch (action) {
-            case "start": {
-              return await respond(accounts.start(id))
-            }
-            case "complete": {
-              const input = Schema.decodeUnknownSync(Complete)(await request.json())
-              return await respond(accounts.finish(id, input.flowId, input.code))
-            }
-            case "cancel": {
-              const input = Schema.decodeUnknownSync(Flow)(await request.json())
-              return await respond(accounts.cancel(id, input.flowId))
-            }
-            case "signout": {
-              return await respond(accounts.signout(id))
-            }
-            case "remove": {
-              return await respond(accounts.remove(id))
-            }
-
-            default: {
-              return json({ error: "Unknown account action" }, 404)
-            }
-          }
+          return (parts.at(4) ?? "") === "remove"
+            ? await respond(accounts.remove(id))
+            : json({ error: "Unknown account action" }, 404)
         }),
       ),
       HttpRouter.add(

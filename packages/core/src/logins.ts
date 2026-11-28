@@ -23,6 +23,7 @@ export const addedOf = (l: Login) => ({
   ...(l.configDir !== undefined && { configDir: l.configDir }),
   ...(l.keychain !== undefined && { keychain: l.keychain }),
   ...(l.acp !== undefined && { acp: l.acp }),
+  ...(l.email !== undefined && l.email !== "" && { email: l.email }),
 })
 
 const nativeFile = (dir: string) => path.join(dir, "providers", "accounts.json")

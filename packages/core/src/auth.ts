@@ -47,8 +47,11 @@ const OFFER_MS = 10 * 60_000
 const TRIAL_MS = 7 * 24 * 3_600_000
 /** How often a credential's use is noted, at most. */
 const SEEN_MS = 10 * 60_000
-/** What the deploy asks of the core on its own machine (scripts/ship.sh), and redaction's sweep. */
-const DEPLOY = new Set(["/pause", "/backup", "/hosts/next", "/redactions/sweep"])
+/**
+ * What the deploy asks of the core on its own machine (scripts/ship.sh; move-core.sh's scripts), and
+ * redaction's sweep.
+ */
+const DEPLOY = new Set(["/pause", "/backup", "/scripts", "/hosts/next", "/redactions/sweep"])
 /** A host's link, and its release's build (release.ts). */
 const HOSTS = new Set(["/hosts", "/hosts/build"])
 /**

@@ -40,6 +40,7 @@ const json = Schema.decodeUnknownOption(
     Schema.Struct({
       loggedIn: Schema.optionalKey(Schema.Boolean),
       auth: Schema.optionalKey(Schema.String),
+      email: Schema.optionalKey(Schema.NullOr(Schema.String)),
     }),
   ),
 )
@@ -259,6 +260,15 @@ export const ownSignedIn = (provider: LoginProvider, command: string) =>
   Effect.map(run(provider, null, command, cliOf(provider).status), ({ said, code }) =>
     json(said)._tag === "None" ? null : cliOf(provider).signedIn(said, code),
   )
+
+/** The email the login in `home` reports in its status, signed in; "" when it says none. */
+export const statusEmail = (provider: LoginProvider, home: string, command: string) =>
+  Effect.map(run(provider, home, command, cliOf(provider).status), ({ said, code }) => {
+    const status = json(said)
+    return cliOf(provider).signedIn(said, code) && status._tag === "Some"
+      ? (status.value.email ?? "").toLowerCase()
+      : ""
+  })
 
 /** Signs the login in `home` out, so its credentials go with it. */
 export const signOut = (provider: LoginProvider, home: string, command: string) =>

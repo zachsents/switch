@@ -75,6 +75,18 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
                 }
                 continue;
             }
+            // `react:<space>:<back>:<agent>:<user>[:<words>]`: the line that many back from the
+            // chat's last (0 the last) given those tapbacks (`-` none) and, when given, those words
+            // (here only).
+            // `part:<space>:<back>:<user|agent>:<reaction>:<words>`: that side's reaction to those words
+            // of it.
+            if let Some(rest) = page.strip_prefix("react:").or_else(|| page.strip_prefix("part:")) {
+                let parts: Vec<String> = rest.splitn(5, ':').map(str::to_string).collect();
+                let words = page.starts_with("part:");
+                let _ = cx.update(|cx| react(&parts, words, cx));
+                cx.background_executor().timer(Duration::from_millis(300)).await;
+                continue;
+            }
             // `terminal:<space>[:<command>]`: a terminal pinned in that space (here only), running it.
             if let Some(rest) = page.strip_prefix("terminal:") {
                 let (space, command) = rest.split_once(':').map_or((rest.to_string(), None), |(s, c)| (s.to_string(), Some(c.to_string())));
@@ -556,6 +568,32 @@ pub fn wheel(window: AnyWindowHandle, cx: &mut App) {
 }
 
 /// A run's own asks, in this copy's brain only.
+fn react(parts: &[String], on_words: bool, cx: &mut App) {
+    let [space, back, a, b, ..] = parts else { return };
+    let words = parts.get(4).cloned();
+    let back = back.parse::<usize>().unwrap_or(0);
+    let side = |r: &str| (r != "-").then(|| r.to_string());
+    model(cx).update(cx, |m, cx| {
+        let Some(chat) = m.brain.chats.get_mut(space) else { return };
+        let Some(n) = chat.lines.len().checked_sub(back + 1) else { return };
+        let l = std::sync::Arc::make_mut(&mut chat.lines[n]);
+        if on_words {
+            let text = words.unwrap_or_default();
+            l.parts.push(crate::brain::PartReaction { user: a != "agent", reaction: b.clone(), text });
+        } else {
+            l.reactions.agent = side(a);
+            l.reactions.user = side(b);
+            if let Some(w) = words {
+                l.text = w;
+            }
+        }
+        *m.brain.chat_versions.entry(space.clone()).or_default() += 1;
+        m.brain.version += 1;
+        m.refresh();
+        cx.notify();
+    });
+}
+
 fn fixture(which: &str, arg: &str, cx: &mut App) {
     use crate::items::ActionItem;
     model(cx).update(cx, |m, cx| {

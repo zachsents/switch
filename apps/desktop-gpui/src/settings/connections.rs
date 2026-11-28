@@ -77,7 +77,7 @@ pub fn render(window: &mut Window, cx: &mut App) -> AnyElement {
                 Some(n) if n.kind == "oauth" => n.scopes.iter().filter(|x| !c.scopes.contains(x)).cloned().collect(),
                 _ => vec![],
             };
-            let account = div().id(ElementId::Name(format!("account-{}", c.id).into())).min_w_0().truncate().text_color(l.ink2).child(c.account.clone());
+            let account = div().id(ElementId::Name(format!("account-{}", c.id).into())).min_w_0().truncate().text_color(l.ink2).when(c.account != "default", |d| d.child(c.account.clone()));
             let account = if c.scopes.is_empty() { account } else { account.tooltip(tip(words(&c.scopes))) };
             let (pa, pp, pid) = (page.clone(), pv.clone(), c.account.clone());
             let (pd, cid) = (page.clone(), c.id.clone());

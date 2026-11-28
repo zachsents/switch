@@ -22,6 +22,7 @@ pub mod pasteboard;
 pub mod quicklook;
 pub mod snapshot;
 pub mod standalone;
+pub mod tapbacks;
 pub mod timing;
 pub mod update;
 pub mod watch;

@@ -9,8 +9,10 @@
 #                                       there, puts a host and the old addresses' forward here
 #   move-core.sh back   <user@host>     the way back: the core stopped there, its brain and stores
 #                                       brought here, the core started here again
-# Nothing here is deleted: ~/.switch stays as it was when the core stopped (brain, blobs, logins),
-# the way back, until it's removed by hand. Its log: ~/Library/Logs/switch/move.log.
+# Nothing here is deleted but the logins: ~/.switch stays as it was when the core stopped (brain,
+# blobs), the way back, until it's removed by hand. Each Claude login moves, never copies: a refresh
+# rotates its token, so a copy left behind is dead once the other refreshes, and using it could end
+# the login for both. Its Keychain item here goes once it's there; `back` brings it home again. Its log: ~/Library/Logs/switch/move.log.
 # There: the release live here (its build for that machine, from this one's release), a systemd
 # user unit (switch-core.service), the old host there (switch-host.service) stopped for the core's
 # own, connections' secrets from this Keychain as files (~/.switch/keychain), each Claude login's
@@ -72,6 +74,9 @@ check() {
     there "command -v $c >/dev/null" || { say "missing there: $c"; bad=1; }
   done
   there '[ -x ~/.bun/bin/bun ] || command -v bun >/dev/null' || { say "missing there: bun"; bad=1; }
+  # Without it every Claude login there checks as signed out at the core's first start.
+  [ -z "$(ls "$S/logins/claude" 2>/dev/null)" ] || there '[ -x ~/.local/bin/claude ] || command -v claude >/dev/null' ||
+    { say "missing there: claude (curl -fsSL https://claude.ai/install.sh | bash)"; bad=1; }
   there 'command -v magick >/dev/null || command -v convert >/dev/null' || say "missing there: ImageMagick (attached pictures go unscaled)"
   there 'loginctl show-user "$(id -un)" -p Linger | grep -q yes' || { say "there: linger is off (sudo loginctl enable-linger \$USER)"; bad=1; }
   there 'tailscale serve status >/dev/null 2>&1' || { say "there: Tailscale Serve needs this user as operator (sudo tailscale set --operator=\$USER)"; bad=1; }
@@ -141,6 +146,8 @@ for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
         continue
     script = "set -e; umask 077; f=~/.switch/logins/claude/" + name + "/.credentials.json; cat > \"$f.tmp\" && mv \"$f.tmp\" \"$f\""
     subprocess.run(["ssh", "-o", "BatchMode=yes", to, script], input=r.stdout.strip(), text=True, check=True)
+    # Moved, not copied: only the core there refreshes it now.
+    subprocess.run(["security", "delete-generic-password", "-a", os.environ["USER"], "-s", service], capture_output=True, check=True)
     n += 1
 print(n)
 PY
@@ -300,31 +307,54 @@ PY
 # Backups once the core is there: its own (there, nightly) pulled hourly onto this Mac's backup
 # disk, beside its image; and this Mac's own stores (its extensions' folders, the vault), nightly
 # into its image as before, the brain in them the one it stopped with (cheap: a compressed copy).
+# Both run as scripts of the core's (POST /scripts, on its machine), which this Mac's host runs, not
+# as launchd jobs: launchd's /bin/sh may not read or write the backup disk (TCC: "Operation not
+# permitted"), the host may. The pull reads the folder by its path (backup-pull.sh's third
+# argument): the core's machine may be reached by Tailscale SSH, which ignores authorized_keys and
+# so the pull key's forced command.
 backups_here() {
   dest=$(conf backups)
   case $dest in "~/"*) dest=$HOME/${dest#\~/} ;; esac
   [ -n "$dest" ] || { say "no backups folder in deploy.json: the core's backups aren't pulled here"; return 0; }
-  sh "$(dirname "$0")/backup-pull.sh" install "$to" "$(dirname "$dest")/backups-$short" backups >>"$LOG" 2>&1 ||
-    say "the pull of the core's backups didn't install"
-  plist=$HOME/Library/LaunchAgents/ax.switch.backup-host.plist
-  cat >"$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>ax.switch.backup-host</string>
-<key>ProgramArguments</key><array><string>/usr/bin/lockf</string><string>-t</string><string>3600</string><string>$S/backup.lock</string><string>/usr/sbin/taskpolicy</string><string>-b</string><string>/bin/sh</string><string>$S/current/backup.sh</string><string>host</string><string>$1</string></array>
-<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>45</integer></dict>
-<key>StandardOutPath</key><string>$LOGS/backup-host.log</string>
-<key>StandardErrorPath</key><string>$LOGS/backup-host.log</string>
-</dict></plist>
-PLIST
+  pulls="$(dirname "$dest")/backups-$short"
+  sh "$(dirname "$0")/backup-pull.sh" install "$to" "$pulls" >>"$LOG" 2>&1 || say "the pull's key didn't install"
+  launchctl bootout "$DOMAIN/ax.switch.backup-pull" 2>/dev/null || true
+  rm -f "$HOME/Library/LaunchAgents/ax.switch.backup-pull.plist"
+  cp "$(dirname "$0")/backup-pull.sh" "$S/backup-pull.sh"
+  remote=$(there 'cd && python3 -c "import json, os; print(os.path.expanduser(json.load(open(\".switch/deploy.json\")).get(\"backups\", \"~/backups\")))"')
+  self=$(tailnet_self)
+  self=${self%%.*}
+  set_script backup-pull "$self" "# The core's backups, pulled hourly onto this Mac's backup disk (move-core.sh).
+while true; do
+  /bin/sh \"\$HOME/.switch/backup-pull.sh\" '$to' '$pulls' '$remote' >>\"\$HOME/Library/Logs/switch/backup-pull.log\" 2>&1 || switch event backup.pull_failed
+  sleep 3600
+done" || say "the pull of the core's backups wasn't set"
+  set_script backup-host "$self" "# This Mac's own stores into its image nightly at 3:45 (move-core.sh).
+while true; do
+  now=\$(date +%s); next=\$(date -j -f %H:%M:%S 03:45:00 +%s); [ \"\$next\" -gt \"\$now\" ] || next=\$((next + 86400))
+  sleep \$((next - now))
+  /usr/bin/lockf -t 3600 \"\$HOME/.switch/backup.lock\" /usr/sbin/taskpolicy -b /bin/sh \"\$HOME/.switch/current/backup.sh\" host '$1' >>\"\$HOME/Library/Logs/switch/backup-host.log\" 2>&1 || switch event backup.host_failed
+done" || say "this Mac's own backup wasn't set"
   launchctl bootout "$DOMAIN/ax.switch.backup-host" 2>/dev/null || true
-  launchctl bootstrap "$DOMAIN" "$plist"
+  rm -f "$HOME/Library/LaunchAgents/ax.switch.backup-host.plist"
+}
+
+# A script of the core's on a machine (POST /scripts, on the core's own machine): what it runs no
+# work owns, so nothing retires it but setting it again.
+set_script() {
+  python3 -c 'import json, sys; print(json.dumps({"name": sys.argv[1], "machine": sys.argv[2], "space": "home", "run": sys.argv[3]}))' "$@" |
+    there "curl -sf -m 30 -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:$PORT/scripts" >>"$LOG" 2>&1
 }
 
 back() {
   stop=$(date +%s)
   there "curl -sf -m 60 -X POST http://127.0.0.1:$PORT/pause >/dev/null; systemctl --user disable --now switch-core.service; sqlite3 -cmd '.timeout 10000' ~/.switch/brain.db 'PRAGMA wal_checkpoint(TRUNCATE);'" >>"$LOG" 2>&1 || true
+  # The backup scripts here go with the core there: the core here runs its own backups again.
+  self=$(tailnet_self)
+  self=${self%%.*}
+  for name in backup-pull backup-host; do
+    set_script "$name" "$self" "exit 0" || true
+  done
   for job in ax.switch.forward ax.switch.host ax.switch.backup-host ax.switch.backup-pull; do
     launchctl bootout "$DOMAIN/$job" 2>/dev/null || true
     rm -f "$HOME/Library/LaunchAgents/$job.plist"
@@ -333,7 +363,10 @@ back() {
   "$RSYNC" -a --inplace --no-whole-file -e 'ssh -o BatchMode=yes' "$to:.switch/brain.db" "$S/brain.db" >>"$LOG" 2>&1 || die "the brain didn't come back"
   rm -f "$S/brain.db-wal" "$S/brain.db-shm"
   # shellcheck disable=SC2046
-  "$RSYNC" -a $(excludes) --exclude=/logins/ -e 'ssh -o BatchMode=yes' "$to:.switch/" "$S/" >>"$LOG" 2>&1 || say "some stores didn't come back"
+  "$RSYNC" -a $(excludes) -e 'ssh -o BatchMode=yes' "$to:.switch/" "$S/" >>"$LOG" 2>&1 || say "some stores didn't come back"
+  # The logins came home with them (each home's .credentials.json, which the core reads here when
+  # the Keychain has none): there they go, so one machine alone refreshes each.
+  there 'rm -f ~/.switch/logins/claude/*/.credentials.json' >>"$LOG" 2>&1 || say "the logins' credentials there weren't removed"
   [ ! -f "$S/config.json.core" ] || cp "$S/config.json.core" "$S/config.json"
   python3 - "$S/deploy.json" <<'PY'
 import json, sys

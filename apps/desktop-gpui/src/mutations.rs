@@ -127,7 +127,6 @@ impl Done {
 /// its own, or an agent from the ACP Registry, installed.
 #[derive(Clone, Debug)]
 pub enum Adding {
-    Account { provider: String, id: String },
     Provider { provider: String },
     Agent { agent_id: String, version: String, distribution: String },
 }
@@ -594,7 +593,6 @@ impl Model {
     /// once; the catalog and the registry after. The account it made, by id.
     pub fn add_provider(&self, adding: Adding, cx: &mut Context<Self>) -> Task<Result<String, String>> {
         let (task, made) = match &adding {
-            Adding::Account { provider, id } => (self.account_request("/auth/accounts", Some(json!({ "provider": provider, "id": id })), cx), id.clone()),
             Adding::Provider { provider } => (self.provider_request("/providers/add", Some(json!({ "provider": provider })), cx), provider.clone()),
             Adding::Agent { agent_id, version, distribution } => (
                 self.provider_request("/providers/registry/install", Some(json!({ "agentId": agent_id, "version": version, "distribution": distribution })), cx),
@@ -613,24 +611,19 @@ impl Model {
         })
     }
 
-    /// An account added, by an id the core makes, and its sign-in started when its CLI is there.
-    pub fn add_account(&self, provider: &str, sign_in: bool, cx: &mut Context<Self>) -> Task<Result<(), String>> {
-        let added = self.account_request("/auth/accounts", Some(json!({ "provider": provider })), cx);
-        cx.spawn(async move |this, cx| {
+    /// An account added: its provider's sign-in started at the core, its page opened in the
+    /// browser straight away. Who signs in is the account, new or one already here.
+    pub fn add_account(&self, provider: &str, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        let started = self.account_request("/auth/accounts", Some(json!({ "provider": provider })), cx);
+        cx.spawn(async move |_, cx| {
             let got: Result<(), String> = async {
-                let v = added.await?;
-                let id = v.get("id").and_then(Value::as_str).ok_or("Account operation failed")?.to_string();
-                if sign_in {
-                    let start = this.update(cx, |m, cx| m.account_request(&format!("/auth/accounts/{}/start", urlencode(&id)), Some(json!({})), cx)).map_err(|_| "Account operation failed")?;
-                    start.await?;
-                }
+                let v = started.await?;
+                let url = v.get("url").and_then(Value::as_str).ok_or("Account operation failed")?.to_string();
+                cx.update(|cx| cx.open_url(&url));
                 Ok(())
             }
             .await;
-            let accounts = cx.update(|cx| {
-                queries::invalidate(queries::MODELS, cx);
-                queries::refetch(queries::ACCOUNTS, cx)
-            });
+            let accounts = cx.update(|cx| queries::refetch(queries::ACCOUNTS, cx));
             accounts.await;
             got
         })

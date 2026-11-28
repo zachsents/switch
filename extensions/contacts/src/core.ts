@@ -3,17 +3,36 @@
 // account and a fresh token for it, or an action item asking the user to connect one.
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client"
 import { Effect } from "effect"
+import type { HostShape } from "switch-ext-kit"
 
 import { isJson, parse, rec, recs, str } from "./json.ts"
 import type { Json } from "./json.ts"
 
 export const core = (): string => process.env.SWITCH_URL ?? "http://127.0.0.1:4871"
 
+/** The extension's credential, which a core on another machine wants (loopback alone needs none). */
+const headers = (): Record<string, string> =>
+  process.env.SWITCH_TOKEN === undefined
+    ? {}
+    : { authorization: `Bearer ${process.env.SWITCH_TOKEN}` }
+
+/** The host that runs it, once it's serving: connections' tokens come through it, wherever the core is. */
+let host: HostShape | null = null
+
+/** Takes connections' tokens through `h` from now on. */
+export const tokensThrough = (h: HostShape) => {
+  host = h
+}
+
 let connected: Promise<Client> | null = null
 
 const open = async () => {
   const client = new Client({ name: "contacts", version: "1" })
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${core()}/apps`)))
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${core()}/apps`), {
+      requestInit: { headers: headers() },
+    }),
+  )
   return client
 }
 
@@ -117,8 +136,14 @@ export const askForGoogle: Effect.Effect<unknown> = callCore("connections_reques
   provider: "google",
 })
 
-/** A fresh access token from the core, which holds the account's connection. */
+/**
+ * A fresh access token from the core, which holds the account's connection: through the host when
+ * serving, else (a command run by hand on the core's machine) its loopback route.
+ */
 export const accessToken = async (account: string): Promise<string> => {
+  if (host !== null) {
+    return await Effect.runPromise(host.token("google", account))
+  }
   const id = encodeURIComponent(`google:${account}`)
   const res = await fetch(`${core()}/connections/token?id=${id}`)
   const t = rec(await res.json().catch(() => ({})))

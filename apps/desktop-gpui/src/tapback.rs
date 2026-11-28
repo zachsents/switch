@@ -43,59 +43,69 @@ pub fn name_of(r: &str) -> String {
     .to_string()
 }
 
-/// Each tapback's color, iMessage's: Apple's system colors.
+/// Each tapback's color, iMessage's: the system color nearest each of Messages' own glyphs.
 pub fn color_of(t: &str, l: &Look) -> Hsla {
     let (day, night) = match t {
         "love" => (0xff2d55, 0xff375f),
-        "like" => (0xff9500, 0xff9f0a),
-        "dislike" => (0x5856d6, 0x5e5ce6),
-        "laugh" => (0xaf52de, 0xbf5af2),
+        "like" | "dislike" => (0xff9500, 0xff9f0a),
+        "laugh" => (0x32ade6, 0x64d2ff),
         "emphasize" => (0xff3b30, 0xff453a),
-        _ => (0x007aff, 0x0a84ff),
+        _ => (0xaf52de, 0xbf5af2),
     };
     gpui::rgb(if l.dark { night } else { day }).into()
 }
 
-/// A reaction drawn: a tapback's glyph in its color, or the emoji.
+/// A reaction drawn, `size` across as an emoji of that size is: a tapback as Messages draws it
+/// (its own glyph from this Mac's system, else one drawn here in its color), or the emoji.
 pub fn glyph(r: &str, size: f32, l: &Look) -> AnyElement {
     let s = px(size);
     if !is_tapback(r) {
         return div().flex_none().text_size(s).line_height(s).child(SharedString::from(r.to_string())).into_any_element();
     }
+    if let Some(image) = crate::platform::tapbacks::glyph(r) {
+        // Its frame is larger than the glyph in it: the glyph fills `size`, as an emoji does.
+        let frame = s / crate::platform::tapbacks::GLYPH;
+        let at = (s - frame) / 2.;
+        return div().flex_none().relative().size(s).child(gpui::img(image).absolute().left(at).top(at).size(frame)).into_any_element();
+    }
     let color = color_of(r, l);
-    let word = |text: &'static str, at: f32| div().font_family(SANS).font_weight(FontWeight::EXTRA_BOLD).text_size(s * at).line_height(s * at).text_color(color).child(text);
+    let word = |text: &'static str, at: f32| div().font_family(SANS).font_weight(FontWeight::BLACK).text_size(s * at).line_height(s * at * 0.9).text_color(color).child(text);
     match r {
         "love" | "like" | "dislike" => chat_marks::drawn(r, s, color).into_any_element(),
-        "laugh" => div().size(s).flex().flex_col().items_center().justify_center().child(word("HA", 0.4)).child(word("HA", 0.4)).into_any_element(),
-        "emphasize" => div().size(s).flex().items_center().justify_center().child(word("!!", 0.75)).into_any_element(),
-        _ => div().size(s).flex().items_center().justify_center().child(word("?", 0.75)).into_any_element(),
+        "laugh" => div().size(s).flex().flex_col().items_center().justify_center().child(word("HA", 0.5)).child(word("HA", 0.5)).into_any_element(),
+        "emphasize" => div().size(s).flex().items_center().justify_center().child(word("!!", 1.)).into_any_element(),
+        _ => div().size(s).flex().items_center().justify_center().child(word("?", 1.)).into_any_element(),
     }
 }
 
-/// A reaction on a bubble: a round badge ringed in the background (the user's in their ink).
+/// A reaction on a bubble: a round badge ringed in the background (the user's in their ink), its
+/// size the text's, as the bubble's is.
 pub fn badge(r: &str, mine: bool, ink: Hsla, small: bool, l: &Look) -> gpui::Stateful<gpui::Div> {
-    let size = if small { 20. } else { 28. };
+    let (size, inner) = if small { (20., 11.) } else { (28., 14.) };
+    let (round, ring) = (l.z(size), l.z(2.));
     div().id(SharedString::from(format!("badge-{r}-{mine}-{small}"))).tooltip(crate::band::tip(name_of(r)))
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
         .relative()
-        .size(px(size))
+        .size(round)
         // Its ring sits outside its size, as CSS's ring does: the user's in their ink, the agent's
         // in the background.
-        .child(div().absolute().top(px(-2.)).left(px(-2.)).size(px(size + 4.)).rounded_full().bg(if mine { ink } else { l.bg }))
-        .child(div().absolute().top_0().left_0().size(px(size)).rounded_full().bg(l.bubble).flex().items_center().justify_center().child(glyph(r, if small { 11. } else { 14. }, l)))
+        .child(div().absolute().top(-ring).left(-ring).size(round + ring * 2.).rounded_full().bg(if mine { ink } else { l.bg }))
+        .child(div().absolute().top_0().left_0().size(round).rounded_full().bg(l.bubble).flex().items_center().justify_center().child(glyph(r, inner * l.zoom, l)))
 }
 
-/// The reactions on a bubble, on its top corner away from its side.
+/// The reactions on a bubble, on its top corner away from its side: two stacked as iMessage
+/// stacks them, the user's over the agent's at the corner, so they never reach past a short
+/// bubble's far side.
 pub fn badges(reactions: &Reactions, right: bool, ink: Hsla, l: &Look) -> gpui::Div {
     div()
         .absolute()
-        .top(px(-16.))
+        .top(l.z(-19.))
         .flex()
-        .gap(px(2.))
-        .map(|d| if right { d.left(px(-14.)).flex_row_reverse() } else { d.right(px(-14.)) })
+        .gap(l.z(-4.))
+        .map(|d| if right { d.left(l.z(-14.)).flex_row_reverse() } else { d.right(l.z(-14.)) })
         .when_some(reactions.agent.as_ref(), |d, r| d.child(badge(r, false, ink, false, l)))
         .when_some(reactions.user.as_ref(), |d, r| d.child(badge(r, true, ink, false, l)))
 }

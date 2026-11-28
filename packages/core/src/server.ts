@@ -118,7 +118,7 @@ import { notifier, notifyConfig } from "./notify.ts"
 import { reportsConfig } from "./reports.ts"
 import { scriptsApp } from "./scripts-app.ts"
 import { usageApp } from "./usage.ts"
-import { eventsRoute, scriptsConfig, scriptsRetire } from "./scripts.ts"
+import { eventsRoute, scriptsConfig, scriptsRetire, scriptsRoute } from "./scripts.ts"
 import { itemChecks } from "./item-checks.ts"
 import { takeInLayer } from "./take-in.ts"
 import { enrich } from "./outbound.ts"
@@ -623,6 +623,7 @@ const layerRoutes = HttpRouter.serve(
     queryRoute,
     routeRoute,
     eventsRoute,
+    scriptsRoute,
     modelsRoute,
     accountsRoute,
     registryRoutes,

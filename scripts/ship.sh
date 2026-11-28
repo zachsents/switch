@@ -1063,11 +1063,15 @@ case ${1:-} in
   settle) settle ;;
   compress) compress ;;
   tidy) tidy; say "tidied: backups $(du -sh "$S/backups" | cut -f1), releases $(du -sh "$S/releases" | cut -f1)" ;;
-  tidy-bg) lk 0 "$S/tidy.lock" background sh "$SELF" tidy ;;
+  # lockf and flock run a program, not a function of this script's: the lock first, then itself at
+  # background in it.
+  tidy-bg) lk 0 "$S/tidy.lock" sh "$SELF" tidy-low ;;
+  tidy-low) background sh "$SELF" tidy ;;
   watch) watch "$2" "${3:-}" ;;
   rollback) rollback "$2" "${3:-}" ;;
   app) app "$2" ;;
-  app-bg) lk 0 "$S/app.lock" background sh "$SELF" app "$2" ;;
+  app-bg) lk 0 "$S/app.lock" sh "$SELF" app-low "$2" ;;
+  app-low) background sh "$SELF" app "$2" ;;
   app-electrobun) app_electrobun "$2" ;;
   bundle) bundle "$2" || exit 1 ;;
   notarize) notarize "$2" || exit 1 ;;

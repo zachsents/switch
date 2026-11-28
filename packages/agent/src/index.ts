@@ -68,11 +68,19 @@ export {
   keychainToken,
 } from "./accounts.ts"
 export type { Account, Login } from "./accounts.ts"
-export { claudeCredential, lentHost, ownedHost } from "./lend.ts"
+export {
+  claudeCredential,
+  forgetLogin,
+  hasLogin,
+  lentHost,
+  loginEmail,
+  moveLogin,
+  ownedHost,
+} from "./lend.ts"
 export { adapters, route } from "./route.ts"
 export { homeEnv } from "./fx.ts"
 export { museEnv } from "./muse.ts"
-export { ownSignedIn, SignInFailed, signedIn, signOut, startSignIn } from "./signin.ts"
+export { ownSignedIn, SignInFailed, signedIn, signOut, startSignIn, statusEmail } from "./signin.ts"
 export type { SignIn } from "./signin.ts"
 export type { Adapter, Image, Runner, Start } from "./provider.ts"
 export { Sessions } from "./sessions.ts"

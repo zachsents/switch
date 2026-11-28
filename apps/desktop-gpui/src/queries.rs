@@ -420,7 +420,8 @@ fn fetch_models(cx: &mut App) -> Task<Result<ModelsView, String>> {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountFlow {
+pub struct SignInView {
+    pub provider: String,
     pub flow_id: String,
     pub url: String,
     /// What a device sign-in has the user type on the page; empty when the page gives a code back.
@@ -433,11 +434,13 @@ pub struct AccountView {
     pub provider: String,
     pub machine: String,
     pub added: bool,
-    /// "signed-out", "pending", "connected", "limited".
+    /// Who it is, for one added at the core: the email its login reports.
+    #[serde(default)]
+    pub email: String,
+    /// "signed-out", "connected", "limited".
     pub status: String,
     pub problem: String,
     pub used: f64,
-    pub flow: Option<AccountFlow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -453,6 +456,8 @@ pub struct CliView {
 pub struct Accounts {
     pub accounts: Vec<AccountView>,
     pub clis: Vec<CliView>,
+    /// Sign-ins under way, each an account once it's done.
+    pub sign_ins: Vec<SignInView>,
 }
 
 pub fn accounts(cx: &mut App) -> QueryState<Accounts> {
@@ -467,7 +472,7 @@ fn fetch_accounts(cx: &mut App) -> Task<Result<Accounts, String>> {
             return Err(a.json().get("error").and_then(Value::as_str).unwrap_or("Account operation failed").to_string());
         }
         let v = a.json();
-        Ok(Accounts { accounts: records_of("account", &v["accounts"]), clis: records_of("provider CLI", &v["clis"]) })
+        Ok(Accounts { accounts: records_of("account", &v["accounts"]), clis: records_of("provider CLI", &v["clis"]), sign_ins: records_of("sign-in", &v["signIns"]) })
     })
 }
 

@@ -1445,16 +1445,16 @@ const makeSessions = Effect.fnUntraced(function* makeSessions(config: SessionsCo
       }
     })
 
-  // Limits outlast a restart; a host whose limit lifted meanwhile is back.
+  // Usage limits outlast a restart; a host whose limit lifted meanwhile is back. Being signed out
+  // doesn't: it's found again at each start (an account added here, by its login; any other, by
+  // its next turn), so a login that was signed out at the last start isn't held out for good.
   const restoreAccounts = Effect.fnUntraced(function* restoring() {
     for (const a of yield* brain.read(accountsRead)) {
       if (hosts.get(a.host)) {
         yield* hosts.learn(a.host, a.windows)
-        if (a.limitedUntil > Date.now()) {
+        if (a.limitedUntil > Date.now() && a.problem !== "Signed out") {
           yield* hosts.limit(a.host, a.limitedUntil, a.problem)
-          if (a.problem !== "Signed out") {
-            yield* fork(comeBack(a.host, a.limitedUntil))
-          }
+          yield* fork(comeBack(a.host, a.limitedUntil))
         }
       }
     }

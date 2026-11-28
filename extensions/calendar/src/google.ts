@@ -1,7 +1,8 @@
 // Google Calendar, every calendar of every connected Google account, through the REST API. The
 // accounts are the user's connections; the core hands out their access tokens. Changes come
 // incrementally with sync tokens.
-import { Data, Effect } from "effect"
+import { Data, Effect, Option } from "effect"
+import { Host } from "switch-ext-kit"
 
 import { toResponse } from "./model.ts"
 import type { Calendar, Delta, Event, Person, Response } from "./model.ts"
@@ -26,8 +27,24 @@ export const SCOPE = "https://www.googleapis.com/auth/calendar"
 
 const core = () => process.env.SWITCH_URL ?? "http://127.0.0.1:4871"
 
-/** A fresh access token from the core, which holds the account's connection. */
+/**
+ * A fresh access token from the core, which holds the account's connection: through the host when
+ * serving, wherever the core is, else (`sync` run by hand on the core's machine) its loopback route.
+ */
 const access = (account: string) =>
+  Effect.flatMap(Effect.serviceOption(Host), (host) =>
+    Option.isSome(host)
+      ? host.value
+          .token("google", account)
+          .pipe(
+            Effect.mapError(
+              (e) => new GoogleError({ status: 401, message: `${account}: ${e.message}` }),
+            ),
+          )
+      : loopback(account),
+  )
+
+const loopback = (account: string) =>
   Effect.tryPromise({
     try: async () => {
       const id = encodeURIComponent(`google:${account}`)

@@ -38,9 +38,6 @@ export const standingOf = (
   if (cli?.command === "") {
     return { mark: "warn", words: "CLI missing", used: null }
   }
-  if (account.status === "pending") {
-    return { mark: "hand", words: "Pending", used: null }
-  }
   if (account.status === "signed-out") {
     return { mark: "hand", words: "Signed out", used: null }
   }

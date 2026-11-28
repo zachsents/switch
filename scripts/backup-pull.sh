@@ -27,6 +27,9 @@ if [ "${1:-}" = install ]; then
   cp "$0" "$to/pull.sh"
   [ -f "$to/id" ] || ssh-keygen -q -t ed25519 -N '' -C switch-backup-pull -f "$to/id"
   if [ "$(uname -s)" = Darwin ]; then
+    # launchd may not run a script off another disk (Operation not permitted): it runs this one's
+    # copy in ~/.switch, the folder its argument.
+    cp "$0" "$HOME/.switch/backup-pull.sh"
     plist=$HOME/Library/LaunchAgents/ax.switch.backup-pull.plist
     mkdir -p "$HOME/Library/Logs/switch"
     cat >"$plist" <<EOF
@@ -34,7 +37,7 @@ if [ "${1:-}" = install ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>ax.switch.backup-pull</string>
-<key>ProgramArguments</key><array><string>/bin/sh</string><string>$to/pull.sh</string><string>$from</string><string>$to</string>${remote:+<string>$remote</string>}</array>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>$HOME/.switch/backup-pull.sh</string><string>$from</string><string>$to</string>${remote:+<string>$remote</string>}</array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
 <key>StartInterval</key><integer>3600</integer>
 <key>RunAtLoad</key><true/>
@@ -82,7 +85,8 @@ from=${1:?usage: backup-pull.sh <ssh target> [folder]}
 to=${2:-$HOME/switch-backups}
 remote=${3:-}
 cd "$to"
-ssh="ssh -i $to/id -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+# By its name in the folder (cd above): a folder with a space in its path would split the command.
+ssh="ssh -i ./id -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 # Unrestricted: the folder by its path, and the pull said by writing its time there.
 if [ -n "$remote" ]; then
   mkdir -p "$to/switch.restic"

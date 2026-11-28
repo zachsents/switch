@@ -54,6 +54,8 @@ const login = Schema.Struct({
   /** A token login, by Keychain item. */
   keychain: Schema.optionalKey(Schema.Struct({ service: Schema.String, account: Schema.String })),
   acp: Schema.optionalKey(InstalledAgent),
+  /** Who it is, for one added here: the email its login reports, its account's identity. */
+  email: Schema.optionalKey(Schema.String),
 })
 
 /** A login of the core's: a host its turns can go to, until it's removed. */
@@ -229,6 +231,8 @@ export interface Login {
   readonly keychain?: { readonly service: string; readonly account: string }
   /** Added at the core, in a home of its own there: the core keeps it, and lends it. */
   readonly owned?: boolean
+  /** Who it is: the email its login reports. */
+  readonly email?: string
 }
 
 /**

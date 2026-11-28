@@ -371,6 +371,56 @@ export const eventsRoute = Layer.unwrap(
   }),
 )
 
+const Wanted = Schema.Struct({
+  name: Schema.String,
+  run: Schema.String,
+  machine: Schema.String,
+  space: Schema.optionalKey(Schema.String),
+})
+const decodeWanted = Schema.decodeUnknownOption(Schema.fromJsonString(Wanted))
+
+/**
+ * POST /scripts: a script set from the core's own machine (auth.ts: as the deploy's routes), for
+ * what a machine runs that no work owns, so nothing retires it: move-core.sh's backup jobs on a Mac,
+ * which launchd's /bin/sh may not run off the backup disk (TCC) and its host may. The same name
+ * again replaces it.
+ */
+export const scriptsRoute = Layer.unwrap(
+  Effect.gen(function* routing() {
+    const brain = yield* Brain
+    return HttpRouter.add(
+      "POST",
+      "/scripts",
+      web(async (request) => {
+        const asked = decodeWanted(await request.text())
+        const name = Option.isSome(asked) ? asked.value.name.trim() : ""
+        if (Option.isNone(asked) || name === "" || asked.value.run.trim() === "") {
+          return Response.json({ error: "Give a name, a machine and a script" }, { status: 400 })
+        }
+        const { run, machine } = asked.value
+        const space = asked.value.space ?? "home"
+        const id = scriptId(space, name)
+        const refused = await Effect.runPromise(
+          brain
+            .dispatch({
+              id: crypto.randomUUID(),
+              type: SetScript.type,
+              source: "core",
+              payload: { id, name, space, machine, run },
+            })
+            .pipe(
+              Effect.as(null),
+              Effect.catchTag("Rejected", (r) => Effect.succeed(r.reason)),
+            ),
+        )
+        return refused === null
+          ? Response.json({ id, name, space, machine })
+          : Response.json({ error: refused }, { status: 400 })
+      }),
+    )
+  }),
+)
+
 /**
  * Work dropped: its scripts go with it, as its expectations do (expect.ts). From its cursor, so work
  * dropped as the core stopped still retires its scripts.

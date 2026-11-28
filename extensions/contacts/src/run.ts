@@ -6,7 +6,7 @@ import type { Followed } from "switch-ext-kit"
 import { Effect, Layer, Schedule, Stream } from "effect"
 
 import { importApple, importGoogle, importOffered, takeSenders } from "./ingest.ts"
-import { askForGoogle, brainEvents } from "./core.ts"
+import { askForGoogle, brainEvents, tokensThrough } from "./core.ts"
 import type { Where } from "./core.ts"
 import { parse, rec } from "./json.ts"
 import { FOLLOWS, seenOf } from "./senders.ts"
@@ -292,6 +292,7 @@ const every = <E, R>(
  */
 export const background = Layer.effectDiscard(
   Effect.gen(function* starting() {
+    tokensThrough(yield* Host)
     yield* Effect.forkScoped(forwarding)
     if (process.env.CONTACTS_LOOPS === "0") {
       return

@@ -91,7 +91,7 @@ struct Said: View {
       .contextMenu { menu }
       .overlay(alignment: agent ? .topTrailing : .topLeading) {
         if !reactions.isEmpty {
-          Badges(reactions: reactions, agent: agent, ink: ink).offset(x: agent ? 14 : -14, y: -16)
+          Badges(reactions: reactions, agent: agent, ink: ink).offset(x: agent ? 14 : -14, y: -19)
         }
       }
       .opacity(dim ? 0.6 : 1)
@@ -267,16 +267,68 @@ extension Tapback {
     }
   }
 
-  /// Its color, as iMessage draws it now: Apple's system colors.
+  /// Its color, iMessage's: the system color nearest each of Messages' own glyphs.
   var color: Color {
     switch self {
     case .love: Color(.systemPink)
-    case .like: Color(.systemOrange)
-    case .dislike: Color(.systemIndigo)
-    case .laugh: Color(.systemPurple)
+    case .like, .dislike: Color(.systemOrange)
+    case .laugh: Color(.systemCyan)
     case .emphasize: Color(.systemRed)
-    case .question: Color(.systemBlue)
+    case .question: Color(.systemPurple)
     }
+  }
+
+  /// Its animation in Messages, by its frames' name.
+  fileprivate var frames: String {
+    switch self {
+    case .love: "heart"
+    case .like: "thumbsup"
+    case .dislike: "thumbsdown"
+    case .laugh: "haha-ENG"
+    case .emphasize: "exclamation"
+    case .question: "question"
+    }
+  }
+}
+
+/// iMessage's own tapbacks, as Messages draws them now: the last frame of each one's animation in
+/// ChatKit's asset catalog, read from the phone's system, never shipped with the app. Nil where the
+/// system has none; TapbackGlyph draws its own then.
+@MainActor
+enum AppleTapbacks {
+  /// The share of a frame an emoji's size takes, centred: its glyphs then stand as tall as emoji do.
+  static let glyph: CGFloat = 0.55
+  private static var held: [Tapback: UIImage?] = [:]
+
+  static func image(_ t: Tapback) -> UIImage? {
+    if let got = held[t] { return got }
+    let made = load(t)
+    held[t] = made
+    return made
+  }
+
+  /// ChatKit beside UIKitCore, in whichever system the app runs on (a simulator's too).
+  private static let bundle: Bundle? = {
+    let kit = URL(fileURLWithPath: Bundle(for: UIView.self).bundlePath)
+    return Bundle(url: kit.deletingLastPathComponent().appendingPathComponent("ChatKit.framework"))
+  }()
+
+  /// The animation's last frame: its frames run from `_000` up without a gap.
+  private static func load(_ t: Tapback) -> UIImage? {
+    guard let bundle else { return nil }
+    let frame = { (n: Int) in UIImage(named: String(format: "%@_%03d", t.frames, n), in: bundle, compatibleWith: nil) }
+    guard frame(0) != nil else { return nil }
+    var (have, missing) = (0, 1)
+    while frame(missing) != nil {
+      have = missing
+      missing *= 2
+      if missing > 4096 { return nil }
+    }
+    while missing - have > 1 {
+      let mid = (have + missing) / 2
+      if frame(mid) != nil { have = mid } else { missing = mid }
+    }
+    return frame(have)
   }
 }
 
@@ -285,12 +337,25 @@ extension Reaction {
   var name: String { tapback?.name ?? rawValue }
 }
 
-/// A tapback's glyph, `size` points across.
+/// A tapback's glyph, `size` points across, as tall as an emoji there: Messages' own, else drawn
+/// here in its color.
 struct TapbackGlyph: View {
   let reaction: Reaction
   var size: CGFloat = 14
 
   var body: some View {
+    if let t = reaction.tapback, let image = AppleTapbacks.image(t) {
+      let side = size * 0.9 / AppleTapbacks.glyph
+      Image(uiImage: image)
+        .resizable()
+        .frame(width: side, height: side)
+        .frame(width: size, height: size)
+    } else {
+      drawn
+    }
+  }
+
+  private var drawn: some View {
     Group {
       switch reaction.tapback {
       case nil: Text(reaction.rawValue).font(.system(size: size * 0.9))
@@ -321,7 +386,9 @@ private struct Badges: View {
   let ink: Color
 
   var body: some View {
-    HStack(spacing: 2) {
+    // Stacked as iMessage stacks them, the user's over the agent's, so a pair stays within a short
+    // bubble.
+    HStack(spacing: -8) {
       if agent {
         if let r = reactions.agent { badge(r, mine: false) }
         if let r = reactions.user { badge(r, mine: true) }
@@ -338,6 +405,7 @@ private struct Badges: View {
       .background(SIS.bubble, in: Circle())
       .padding(2)
       .background(mine ? ink : SIS.paper, in: Circle())
+      .zIndex(mine ? 1 : 0)
       .accessibilityElement()
       .accessibilityLabel(r.name)
   }

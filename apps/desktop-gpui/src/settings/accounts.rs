@@ -67,7 +67,7 @@ pub enum Mark {
     Warn,
 }
 
-/// How an account stands: needs you (signed out, or a sign-in under way), stopped (at a usage
+/// How an account stands: needs you (signed out), stopped (at a usage
 /// limit), or not as expected (its CLI missing, its provider unreachable); else connected, with how
 /// much of its limit it has used.
 #[derive(Clone, Debug, PartialEq)]
@@ -90,7 +90,6 @@ pub fn standing_of(account: &AccountView, capability: Option<&Capability>, cli: 
         return s(Some(Mark::Warn), "CLI missing".into(), None);
     }
     match account.status.as_str() {
-        "pending" => return s(Some(Mark::Hand), "Pending".into(), None),
         "signed-out" => return s(Some(Mark::Hand), "Signed out".into(), None),
         "limited" => return s(Some(Mark::Stop), or(&account.problem, "Limited"), Some(used)),
         _ => {}
@@ -111,31 +110,13 @@ pub struct Labeled {
     pub email: Option<String>,
 }
 
-fn own(a: &Labeled) -> bool {
-    a.host == a.provider || a.host.ends_with(&format!(":{}", a.provider))
-}
-
 fn provider_name(a: &Labeled) -> String {
     if a.provider == "acp" { a.host.clone() } else { launch_label(&a.provider).map(str::to_string).unwrap_or_else(|| a.provider.clone()) }
 }
 
-/// Each account's label by its id: the email its login reports, else its provider's name, numbered
-/// past the provider's first ("Codex", "Codex 2"), its own login first.
+/// Each account's label by its id: who it is (the email its login reports), else its provider.
 pub fn account_labels(accounts: &[Labeled]) -> HashMap<String, String> {
-    let mut sorted: Vec<&Labeled> = accounts.iter().collect();
-    sorted.sort_by(|a, b| own(b).cmp(&own(a)).then_with(|| locale_cmp(&a.host, &b.host)));
-    let mut labels = HashMap::new();
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for a in sorted {
-        let name = provider_name(a);
-        let n = counts.get(&name).copied().unwrap_or(0) + 1;
-        counts.insert(name.clone(), n);
-        if !labels.contains_key(&a.host) {
-            let numbered = if n == 1 { name } else { format!("{name} {n}") };
-            labels.insert(a.host.clone(), a.email.clone().filter(|e| !e.is_empty()).unwrap_or(numbered));
-        }
-    }
-    labels
+    accounts.iter().map(|a| (a.host.clone(), a.email.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| provider_name(a)))).collect()
 }
 
 /// The catalog's accounts as labels take them.
@@ -181,9 +162,12 @@ fn unique(items: impl IntoIterator<Item = String>) -> Vec<String> {
 /// reports) and the models they offer.
 pub fn sections(accounts: &[AccountView], clis: &[CliView], capabilities: &[Capability]) -> Vec<Section> {
     let cap = |id: &str| capabilities.iter().find(|c| c.host == id);
-    let labels = account_labels(&accounts.iter().map(|a| Labeled { host: a.id.clone(), provider: a.provider.clone(), email: cap(&a.id).and_then(|c| c.email.clone()) }).collect::<Vec<_>>());
+    let email = |a: &AccountView| Some(a.email.clone()).filter(|e| !e.is_empty()).or_else(|| cap(&a.id).and_then(|c| c.email.clone()).filter(|e| !e.is_empty()));
+    let labels = account_labels(&accounts.iter().map(|a| Labeled { host: a.id.clone(), provider: a.provider.clone(), email: email(a) }).collect::<Vec<_>>());
+    // An account is who it is: a CLI's own login that says no one and takes no turns is none.
     let rows: Vec<Row> = ordered(accounts)
         .into_iter()
+        .filter(|a| a.added || a.status != "signed-out" || email(a).is_some())
         .map(|account| {
             let cli = clis.iter().find(|c| c.provider == account.provider).cloned();
             let label = labels.get(&account.id).cloned().unwrap_or_else(|| account.id.clone());
