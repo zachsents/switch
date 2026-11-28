@@ -23,7 +23,7 @@
       .replace(/\d{12,}/g, (m) => m.replace(/(\d{4})(?=\d)/g, "$1~"));
     return String(window.__mpsOut.length);
   };
-  if (!user) return done({ signed_in: false, url: location.href });
+  if (!user || location.pathname.startsWith("/checkpoint/")) return done({ signed_in: false, url: location.href });
 
   async function tokens() {
     const t = window.__mpsTok;

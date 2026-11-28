@@ -27,8 +27,14 @@
   const norm = (s) => (s || "").replace(/[  ]/g, " ").replace(/\s+/g, " ").trim();
   const answer = (o) => "@@MPW@@" + JSON.stringify(o);
   const main = document.querySelector('[role="main"]');
-  if (!main && document.querySelector('input[name="email"], input[name="pass"], form[action*="login"]'))
-    return answer({ signed_in: false, url: location.href });
+  // Held at a checkpoint ("We suspect automated behavior on your account"), every page is that one;
+  // its button is the user's to press. Signed out, the inbox sends the tab to Marketplace's public
+  // page (a main, no tabs): signed in is Facebook's c_user cookie, as page_search.js reads it.
+  if (location.pathname.startsWith("/checkpoint/")) {
+    const said = ((main || document.body).innerText.split("\n").map((l) => l.trim()).find(Boolean) || "").slice(0, 160);
+    return answer({ signed_in: false, checkpoint: said || "it asks for something", url: location.href });
+  }
+  if (!/(?:^|;\s*)c_user=\d/.test(document.cookie)) return answer({ signed_in: false, url: location.href });
 
   function rowButtons() {
     return main ? [...main.querySelectorAll('[role="button"]')].filter((b) => b.querySelector("svg image")) : [];

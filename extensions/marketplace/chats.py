@@ -68,6 +68,9 @@ status = {"state": "starting", "polls": 0, "errors": 0, "since": None, "asked_si
 """caught_up_at: when the loop's last look that read the whole inbox began (its start, before any).
 due_at: when the look after that one was due; behind is only past it, so a slow schedule (20
 minutes at night) is never lag by itself."""
+CHECKPOINT = "Facebook is holding the account at a checkpoint in Chrome"
+SIGNED_OUT_S = 900
+"""How often a signed-out (or checkpointed) Facebook is looked at again."""
 FAILS_REPORTED = 3
 """Failed looks in a row before the sense says it's failing: one failed look is retried a minute
 later, and only a stall is trouble."""
@@ -117,8 +120,10 @@ def read_inbox(full):
             js({"op": "minimize"}),
             {"op": "navigate", "url": "about:blank"},
         ])
-        if any(a.get("signed_in") is False for a in answers):
-            return {"signed_in": False}
+        out = [a for a in answers if a.get("signed_in") is False]
+        if out:
+            held = next((a["checkpoint"] for a in out if a.get("checkpoint")), None)
+            return {"signed_in": False, "why": f"{CHECKPOINT}: {held}" if held else signed_out_why()}
         reads = [a for a in answers if "tab" in a]
         tabs = {}
         for a, side in zip(reads, ("BUYER", "SELLER")):
@@ -130,6 +135,25 @@ def read_inbox(full):
         # Slow to load: once more, with longer waits, and then it's a failed poll.
         full = True
     raise RuntimeError(f"the inbox didn't load both tabs ({[(a.get('tab'), len(a.get('rows') or []), a.get('stale')) for a in reads]})")
+
+
+def signed_out_why():
+    """Why the inbox read signed out, from Facebook's home page: a checkpoint holding the account
+    (its first line), else signed out. It only looks: a checkpoint's button is the user's to press."""
+    try:
+        at = TAB.op({"op": "navigate", "url": FB + "/"}) or {}
+        if "/checkpoint/" in str(at.get("url", "")):
+            said = TAB.js("((document.querySelector('[role=\"main\"]') || document.body).innerText"
+                          ".split('\\n').map((l) => l.trim()).find(Boolean) || '').slice(0, 160)")
+            return f"{CHECKPOINT}: {said or 'it asks for something'}"
+    except BrowserError as e:  # REVIEW: it's signed out either way; only the why is lost
+        log(f"looking for a checkpoint failed: {e}")
+    finally:
+        try:
+            TAB.op({"op": "navigate", "url": "about:blank"})
+        except BrowserError:
+            pass
+    return "Facebook is signed out in Chrome"
 
 
 def open_read_chats(side, rows):
@@ -312,6 +336,7 @@ def poll(full=False):
         backfill = not chats
         inbox = read_inbox(full or backfill)
         if not inbox["signed_in"]:
+            status["why"] = inbox["why"]
             return "signed_out"
         updates, need_open = [], {}
         for side, a in inbox["tabs"].items():
@@ -384,6 +409,8 @@ def interval():
 
 
 def vitals(state, detail=None, live=False):
+    """The sense's heartbeat. failing is what's wrong now: signed out or held at a checkpoint, at once;
+    reads failing FAILS_REPORTED times in a row; never one odd load, which the next look retries."""
     t = now_ms()
     recent = [f for f in chats.values() if t - (f.get("last_at") or 0) < 14 * 86400_000]
     waiting = [f for f in recent if f.get("waiting_on") == "you" and f.get("unread")]
@@ -404,9 +431,11 @@ def vitals(state, detail=None, live=False):
     }
     summary = {
         "ok": f"Watching {len(recent)} recent Marketplace chats; {len(waiting)} unread from the other side",
-        "signed_out": "Facebook is signed out in Chrome",
+        "signed_out": status.get("why") or "Facebook is signed out in Chrome",
         "error": f"Can't read the Marketplace inbox: {detail}",
     }.get(state, state)
+    facts["failing"] = None if state == "ok" else summary
+    facts["last_error"] = status.get("last_error")
     app.emit("heartbeat", {"entity": SENSE, "summary": summary, "facts": facts}, about=[SENSE])
 
 
@@ -414,8 +443,10 @@ def ask_signin():
     """Asks the user, once a time it's signed out, to sign in to Facebook again."""
     if status["asked_signin"]:
         return
-    app.emit("ask", {"type": "task", "summary": "Sign in to Facebook in Chrome",
-                     "text": "Facebook is signed out in Chrome, so Marketplace chats can't be read.",
+    why = status.get("why") or "Facebook is signed out in Chrome"
+    held = why.startswith(CHECKPOINT)
+    app.emit("ask", {"type": "task", "summary": "Clear Facebook's checkpoint in Chrome" if held else "Sign in to Facebook in Chrome",
+                     "text": f"{why}, so Marketplace chats can't be read.",
                      "url": "https://www.facebook.com/", "entity": SENSE}, about=[SENSE])
     status["asked_signin"] = True
 
@@ -431,6 +462,10 @@ def loop():
             if state == "ok":
                 status["caught_up_at"] = t
                 status["due_at"] = now_ms() + int(wait_s * 1000)
+                status["last_error"] = None
+            elif state == "signed_out":
+                # Signed out or at a checkpoint: look again now and then, not at a live chat's pace.
+                wait_s = max(wait_s, SIGNED_OUT_S)
             full = False
             status["polls"] += 1
             if state == "signed_out":
@@ -445,6 +480,7 @@ def loop():
         except Exception as e:  # REVIEW: one failed poll is retried with backoff; it never kills the sense
             status["errors"] += 1
             log(f"poll failed ({status['errors']}): {e}")
+            status["last_error"] = str(e)[:300]
             if status["errors"] == FAILS_REPORTED:
                 vitals("error", str(e)[:200])
             status["state"] = "error"
