@@ -30,6 +30,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -83,7 +84,8 @@ order = itertools.count(1)
 """Which came last, a failed read or a good one: two in the same millisecond still have an order."""
 
 
-def failed(e):
+def failed(e, op):
+    keep_failure(op, e)
     status_["failed"] += 1
     status_["last_error"] = f"{type(e).__name__}: {e}"
     status_["last_error_at"] = int(time.time() * 1000)
@@ -98,6 +100,63 @@ def log(msg):
 
 class Unavailable(Exception):
     """The Mac's browser couldn't do it: asleep, offline, or the tab went away."""
+
+    def __init__(self, message, body=None):
+        super().__init__(message)
+        self.body = body
+
+
+class Refused(LookupError):
+    """Sheets didn't give what was asked (no such sheet, not shared, signed out): its status and the start of its page."""
+
+    def __init__(self, message, meta):
+        super().__init__(message)
+        self.status, self.body = meta.get("status"), meta.get("snippet") or meta.get("title") or meta.get("url")
+
+
+# Failed calls, kept to look back on: sqlite3 failures.db "select * from failures order by at desc limit 20".
+
+FAILURES = os.path.join(HOME, "failures.db")
+FAILURES_KEPT = 2000
+BODY_CHARS = 300
+SECRET = re.compile(r"ya29\.[\w-]+|1//[\w-]{20,}|\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}|(?i:bearer)\s+[\w.~+/-]+=*")
+SECRET_FIELD = re.compile(r"((?i:access_token|refresh_token|id_token|client_secret)[\"']?\s*[:=]\s*[\"']?|[?&](?:code|state)=)[^\"'&\s,}]+")
+"""Credentials a body or error could carry (OAuth tokens, a consent's code), masked before anything is kept."""
+
+
+def masked(text, n=BODY_CHARS):
+    if text is None:
+        return None
+    text = SECRET_FIELD.sub(r"\1…", SECRET.sub("…", str(text)))
+    return text if len(text) <= n else text[:n] + "…"
+
+
+def keep_failure(op, e):
+    """One failed call in failures.db: when, which tool, the status Sheets or the browser answered, the error, and the
+    start of what came back, secrets masked. Never fails the call it's about."""
+    cause = e.__context__ if e.__context__ is not None else e.__cause__
+    status = getattr(e, "status", None) or getattr(cause, "status", None)
+    body = getattr(e, "body", None) or getattr(cause, "body", None)
+    try:
+        os.makedirs(HOME, mode=0o700, exist_ok=True)
+        with lock, sqlite3.connect(FAILURES, timeout=5) as db:
+            db.execute("create table if not exists failures (at integer, op text, kind text, status integer, error text,"
+                       " body text, browser text)")
+            db.execute("insert into failures values (?, ?, ?, ?, ?, ?, ?)",
+                       (int(time.time() * 1000), op, type(e).__name__, status if isinstance(status, int) else None,
+                        masked(str(e), 500), masked(body), status_.get("browser")))
+            db.execute("delete from failures where rowid <= (select max(rowid) from failures) - ?", (FAILURES_KEPT,))
+    except Exception as x:
+        log(f"couldn't keep the failure in {FAILURES}: {x}")
+
+
+def recent_failures(n=10):
+    try:
+        with lock, sqlite3.connect(FAILURES, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return [dict(r) for r in db.execute("select * from failures order by rowid desc limit ?", (n,))]
+    except sqlite3.Error:
+        return []
 
 
 # State: what it learned of each sheet (title, tabs and gids). Nothing secret, nothing read from a sheet's cells.
@@ -141,7 +200,17 @@ def browse(target, args, timeout=60):
         raise Unavailable(f"{target}'s browser: {(p.stderr or p.stdout).strip()[:300]}")
     if not res.get("ok"):
         raise Unavailable(f"{target}'s browser: {str(res.get('error') or res.get('output'))[:300]}")
-    return res.get("output")
+    return answer_text(res.get("output"))
+
+
+def answer_text(out):
+    """What the browser action printed. Switch's browser extension answers {"text": ...} (and its images), Switchboard's
+    answered the text itself; anything else is a browser this doesn't understand, said as such rather than read as text."""
+    if out is None or isinstance(out, str):
+        return out
+    if isinstance(out, dict) and isinstance(out.get("text"), str):
+        return out["text"]
+    raise Unavailable(f"the browser answered in a shape this doesn't read: {json.dumps(out)[:200]}")
 
 
 class Tab:
@@ -266,7 +335,7 @@ def get(url, tabs=False):
         try:
             meta = json.loads(raw)
         except ValueError:
-            raise Unavailable(f"the tab answered {raw[:200]!r}")
+            raise Unavailable(f"the tab answered {raw[:200]!r}", body=raw)
         if "wrong_page" not in meta:
             break
         if attempt:
@@ -413,7 +482,7 @@ def sheet_info(sheet_id, account=None, fresh=False):
     b, q = base(sheet_id, account)
     meta = get(f"{b}/htmlview{q}", tabs=True)
     if meta.get("status") != 200 or not meta.get("tabs"):
-        raise LookupError(explain(meta, sheet_id, account))
+        raise Refused(explain(meta, sheet_id, account), meta)
     title = html.unescape(re.sub(r"\s+-\s+Google (Drive|Sheets)$", "", meta.get("title") or "")).strip() or None
     u = re.search(r"/spreadsheets/u/(\d+)/", meta.get("url") or "")
     info = {"title": title, "tabs": meta["tabs"], "at": time.time(), "authuser": int(u.group(1)) if u else None}
@@ -501,7 +570,7 @@ def read(sheet, tab=None, rng=None, fmt="csv", header=1, match=None, offset=0, l
         t = pick_tab(info["tabs"], want, info["title"])
         meta = export(sheet_id, t["gid"], cells, account)
     if meta.get("status") != 200 or "text" not in meta:
-        raise LookupError(explain(meta, sheet_id, account))
+        raise Refused(explain(meta, sheet_id, account), meta)
     text = meta["text"]
     grid = list(csv.reader(io.StringIO(text)))
     row0, col0 = range_origin(cells)
@@ -612,12 +681,12 @@ def read_tool(sheet, tab=None, range=None, format="csv", header=1, match=None, o
     status_["reads"] += 1
     try:
         out = read(sheet, tab, range, format, header, match, offset, limit, max_chars, account, fresh, ctx)
-        status_["read_n"] = next(order)
+        status_["ok_n"] = next(order)
         status_["last_read"] = {"at": int(time.time() * 1000), "sheet": out["sheet"]["title"], "tab": out["tab"],
                                 "rows": out["rows"], "browser": status_["browser"]}
         return out
     except Exception as e:
-        failed(e)
+        failed(e, "read")
         if isinstance(e, Unavailable):
             raise RuntimeError(f"couldn't reach a Mac's Chrome to read the sheet: {e}") from None
         raise
@@ -631,10 +700,11 @@ def tabs(sheet, account=None, fresh=False):
     try:
         info = sheet_info(sheet_id, account, fresh)
     except Exception as e:
-        failed(e)
+        failed(e, "tabs")
         if isinstance(e, Unavailable):
             raise RuntimeError(f"couldn't reach a Mac's Chrome to read the sheet: {e}") from None
         raise
+    status_["ok_n"] = next(order)
     return {"sheet": {"id": sheet_id, "title": info["title"]},
             "tabs": [{"name": t["name"], "gid": t["gid"],
                       "link": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={t['gid']}"} for t in info["tabs"]]}
@@ -1172,13 +1242,13 @@ def write_tool(sheet, range, values=None, tab=None, input="user", expect=None, o
     try:
         return write(sheet, range, values, tab, input, expect, over_formulas, account, dry_run, ctx)
     except ApiError as e:
-        failed(e)
+        failed(e, "write")
         if e.status == 403:
             raise RuntimeError(f"Google refused the write ({e.message}): the account can open the sheet but not edit it, "
                                "or the sheet's range is protected") from None
         raise RuntimeError(f"Sheets answered {e.status}: {e.message}") from None
     except Exception as e:
-        failed(e)
+        failed(e, "write")
         raise
 
 
@@ -1200,13 +1270,13 @@ def append_tool(sheet, rows=None, tab=None, header=1, input="user", dry_run=Fals
     try:
         return append(sheet, rows, tab, header, input, account, dry_run, ctx)
     except ApiError as e:
-        failed(e)
+        failed(e, "append")
         if e.status == 403:
             raise RuntimeError(f"Google refused the write ({e.message}): the account can open the sheet but not edit it, "
                                "or the tab is protected") from None
         raise RuntimeError(f"Sheets answered {e.status}: {e.message}") from None
     except Exception as e:
-        failed(e)
+        failed(e, "append")
         raise
 
 
@@ -1231,23 +1301,61 @@ app.tool(finish, name="finish", description="Finish a consent with the code Goog
 
 @app.tool(read_only=True)
 def status():
-    "How google-sheets itself is: the reads and writes it answered and failed, its last read, write and error, the browser it reads through, the accounts it writes as, and the sheets whose tabs it knows."
-    return {**status_, "browsers": BROWSERS, "tab_open": bool(TAB.target),
+    "How google-sheets itself is: what's failing now (null when nothing is), the reads and writes it answered and failed, its last read, write and error, its last failed calls (status and the start of what came back), the browser it reads through, the accounts it writes as, and the sheets whose tabs it knows."
+    return {**status_, "failing": failing(), "recent_failures": recent_failures(), "browsers": BROWSERS, "tab_open": bool(TAB.target),
             "writers": [{"address": a.address, "connected": a.connected, "error": a.error} for a in accounts.values()],
             "sheets_known": [{"id": k.split("|")[0], "title": v.get("title"), "tabs": len(v.get("tabs") or []),
                               **({"account": k.split("|", 1)[1]} if k.split("|", 1)[1] else {})}
                              for k, v in list(state["sheets"].items())[-20:]]}
 
 
-def heartbeat():
-    """Says how it is, in vitals/google-sheets: what keeps its --health-every promise."""
-    problem, lr = status_["last_problem"], status_["last_read"]
-    unsolved = problem and (not lr or status_.get("problem_n", 0) > status_.get("read_n", 0))
-    summary = (f"Can't read sheets: {problem}" if unsolved else
+PROBE = "https://docs.google.com/spreadsheets/u/0/"
+"""Sheets' own home: what the heartbeat opens, after a read couldn't, to see whether the Chrome it reads through can
+reach Sheets signed in again (none of the user's sheets is read)."""
+
+
+def unsolved():
+    """Reading's last problem (no Mac's Chrome answered, or it's signed out of Google) when no read or probe has worked
+    since, else None."""
+    if status_["last_problem"] and status_.get("problem_n", 0) > status_.get("ok_n", 0):
+        return status_["last_problem"]
+    return None
+
+
+def probe():
+    meta = get(PROBE)
+    if LOGIN.search(meta.get("url") or ""):
+        raise Refused(explain(meta, None, None), meta)
+    if meta.get("error") or meta.get("status") != 200:
+        raise Unavailable(f"Sheets' home answered {meta.get('status')} in the tab ({meta.get('error') or meta.get('title')})",
+                          body=meta.get("snippet"))
+
+
+def failing():
+    """What's wrong with reaching Sheets now, or None: reading's unsolved problem, and each account Google no longer lets
+    write. A caller's miss (a sheet not shared, a tab that isn't there, a protected range) is no failing of its own."""
+    wrong = [f"can't read sheets: {p}" for p in [unsolved()] if p]
+    wrong += [f"{a.address} can't write anymore: {a.error}" for a in list(accounts.values()) if not a.connected]
+    return "; ".join(wrong) or None
+
+
+def heartbeat(look=True):
+    """Says how it is, in vitals/google-sheets: what keeps its --health-every promise. A problem no read has cleared
+    since is looked at again first (look), so it says failing only while Sheets is still out of reach."""
+    if look and unsolved():
+        try:
+            probe()
+            status_["ok_n"] = next(order)
+        except Exception as e:
+            failed(e, "probe")
+    wrong, lr = failing(), status_["last_read"]
+    summary = (f"Can't reach Sheets: {wrong}" if wrong else
                f"Ready; last read “{lr['tab']}” of {lr['sheet']} ({lr['rows']} rows)" if lr else "Ready")
     facts = {k: status_[k] for k in ("started_at", "reads", "writes", "failed", "last_error", "last_error_at", "last_problem",
                                      "last_problem_at", "browser")}
+    facts["failing"] = wrong
     facts["writers"] = {a.address: a.connected for a in accounts.values()}
+    status_["said_failing"] = wrong
     app.emit("heartbeat", {"entity": f"sense:{NAME}", "summary": summary, "facts": facts})
 
 
@@ -1257,6 +1365,8 @@ def beat():
     while True:
         if n % max(1, int(HEARTBEAT_S // 30)) == 0:
             heartbeat()
+        elif failing() != status_.get("said_failing"):
+            heartbeat(look=False)  # a read went wrong, or worked again: said at once
         TAB.release_if_idle()
         try:
             check_accounts(force=n == 0)

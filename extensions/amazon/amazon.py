@@ -85,7 +85,23 @@ app.event("amazon_cart", "The user's Amazon cart as it last read it (the lines, 
           stream=STREAM, kind="observation")
 
 health = {"started_at": int(time.time() * 1000), "calls": 0, "failed": 0, "orders": 0, "checkouts": 0, "added": 0,
-          "human_boxes": 0, "product_pages": 0, "last_error": None, "last_order": None, "last_blocked": None}
+          "human_boxes": 0, "product_pages": 0, "last_error": None, "last_order": None, "last_blocked": None, "failing": None}
+"""last_error is any call's (an item out of stock, too); failing only Amazon out of reach (Unreadable), until a read works."""
+
+
+def failed(e):
+    health["failed"] += 1
+    health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+    if isinstance(e, Unreadable) and health["failing"] != health["last_error"]:
+        health["failing"] = health["last_error"]
+        heartbeat()
+
+
+def reached():
+    """A read of Amazon's pages worked: whatever had it out of reach is over."""
+    if health["failing"]:
+        health["failing"] = None
+        heartbeat()
 _busy = threading.Lock()
 """One checkout is driven at a time."""
 _reading = threading.Lock()
@@ -95,6 +111,11 @@ _state_lock = threading.Lock()
 
 class ReorderError(Exception):
     """Something that stops a reorder, in words to pass on as they are."""
+
+
+class Unreadable(ReorderError):
+    """The browser couldn't be reached, or what Amazon's pages gave back couldn't be read: Amazon is out of reach, not a
+    reorder refused (out of stock, over the price). It's the heartbeat's failing until a read works again."""
 
 
 class Blocked(Exception):
@@ -115,7 +136,7 @@ def browser(args, timeout=60):
     try:
         out = server.browser(PART).op(args, timeout)
     except BrowserError as e:
-        raise ReorderError(f"The browser ({args.get('op')}): {str(e)[:300]}") from None
+        raise Unreadable(f"The browser ({args.get('op')}): {str(e)[:300]}") from None
     if args.get("op") == "js" and isinstance(out, (dict, list, bool, int, float)):
         return json.dumps(out)
     return out
@@ -742,21 +763,67 @@ def delivery_pick(group, index):
             "return r && (r.closest('label') || r.parentElement); }" % (json.dumps(f"checkout-item-block-{int(group)}"), int(index)))
 
 
+ANSWER_CHARS = 20000
+"""The browser extension cuts what a script answers at 24,000 characters: a reader's answer longer than this stays in the
+tab and comes back a page at a time (paged_js), so a big one is whole, never cut into JSON that doesn't parse."""
+
+PAGED_JS = r"""/*amz:%(tag)s*/await (async () => {
+  const v = await (%(code)s);
+  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  if (s === undefined || s.length <= %(limit)d) return s === undefined ? null : s;
+  (window.__amzPaged = window.__amzPaged || {})[%(key)s] = s;
+  return JSON.stringify({__paged: %(key)s, length: s.length});
+})()"""
+
+
+def paged_js(session, code, tag, timeout):
+    """A reader's script run in the session's tab: its whole answer, as text, however long."""
+    key = json.dumps(secrets.token_hex(6))
+    raw = browser({"op": "js", "session": session, "timeout": timeout,
+                   "code": PAGED_JS % {"tag": tag, "code": code, "limit": ANSWER_CHARS, "key": key}}, timeout + 15)
+    try:
+        head = json.loads(raw or "null")
+    except (TypeError, ValueError):
+        return raw
+    if not (isinstance(head, dict) and "__paged" in head):
+        return raw
+    size, at = int(head.get("length") or 0), f"(window.__amzPaged || {{}})[{key}]"
+    try:
+        # Each page is sent as a JSON string, which the browser's parsing turns back into exactly its characters.
+        parts = [browser({"op": "js", "session": session, "timeout": 20,
+                          "code": f"/*amz:{tag}-page*/JSON.stringify({at}.slice({i}, {i + ANSWER_CHARS}))"}, 35)
+                 for i in range(0, size, ANSWER_CHARS)]
+        if not all(isinstance(part, str) for part in parts):
+            raise ValueError("a page came back as something other than text")
+        text = "".join(parts)
+    except ValueError as e:
+        raise Unreadable(f"Couldn't read Amazon's answer back from the tab ({size} characters): {e}") from None
+    finally:
+        try:
+            browser({"op": "js", "session": session, "timeout": 10, "code": f"/*amz:{tag}-done*/(delete {at}, 'ok')"}, 25)
+        except ReorderError:
+            pass
+    if len(text) != size:
+        raise Unreadable(f"Read {len(text)} of {size} characters of Amazon's answer back from the tab")
+    return text
+
+
 def read(session, reader, path=None, tag="read", timeout=45):
     """A reader run in the session's tab, on the live page or on path fetched from Amazon there."""
     code = READ_JS % {"tag": tag, "reader": reader, "path": json.dumps(path)}
     for attempt in (1, 2):
-        raw = browser({"op": "js", "session": session, "code": code, "timeout": timeout}, timeout + 15)
+        raw = paged_js(session, code, tag, timeout)
         try:
             got = json.loads(raw or "{}")
         except ValueError:
-            raise ReorderError(f"Couldn't read Amazon's page: {str(raw)[:200]}")
+            raise Unreadable(f"Couldn't read Amazon's page: {str(raw)[:200]}")
         if got.get("blocked"):
             if attempt == 1 and got.get("box") and pass_human_box(session, got.get("url") or "", live=path is None):
                 continue
             raise Blocked(got["blocked"], got.get("url") or "", got.get("words") or "")
         if got.get("error"):
             raise ReorderError(got["error"])
+        reached()
         return got
 
 
@@ -768,13 +835,14 @@ def read_many(session, paths, reader, tag="many", at_once=4, timeout=100):
         return []
     code = MANY_JS % {"tag": tag, "reader": reader, "paths": json.dumps(list(paths)), "at_once": max(1, int(at_once))}
     for attempt in (1, 2):
-        raw = browser({"op": "js", "session": session, "code": code, "timeout": timeout}, timeout + 15)
+        raw = paged_js(session, code, tag, timeout)
         try:
             got = json.loads(raw or "{}")
         except ValueError:
-            raise ReorderError(f"Couldn't read Amazon's pages: {str(raw)[:200]}")
+            raise Unreadable(f"Couldn't read Amazon's pages: {str(raw)[:200]}")
         if got.get("error"):
             raise ReorderError(got["error"])
+        reached()
         pages = [p if isinstance(p, dict) else {"error": "nothing came back"} for p in (got.get("pages") or [])]
         b = next((p for p in pages if p.get("blocked")), None)
         if b:
@@ -1587,8 +1655,7 @@ def reorder_item(item=None, order=None, quantity=1, variant=None, address=None, 
         stage = "blocked"
         return needs_person(e.blocked, session, what, cfg, ctx, after_place=True)
     except Exception as e:
-        health["failed"] += 1
-        health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+        failed(e)
         if stage == "buy_now" and product.get("asin"):
             note = clean_cart(session, product["asin"], cart_before)
             if note not in ("untouched",):
@@ -2110,8 +2177,7 @@ def checkout_cart(items=None, address=None, card=None, delivery=None, max_total=
             out["then"] += " The cart's ticks are changed meanwhile; the next cart call puts them back first."
         return out
     except Exception as e:
-        health["failed"] += 1
-        health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+        failed(e)
         if before is not None and (stage in ("cart", "checkout") or added):
             try:
                 note = restore_cart(session, before, added)
@@ -2239,8 +2305,7 @@ def place(checkout: str, max_total: float = None, notify: bool = True, ctx=None)
     except AfterPlace as e:
         return needs_person(e.blocked, c["session"], f"placing the order of {(c.get('title') or '')[:60]}", config(), ctx, after_place=True)
     except Exception as e:
-        health["failed"] += 1
-        health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+        failed(e)
         raise
     finally:
         _busy.release()
@@ -2474,8 +2539,7 @@ def reading(fn, start="/your-orders/orders", start_reader=None):
             held = True
             return needs_person(e, READ_SESSION, "reading your Amazon orders", config(), None)
         except Exception as e:
-            health["failed"] += 1
-            health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+            failed(e)
             raise
         finally:
             if not held:
@@ -2686,8 +2750,7 @@ def changing_cart(fn):
         held = True
         return needs_person(e, session, "changing your Amazon cart", config(), None)
     except Exception as e:
-        health["failed"] += 1
-        health["last_error"] = f"{type(e).__name__}: {e}"[:400]
+        failed(e)
         raise
     finally:
         if not held:
@@ -2798,8 +2861,8 @@ def status():
 
 def heartbeat():
     """Says how it is, in the extension's vitals."""
-    error = health["last_error"]
-    app.emit("heartbeat", {"entity": f"sense:{server.NAME}-{PART}", "summary": f"Last failed: {error}" if error else "Ready",
+    failing = health["failing"]
+    app.emit("heartbeat", {"entity": f"sense:{server.NAME}-{PART}", "summary": f"Can't reach Amazon: {failing}" if failing else "Ready",
                            "facts": dict(health)})
 
 

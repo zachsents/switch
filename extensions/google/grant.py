@@ -136,7 +136,9 @@ def request(target, action, args, timeout_s=60):
 
 
 def parsed(out):
-    """The first JSON value in what an action printed."""
+    """The first JSON value in what an action printed (Switch's browser extension answers it as {"text": ...})."""
+    if isinstance(out, dict) and isinstance(out.get("text"), str):
+        out = out["text"]
     if not isinstance(out, str):
         return out
     at = re.search(r"[\[{]", out)
