@@ -149,7 +149,8 @@ export const textToMarkdown = (text: string) =>
     .map((p) =>
       p
         .replaceAll(/[\\`*_[\]<>|$]/gu, "\\$&")
-        .replaceAll(/^(?<lead>\s*)(?<mark>[#>+-]|\d+\.)(?<space>\s)/gmu, "$<lead>\\$<mark>$<space>")
+        .replaceAll(/^(?<lead>\s*)(?<mark>[#>+-])(?<space>\s)/gmu, "$<lead>\\$<mark>$<space>")
+        .replaceAll(/^(?<lead>\s*)(?<number>\d+)\.(?<space>\s)/gmu, "$<lead>$<number>\\.$<space>")
         .replaceAll("\n", "  \n"),
     )
     .join("\n\n")

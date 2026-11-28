@@ -38,6 +38,13 @@ export interface Section {
   readonly markdown: string
 }
 
+/** A table of contents' entry: its words, its level (2 or 3, as a page's h2 and h3), its section. */
+export interface Heading {
+  readonly title: string
+  readonly level: 2 | 3
+  readonly section: number
+}
+
 export interface Parsed {
   readonly title: string
   readonly format: Format
@@ -45,6 +52,32 @@ export interface Parsed {
   readonly lang: string
   readonly author?: string
   readonly sections: readonly Section[]
+  /** Its own table of contents: a PDF's outline, an EPUB's. */
+  readonly outline?: readonly Heading[]
+}
+
+interface Node {
+  readonly title: string
+  readonly section: number | null
+  readonly items: readonly Node[]
+}
+
+/** A table of contents' top two levels, in order, past a lone entry over the rest (the book's title). */
+const headingsOf = (nodes: readonly Node[]): Heading[] => {
+  const only = nodes.length === 1 ? nodes[0] : undefined
+  const top = only !== undefined && only.items.length > 1 ? only.items : nodes
+  const out: Heading[] = []
+  for (const n of top) {
+    if (n.section !== null && n.title !== "") {
+      out.push({ title: n.title, level: 2, section: n.section })
+    }
+    for (const c of n.items) {
+      if (c.section !== null && c.title !== "") {
+        out.push({ title: c.title, level: 3, section: c.section })
+      }
+    }
+  }
+  return out
 }
 
 const CODE: Record<string, string> = {
@@ -281,6 +314,41 @@ const pageLines = async (doc: Pdf, n: number) => {
   return linesOf(upright)
 }
 
+/** A PDF's bookmark, as pdf.js reads it. */
+interface Bookmark {
+  readonly title: string
+  readonly dest: string | readonly unknown[] | null
+  readonly items: readonly Bookmark[]
+}
+
+/** The page a bookmark goes to, from 0. */
+const pageOf = async (doc: Pdf, dest: Bookmark["dest"]) => {
+  const explicit: readonly unknown[] | null =
+    typeof dest === "string" ? await doc.getDestination(dest) : dest
+  const ref = explicit?.[0]
+  if (typeof ref === "number") {
+    return ref
+  }
+  if (typeof ref === "object" && ref !== null && "num" in ref && "gen" in ref) {
+    return await doc.getPageIndex({ num: Number(ref.num), gen: Number(ref.gen) })
+  }
+  return null
+}
+
+/** A PDF's bookmarks, two levels deep. */
+const pdfOutline = async (doc: Pdf) => {
+  const outline: readonly Bookmark[] = (await doc.getOutline().catch(() => null)) ?? []
+  const nodes = async (items: readonly Bookmark[], depth: number): Promise<Node[]> =>
+    await Promise.all(
+      items.map(async (it) => ({
+        title: it.title.replaceAll(/\s+/gu, " ").trim(),
+        section: await pageOf(doc, it.dest).catch(() => null),
+        items: depth < 2 ? await nodes(it.items, depth + 1) : [],
+      })),
+    )
+  return headingsOf(await nodes(outline, 0))
+}
+
 const pdf = async (bytes: Uint8Array, name: string): Promise<Parsed> => {
   const doc = await getDocumentProxy(new Uint8Array(bytes))
   const numbers = Array.from({ length: doc.numPages }, (_, i) => i + 1)
@@ -307,6 +375,7 @@ const pdf = async (bytes: Uint8Array, name: string): Promise<Parsed> => {
     lang: langOf(field("Language")),
     ...(author !== "" && { author }),
     sections: pages.map((p, i) => ({ label: `${i + 1}`, markdown: pageMarkdown(p, body) })),
+    outline: await pdfOutline(doc),
   }
 }
 
@@ -388,6 +457,57 @@ const labelsOf = (files: Files, manifest: ReadonlyMap<string, Entry>) => {
   return labels
 }
 
+interface Point {
+  readonly title: string
+  readonly target: string
+  readonly items: readonly Point[]
+}
+
+const childrenNamed = (e: Element, name: string) =>
+  [...e.children].filter((c) => c.tagName.toLowerCase() === name.toLowerCase())
+
+const squashed = (s: string | null | undefined) => (s ?? "").replaceAll(/\s+/gu, " ").trim()
+
+/** The table of contents as a tree: EPUB 3's nav, else EPUB 2's NCX. */
+const contentsOf = (files: Files, manifest: ReadonlyMap<string, Entry>): Point[] => {
+  const nav = [...manifest.values()].find((m) => m.props.split(" ").includes("nav"))
+  if (nav) {
+    const { document } = parseHTML(fileText(files, nav.href))
+    const navs = [...document.querySelectorAll("nav")]
+    const toc =
+      navs.find((n) => (n.getAttribute("epub:type") ?? "").split(" ").includes("toc")) ?? navs[0]
+    const list = (ol: Element | undefined): Point[] =>
+      ol === undefined
+        ? []
+        : childrenNamed(ol, "li").map((li) => {
+            const a = [...li.children].find((c) => ["a", "span"].includes(c.tagName.toLowerCase()))
+            const href = a?.getAttribute("href") ?? ""
+            return {
+              title: squashed(a?.textContent),
+              target: href === "" ? "" : resolveIn(nav.href, href),
+              items: list(childrenNamed(li, "ol")[0]),
+            }
+          })
+    const points = toc === undefined ? [] : list(childrenNamed(toc, "ol")[0])
+    if (points.length > 0) {
+      return points
+    }
+  }
+  const ncx = [...manifest.values()].find((m) => m.type === "application/x-dtbncx+xml")
+  if (!ncx) {
+    return []
+  }
+  const doc = xml(fileText(files, ncx.href))
+  const walk = (parent: Element): Point[] =>
+    childrenNamed(parent, "navPoint").map((point) => ({
+      title: squashed(childrenNamed(point, "navLabel")[0]?.textContent),
+      target: resolveIn(ncx.href, childrenNamed(point, "content")[0]?.getAttribute("src") ?? ""),
+      items: walk(point),
+    }))
+  const map = doc.querySelector("navMap")
+  return map === null ? [] : walk(map)
+}
+
 /** A chapter's pictures as data addresses, those too big or missing taken out. */
 const inlinePictures = (document: Document, files: Files, href: string) => {
   for (const img of document.querySelectorAll("img, image")) {
@@ -407,6 +527,7 @@ const inlinePictures = (document: Document, files: Files, href: string) => {
 const chaptersOf = (files: Files, opf: Document, manifest: ReadonlyMap<string, Entry>) => {
   const labels = labelsOf(files, manifest)
   const sections: Section[] = []
+  const at = new Map<string, number>()
   for (const ref of opf.querySelectorAll("spine > itemref")) {
     const item = manifest.get(ref.getAttribute("idref") ?? "")
     if (!item || ref.getAttribute("linear") === "no") {
@@ -419,9 +540,12 @@ const chaptersOf = (files: Files, opf: Document, manifest: ReadonlyMap<string, E
       continue
     }
     const label = labels.get(item.href)
+    at.set(item.href, sections.length)
     sections.push(label === undefined || label === "" ? { markdown } : { label, markdown })
   }
-  return sections
+  const tree = (points: readonly Point[]): Node[] =>
+    points.map((p) => ({ title: p.title, section: at.get(p.target) ?? null, items: tree(p.items) }))
+  return { sections, outline: headingsOf(tree(contentsOf(files, manifest))) }
 }
 
 const epub = (bytes: Uint8Array, name: string): Parsed => {
@@ -435,7 +559,7 @@ const epub = (bytes: Uint8Array, name: string): Parsed => {
     format: "epub",
     lang: langOf(dublin(opf, "language")),
     ...(author !== "" && { author }),
-    sections: chaptersOf(files, opf, manifestOf(opf, opfPath)),
+    ...chaptersOf(files, opf, manifestOf(opf, opfPath)),
   }
 }
 

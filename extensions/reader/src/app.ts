@@ -223,6 +223,8 @@ const open = tool(
         ...(parsed.author !== undefined && { author: parsed.author }),
         words: words(parsed),
         sections: parsed.sections,
+        ...(parsed.outline !== undefined &&
+          parsed.outline.length > 0 && { outline: parsed.outline }),
         version: (before?.version ?? 0) + 1,
         linked: false,
       }
@@ -420,7 +422,7 @@ const content = tool(
   "content",
   {
     description:
-      "A document's words as Markdown, section by section (a PDF's pages, an EPUB's chapters), its notable terms linked to Wikipedia; `from` and `count` take a part.",
+      "A document's words as Markdown, section by section (a PDF's pages, an EPUB's chapters), its notable terms linked to Wikipedia, and its own outline when it has one (a PDF's bookmarks, an EPUB's contents); `from` and `count` take a part.",
     readOnly: true,
     input: Schema.Struct({
       doc: Schema.String,
@@ -438,6 +440,7 @@ const content = tool(
         version: s.version,
         total: s.sections.length,
         sections: s.sections.slice(from, to).map((sec, i) => ({ index: from + i, ...sec })),
+        ...(s.outline !== undefined && { outline: s.outline }),
       }
     }),
 )

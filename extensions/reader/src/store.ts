@@ -366,6 +366,15 @@ const StoredSchema = Schema.Struct({
   sections: Schema.Array(
     Schema.Struct({ label: Schema.optionalKey(Schema.String), markdown: Schema.String }),
   ),
+  outline: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        title: Schema.String,
+        level: Schema.Literals([2, 3]),
+        section: Schema.Finite,
+      }),
+    ),
+  ),
   /** Moves each time its words change (a fresh read, links added), so a client fetches them again. */
   version: Schema.Finite,
   /** Whether its notable terms have been linked. */
