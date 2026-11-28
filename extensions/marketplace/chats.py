@@ -447,7 +447,9 @@ def ask_signin():
     held = why.startswith(CHECKPOINT)
     app.emit("ask", {"type": "task", "summary": "Clear Facebook's checkpoint in Chrome" if held else "Sign in to Facebook in Chrome",
                      "text": f"{why}, so Marketplace chats can't be read.",
-                     "url": "https://www.facebook.com/", "entity": SENSE}, about=[SENSE])
+                     "url": "https://www.facebook.com/", "entity": SENSE,
+                     # It closes itself once the inbox reads again.
+                     "resolve_when": f'entities | where id == "{SENSE}" and facts.state == "ok"'}, about=[SENSE])
     status["asked_signin"] = True
 
 
@@ -901,6 +903,8 @@ def chats_view():
 def act(action, args):
     if action == "check":
         state = poll(full=True)
+        if state != status["state"]:
+            wake.set()  # the loop looks again now and beats what it finds, not at its signed-out pace
         t = now_ms()
         days = float(args.get("days", 7))
         recent = sorted((f for f in chats.values() if t - (f.get("last_at") or 0) < days * 86400_000), key=lambda f: -(f.get("last_at") or 0))
