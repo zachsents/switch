@@ -155,10 +155,11 @@ def hetzner_key():
     return api("POST", "/ssh_keys", {"name": name, "public_key": pub, "labels": {"made_by": "cfd"}})["ssh_key"]["id"]
 
 
-def ssh_argv(st):
+def ssh_argv(st, known_hosts=None):
     key, _ = keypair()
+    known_hosts = known_hosts or os.path.join(study_dir(st["id"]), "known_hosts")
     return ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={os.path.join(study_dir(st['id']), 'known_hosts')}",
+            "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={known_hosts}",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "LogLevel=ERROR", f"root@{st['box']['ip']}"]
 
 

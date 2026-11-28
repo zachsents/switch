@@ -4,6 +4,7 @@ and a listing's photos with sizes measured off them (photo.py). Each was its own
 """
 import time
 
+import box
 import cfd
 import fea
 import mesh
@@ -57,10 +58,10 @@ app.widget("studies", "Studies", lambda: sbmcp.surface("studies", [
 
 @app.tool(name="health", read_only=True)
 def health():
-    "How each part is: mesh's environment (versions, Embree, Blender), render's Blender and AI key, photo's counts, fea's and cfd's Hetzner key and the studies they hold."
+    "How each part is: mesh's environment (versions, Embree, Blender), render's Blender and AI key, photo's counts, fea's and cfd's Hetzner key and the studies they hold, box's boxes."
     out = {}
     for name, fn in (("mesh", mesh.health_facts), ("render", render.health), ("photo", photo.health),
-                     ("fea", fea.health), ("cfd", cfd.health)):
+                     ("fea", fea.health), ("cfd", cfd.health), ("box", box.health)):
         try:
             out[name] = fn()
         except Exception as e:  # noqa: BLE001

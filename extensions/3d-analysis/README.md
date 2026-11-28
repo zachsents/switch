@@ -7,10 +7,11 @@ A [Switch](https://switch.ax) extension: a Python MCP server (`sbmcp.py`, Switch
 - Mesh (`mesh.py`): `report`, `section`, `view`, `layers`, `supports`, `support_model`, `convert`, `scene`, `coupon`, `variants`, `drawing`, and `set_spec` / `spec` / `verify` for a job's sliced plates. It also writes `~/.local/bin/mesh-python`, a Python with the same pinned geometry packages.
 - FEA (`fea_*`): gmsh and CalculiX on a temporary Hetzner box.
 - CFD (`cfd_*`): an OpenFOAM case matrix on a temporary Hetzner box; `cfd_keep` moves a live study's keep and delete-by (and its box's label).
+- Box (`box_*`): one plain temporary Ubuntu 24.04 box for heavy work (a build, a lint). `box_start` rents it (cpx41 by default, delete-by 4 h, at most 24 h) or reuses the live one, `box_send` rsyncs a folder to it, `box_run` runs a command (up to 20 min), `box_status` and `box_delete` (which checks Hetzner holds nothing of it).
 - Render (`render`, `render_scenes`): Blender Cycles in a standard scene, with an optional AI print-look pass.
 - Photos (`photos`, `measure`, `look`): a listing's photos and a part's size measured off a photo.
 
-`fea_run`, `fea_add`, `cfd_start`, `cfd_add`, `cfd_extend` and `cfd_keep` rent or keep a paid box, so they speak for the user. The background loop only watches, fetches results and deletes the extension's own boxes once they're done or past their delete-by.
+`fea_run`, `fea_add`, `cfd_start`, `cfd_add`, `cfd_extend`, `cfd_keep` and `box_start` rent or keep a paid box, so they speak for the user. The background loop only watches, fetches results and deletes the extension's own boxes once they're done or past their delete-by.
 
 ## Install
 
@@ -27,7 +28,7 @@ The machine must have:
 
 Connections:
 
-- Hetzner Cloud (`hetzner`, a key): an API token for the project boxes are rented in. FEA and CFD need it.
+- Hetzner Cloud (`hetzner`, a key): an API token for the project boxes are rented in. FEA, CFD and box need it.
 - AI Gateway (`ai-gateway`, a key): a Vercel AI Gateway key, for `render`'s `ai_look` (about $0.05-0.14 a shot). Without it, everything else still works.
 
 A key kept from before connections moves in once: put `keys.json` (`{"hetzner": "…", "ai-gateway": "…"}`, 0600) in the extension's home; the first time one is needed it goes to the user's connections (account `default`) and leaves the file.

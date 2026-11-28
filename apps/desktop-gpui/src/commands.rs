@@ -245,6 +245,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s("Asks", "Open in Terminal", &["cmd-o"], Some("AskCard"), act!(OpenCommand)),
         own("Asks", "Choose an Option", "⌘1–⌘9"),
         s("Running", "Stop", &["cmd-backspace", "cmd-."], Some("Work"), act!(Dismiss)),
+        s("Reader", "Contents", &["ctrl-cmd-s"], Some("Reader"), act!(crate::reader::Contents)),
         s("Settings", "Next Section", &["ctrl-tab", "cmd-}"], Some("Settings"), act!(NextSection)),
         s("Settings", "Previous Section", &["ctrl-shift-tab", "cmd-{"], Some("Settings"), act!(PreviousSection)),
     ];

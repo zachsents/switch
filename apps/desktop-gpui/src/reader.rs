@@ -8,7 +8,10 @@
 //! the thread, then the window; ⌘D looks up what's selected, ⇧⌘H highlights it, Return asks about
 //! it. What a thread settles its answer pins to the passage as a note, in the margin beside it (under
 //! it when the window is narrow), with the notes other documents' threads made on the terms this one
-//! mentions: a click opens the thread behind one, and each can be edited or deleted.
+//! mentions: a click opens the thread behind one, and each can be edited or deleted. Its contents
+//! down the left, as a published page's outline: its own (a PDF's bookmarks, an EPUB's) or its
+//! headings', the section being read marked; a click goes to one. Shown where there's room, ⌃⌘S
+//! shows or hides it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,6 +30,63 @@ use crate::kit::{self, Btn};
 use crate::look::{Look, SANS, u};
 use crate::markdown::{self, Doc, Mark};
 use crate::select::{Key, Sel};
+
+/// Shows or hides the contents.
+#[derive(Clone, Debug, PartialEq, Default, gpui::Action)]
+#[action(namespace = switch)]
+pub struct Contents;
+
+/// An entry of the contents: its words, its level (2 or 3), its section, and which of the
+/// section's headings with those words it is.
+#[derive(Clone, Debug, PartialEq)]
+struct Entry {
+    title: String,
+    level: u8,
+    section: usize,
+    nth: usize,
+}
+
+fn squash(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether a heading is an entry's: the same words, or one ends on the other's (a number before
+/// a bookmark's, a chapter's name after its number).
+fn heading_is(heading: &str, title: &str) -> bool {
+    let (h, t) = (squash(heading).to_lowercase(), squash(title).to_lowercase());
+    !h.is_empty() && !t.is_empty() && (h == t || h.ends_with(&format!(" {t}")) || t.ends_with(&format!(" {h}")))
+}
+
+/// The contents: the document's own when it has them, else its headings' top two levels (past a
+/// lone h1, its title), when there are three or more, as a page's outline.
+fn outline_of(given: &Value, heads: &[(usize, u8, String)]) -> Vec<Entry> {
+    // A book's pages around its words: not where a reader goes.
+    const MATTER: [&str; 10] = ["titlepage", "title page", "cover", "imprint", "colophon", "copyright", "uncopyright", "contents", "table of contents", "half title"];
+    let own: Vec<(usize, u8, String)> = given
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| Some((e.get("section")?.as_u64()? as usize, if e.get("level").and_then(Value::as_u64) == Some(3) { 3 } else { 2 }, squash(str_of(e, "title")))))
+        .filter(|(_, _, t)| !t.is_empty() && !MATTER.contains(&t.to_lowercase().as_str()))
+        .collect();
+    let nth_in = |list: &[(usize, u8, String)], i: usize, section: usize, title: &str| list[..i].iter().filter(|(s, _, t)| *s == section && heading_is(t, title)).count();
+    if own.len() >= 2 {
+        return own.iter().enumerate().map(|(i, (section, level, title))| Entry { title: title.clone(), level: *level, section: *section, nth: nth_in(&own, i, *section, title) }).collect();
+    }
+    let mut levels: Vec<u8> = heads.iter().map(|h| h.1).collect();
+    let lone_h1 = levels.iter().filter(|l| **l == 1).count() == 1;
+    if lone_h1 {
+        levels.retain(|l| *l != 1);
+    }
+    let Some(top) = levels.into_iter().min() else { return vec![] };
+    let out: Vec<Entry> = heads
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, level, text))| (*level == top || *level == top + 1) && !(lone_h1 && *level == 1) && !squash(text).is_empty())
+        .map(|(i, (section, level, text))| Entry { title: squash(text), level: if *level == top { 2 } else { 3 }, section: *section, nth: nth_in(heads, i, *section, text) })
+        .collect();
+    if out.len() >= 3 { out } else { vec![] }
+}
 
 /// The tools a document's extension answers it with, by their names there.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -228,6 +288,20 @@ pub struct Reader {
     editing: Option<(String, Entity<Textarea>)>,
     /// The notes' words, selectable apart from the rest.
     note_sel: Sel,
+    /// The contents, and where its headings were laid out.
+    outline: Vec<Entry>,
+    heads: Rc<markdown::Heads>,
+    /// Shown or hidden by hand; `None` where there's room.
+    toc_open: Option<bool>,
+    toc_scroll: gpui::ScrollHandle,
+    /// The entry marked as read last frame.
+    toc_at: Option<usize>,
+    /// An entry being gone to, with the frames left to find its heading in.
+    jump: Option<(usize, u8)>,
+    /// The entry gone to, marked until the words scroll.
+    pinned: Option<usize>,
+    /// The words' scroll last frame.
+    last_top: Pixels,
 }
 
 const MEASURE: f32 = 680.;
@@ -237,6 +311,8 @@ const MARGIN: f32 = 240.;
 /// The words' measure beside notes.
 const BESIDE: f32 = 540.;
 const GUTTER: f32 = 32.;
+/// The contents' width.
+const TOC: f32 = 232.;
 
 fn new_id() -> String {
     format!("th-{}", uuid::Uuid::new_v4().simple().to_string().chars().take(10).collect::<String>())
@@ -365,6 +441,14 @@ impl Reader {
             over_note: None,
             editing: None,
             note_sel: Sel::new(),
+            outline: vec![],
+            heads: Rc::default(),
+            toc_open: None,
+            toc_scroll: gpui::ScrollHandle::new(),
+            toc_at: None,
+            jump: None,
+            pinned: None,
+            last_top: px(0.),
         }
     }
 
@@ -460,15 +544,18 @@ impl Reader {
             let read = match got {
                 Ok(answer) => {
                     let sections = answer.pointer("/structuredContent/sections").cloned().unwrap_or(Value::Null);
+                    let given = answer.pointer("/structuredContent/outline").cloned().unwrap_or(Value::Null);
                     let parsed = cx
                         .background_executor()
                         .spawn(async move {
-                            sections
+                            let docs: Vec<(Option<String>, Doc)> = sections
                                 .as_array()
                                 .into_iter()
                                 .flatten()
                                 .map(|s| (s.get("label").and_then(Value::as_str).map(str::to_string), Doc::reading(str_of(s, "markdown"))))
-                                .collect::<Vec<_>>()
+                                .collect();
+                            let heads: Vec<(usize, u8, String)> = docs.iter().enumerate().flat_map(|(i, (_, d))| d.headings().into_iter().map(move |(level, text)| (i, level, text))).collect();
+                            (docs, outline_of(&given, &heads))
                         })
                         .await;
                     Ok(parsed)
@@ -478,10 +565,14 @@ impl Reader {
             this.update(cx, |r, cx| {
                 r.loading = None;
                 match read {
-                    Ok(parsed) => {
+                    Ok((parsed, outline)) => {
                         let first = r.loaded.is_none();
                         let at = r.list.logical_scroll_top();
                         r.sections = parsed.into_iter().map(|(label, doc)| Section { label, doc: Rc::new(doc) }).collect();
+                        r.outline = outline;
+                        r.heads.at.borrow_mut().clear();
+                        r.jump = None;
+                        r.pinned = None;
                         r.list.reset(r.sections.len());
                         r.placed.borrow_mut().clear();
                         if !first {
@@ -742,6 +833,7 @@ impl Reader {
             on_mark: Rc::new(|_, _, _| {}),
             margin: None,
             spots: Some(self.spots.clone()),
+            heads: (!self.outline.is_empty()).then(|| self.heads.clone()),
         }
     }
 
@@ -755,8 +847,193 @@ impl Reader {
 
     /// Whether the margin has room beside the words, else notes go under their paragraph.
     fn margin_fits(&self, window: &Window) -> bool {
-        let column = window.viewport_size().width - if self.panel_shown() { u(PANEL).to_pixels(window.rem_size()) } else { px(0.) };
+        let column = window.viewport_size().width - self.beside(window) - if self.toc_shown(window) { u(TOC).to_pixels(window.rem_size()) } else { px(0.) };
         column >= u(BESIDE * 0.9 + 64. + MARGIN + GUTTER).to_pixels(window.rem_size())
+    }
+
+    /// The threads' panel's width, when it's shown.
+    fn beside(&self, window: &Window) -> Pixels {
+        if self.panel_shown() { u(PANEL).to_pixels(window.rem_size()) } else { px(0.) }
+    }
+
+    /// Whether the contents are shown: as set by hand, else when the words keep a measure beside
+    /// them (and their notes their margin).
+    fn toc_shown(&self, window: &Window) -> bool {
+        if self.outline.is_empty() {
+            return false;
+        }
+        self.toc_open.unwrap_or_else(|| {
+            let words = if self.notes.is_empty() { BESIDE + 64. } else { BESIDE * 0.9 + 64. + MARGIN + GUTTER };
+            window.viewport_size().width - self.beside(window) >= u(TOC + words).to_pixels(window.rem_size())
+        })
+    }
+
+    fn toggle_toc(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.outline.is_empty() {
+            return;
+        }
+        self.toc_open = Some(!self.toc_shown(window));
+        cx.notify();
+    }
+
+    /// Where an entry's heading was laid out last frame (`None` when it wasn't), and whether its
+    /// section has it at all as far as it's been drawn.
+    fn heading_at(&self, e: &Entry) -> (Option<Pixels>, bool) {
+        let frame = self.heads.frame.get();
+        let at = self.heads.at.borrow();
+        let found = at.range((e.section as u64, 0)..=(e.section as u64, u32::MAX)).filter(|(_, (text, _, _))| heading_is(text, &e.title)).nth(e.nth).map(|(_, (_, y, f))| (*y, *f));
+        match found {
+            Some((y, f)) => ((f + 1 == frame).then_some(y), true),
+            None => (None, false),
+        }
+    }
+
+    /// Whether an entry's heading, found but not laid out last frame, left the column above it:
+    /// it was last laid out in the column's upper half.
+    fn went_above(&self, e: &Entry) -> bool {
+        let view = self.list.viewport_bounds();
+        let at = self.heads.at.borrow();
+        at.range((e.section as u64, 0)..=(e.section as u64, u32::MAX)).filter(|(_, (text, _, _))| heading_is(text, &e.title)).nth(e.nth).is_some_and(|(_, (_, y, _))| *y < view.center().y)
+    }
+
+    /// Goes to an entry: its section first, then its heading once that's laid out.
+    fn go_to(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = self.outline.get(i) else { return };
+        self.list.scroll_to(ListOffset { item_ix: e.section, offset_in_item: px(0.) });
+        self.jump = Some((i, 4));
+        self.pinned = Some(i);
+        self.pop = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// A jump's next step, from where its heading was laid out last frame.
+    fn jump_now(&mut self, window: &mut Window) {
+        let Some((i, left)) = self.jump else { return };
+        let Some(e) = self.outline.get(i).cloned() else {
+            self.jump = None;
+            return;
+        };
+        // Its heading; else, once its section's drawn, a line of its words alone (a PDF's heading
+        // the size of its words).
+        let y = match self.heading_at(&e) {
+            (Some(y), _) => Some(y),
+            (None, false) if left < 4 => self.line_at(&e),
+            _ => None,
+        };
+        match y {
+            Some(y) => {
+                let view = self.list.viewport_bounds();
+                crate::follow::scroll_by(&self.list, y - view.top() - u(16.).to_pixels(window.rem_size()));
+                self.jump = None;
+            }
+            None if left == 0 => self.jump = None,
+            None => self.jump = Some((i, left - 1)),
+        }
+        window.request_animation_frame();
+    }
+
+    /// Where a line that's only an entry's words was drawn in its section.
+    fn line_at(&self, e: &Entry) -> Option<Pixels> {
+        let s = e.section as u64;
+        let (key, text) = self.sel.runs((s, 0)..=(s, u32::MAX)).into_iter().filter(|(_, t)| t.len() <= e.title.len() + 12 && heading_is(t, &e.title)).nth(e.nth)?;
+        self.sel.rects(key, 0..text.len()).first().map(|r| r.top())
+    }
+
+    /// The entry being read: the last whose heading is above the column's top quarter (its
+    /// section's top where the heading isn't found), the last at the end; the first above it, as a
+    /// page's outline marks it.
+    fn reading_at(&self, window: &Window) -> Option<usize> {
+        if self.outline.is_empty() {
+            return None;
+        }
+        if let Some(p) = self.pinned {
+            return Some(p);
+        }
+        let max = self.list.max_offset_for_scrollbar().y;
+        if max > px(0.) && -self.list.scroll_px_offset_for_scrollbar().y >= max - px(2.) {
+            return Some(self.outline.len() - 1);
+        }
+        let top = self.list.logical_scroll_top().item_ix;
+        let view = self.list.viewport_bounds();
+        let line = view.top() + u(64.).to_pixels(window.rem_size()).min(view.size.height / 4.);
+        let mut at = Some(0);
+        for (i, e) in self.outline.iter().enumerate() {
+            let passed = match self.heading_at(e) {
+                (Some(y), _) => y <= line,
+                (None, true) => e.section < top || (e.section == top && self.went_above(e)),
+                // A bookmark on the page at the top: where its line is, when it's found.
+                (None, false) if e.section == top => self.line_at(e).is_none_or(|y| y <= line),
+                (None, false) => e.section < top,
+            };
+            if passed {
+                at = Some(i);
+            }
+        }
+        at
+    }
+
+    /// The contents scrolled so the entry being read stays in view, a third of the way down
+    /// when it would leave the middle.
+    fn toc_keep(&self, i: usize) {
+        let h = &self.toc_scroll;
+        let (Some(item), view) = (h.bounds_for_item(i), h.bounds()) else { return };
+        let height = view.size.height;
+        let at = item.top() - view.top();
+        if at >= height * 0.15 && item.bottom() - view.top() <= height * 0.85 {
+            return;
+        }
+        let content = at - h.offset().y;
+        let to = (content - height / 3.).max(px(0.)).min(h.max_offset().y);
+        h.set_offset(point(px(0.), -to));
+    }
+
+    /// The contents down the left: each entry a line or two (a level-3 one in from it), the one being read
+    /// in ink on the track.
+    fn contents(&self, at: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
+        let l = Look::get(cx);
+        let me = cx.entity().downgrade();
+        let rows = self.outline.iter().enumerate().map(|(i, e)| {
+            let on = at == Some(i);
+            let me = me.clone();
+            div()
+                .id(("reader-toc", i))
+                .flex_none()
+                .line_clamp(2)
+                .text_ellipsis()
+                .tooltip(crate::band::tip(e.title.clone()))
+                .when(on, |d| d.font_weight(FontWeight::MEDIUM))
+                .pl(u(if e.level == 3 { 20. } else { 10. }))
+                .pr(u(12.))
+                .py(u(4.))
+                .border_l_2()
+                .border_color(if on { l.ink } else { l.line1 })
+                .text_size(u(13.))
+                .line_height(u(18.))
+                .text_color(if on { l.ink } else { l.ink2 })
+                .cursor_pointer()
+                .hover(|s| s.text_color(l.ink))
+                .on_click(move |_, window, cx| {
+                    me.update(cx, |r, cx| r.go_to(i, window, cx)).ok();
+                })
+                .child(SharedString::from(e.title.clone()))
+        });
+        div()
+            .id("reader-toc")
+            .flex_none()
+            .w(u(TOC))
+            .h_full()
+            .border_r(px(l.w1))
+            .border_color(l.line1)
+            .overflow_y_scroll()
+            .track_scroll(&self.toc_scroll)
+            .flex()
+            .flex_col()
+            .pl(u(12.))
+            .pt(u(12.))
+            .pb(u(40.))
+            .children(rows)
+            .into_any_element()
     }
 
     /// What goes beside each of a section's blocks: the notes whose words are in it.
@@ -958,10 +1235,13 @@ impl Reader {
         };
         let words = markdown::render(&doc, &ctx, &l, window, cx);
         let wide = self.notes.is_empty() || self.margin_fits(window);
+        // Beside the contents the words sit by them, the room left over to their right.
+        let by_toc = self.toc_shown(window);
         div()
             .w_full()
             .flex()
-            .justify_center()
+            .when(by_toc, |d| d.pl(u(16.)))
+            .when(!by_toc, |d| d.justify_center())
             .child(
                 div()
                     .w_full()
@@ -1641,7 +1921,29 @@ impl Render for Reader {
         let l = Look::get(cx);
         self.sel.frame();
         self.note_sel.frame();
+        self.heads.frame.set(self.heads.frame.get() + 1);
         self.reveal_now();
+        // The words scrolled since the last frame: by hand, unless going to an entry; a frame more
+        // once they stop, so the mark reads where they came to rest.
+        let top = -self.list.scroll_px_offset_for_scrollbar().y;
+        if top != self.last_top && !self.outline.is_empty() {
+            if self.jump.is_none() {
+                self.pinned = None;
+            }
+            window.request_animation_frame();
+        }
+        self.jump_now(window);
+        self.last_top = -self.list.scroll_px_offset_for_scrollbar().y;
+        let toc = self.toc_shown(window).then(|| {
+            let at = self.reading_at(window);
+            if at != self.toc_at {
+                self.toc_at = at;
+                if let Some(i) = at {
+                    self.toc_keep(i);
+                }
+            }
+            self.contents(at, cx)
+        });
         let column: AnyElement = if !self.sections.is_empty() {
             let sel = self.sel.clone();
             let sel_up = self.sel.clone();
@@ -1667,6 +1969,9 @@ impl Render for Reader {
                 }))
                 .on_scroll(cx.listener(|this, _: &gpui::ScrollEvent, _, cx| {
                     this.close_pop(cx);
+                    if !this.outline.is_empty() {
+                        cx.notify();
+                    }
                 }))
                 .child(words)
                 .child(crate::select::drag_anywhere(
@@ -1730,12 +2035,14 @@ impl Render for Reader {
                     cx.write_to_clipboard(ClipboardItem::new_string(t));
                 }
             }))
+            .on_action(cx.listener(|this, _: &Contents, window, cx| this.toggle_toc(window, cx)))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.on_key(e, window, cx)))
             .size_full()
             .flex()
             .bg(l.bg)
             .text_color(l.ink)
             .font_family(SANS)
+            .children(toc)
             .child(div().flex_1().min_w_0().h_full().text_size(u(16.)).line_height(u(26.)).child(column))
             .children(panel)
             .children(pop)

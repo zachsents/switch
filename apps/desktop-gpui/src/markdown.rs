@@ -536,6 +536,23 @@ impl Reader {
 }
 
 impl Doc {
+    /// Its headings at the top (a `div`'s or a `section`'s too), in order: each one's level and words.
+    pub fn headings(&self) -> Vec<(u8, String)> {
+        fn walk(list: &[Block], out: &mut Vec<(u8, String)>) {
+            for b in list {
+                match b {
+                    Block::Heading(level, w, _) => out.push((*level, w.text.clone())),
+                    Block::Group(more) => walk(more, out),
+                    Block::Spaced(inner) => walk(std::slice::from_ref(inner.as_ref()), out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(&self.blocks, &mut out);
+        out
+    }
+
     pub fn of(text: &str) -> Self {
         Self::read(text, &CLEAN)
     }
@@ -753,6 +770,16 @@ pub struct Reading {
     pub margin: Option<Margin>,
     /// Where the named marks' first lines are drawn, once they are.
     pub spots: Option<crate::select::Spots>,
+    /// Where its headings are laid out.
+    pub heads: Option<Rc<Heads>>,
+}
+
+/// Where a document's headings were laid out: by each one's run, its words, its top in the window
+/// and the frame (`frame`, moved by the view each time it draws) that laid it out.
+#[derive(Default)]
+pub struct Heads {
+    pub frame: std::cell::Cell<u64>,
+    pub at: std::cell::RefCell<std::collections::BTreeMap<(u64, u32), (String, gpui::Pixels, u64)>>,
 }
 
 pub type Margin = Box<dyn Fn(u64, Range<u32>, gpui::Rems, AnyElement, &mut Window, &mut App) -> AnyElement>;
@@ -996,7 +1023,8 @@ fn block((list, i): (&[Block], usize), n: &mut u32, cx: &Ctx, l: &Look, color: g
             div().flex().flex_col().min_w_0().child(head).children(body).into_any_element()
         }
         Block::Heading(level, w, more) => {
-            cx.sel.apart((cx.order, *n));
+            let key = (cx.order, *n);
+            cx.sel.apart(key);
             let more = blocks(more, n, cx, l, color, window, app);
             // A document's headings step down in size by level; a message's are a weight up.
             let sized = |d: gpui::Div| match (cx.reading.is_some(), level) {
@@ -1006,7 +1034,27 @@ fn block((list, i): (&[Block], usize), n: &mut u32, cx: &Ctx, l: &Look, color: g
                 (true, 3) => d.text_size(u(18.)).line_height(u(24.)),
                 (true, _) => d.text_size(u(16.)).line_height(u(24.)),
             };
-            sized(gap(div(), 0.).when(last, |d| d.mb(u(4.)))).child(words(w, n, cx, l, true, color)).children(more).into_any_element()
+            // Where it's laid out, for the document's contents.
+            let spot = cx.reading.as_ref().and_then(|r| r.heads.clone()).map(|heads| {
+                let text = w.text.clone();
+                gpui::canvas(
+                    move |b, _, _| {
+                        let frame = heads.frame.get();
+                        heads.at.borrow_mut().insert(key, (text, b.top(), frame));
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_0()
+            });
+            sized(gap(div(), 0.).when(last, |d| d.mb(u(4.))))
+                .when(spot.is_some(), |d| d.relative())
+                .children(spot)
+                .child(words(w, n, cx, l, true, color))
+                .children(more)
+                .into_any_element()
         }
         Block::Task(done, w, more) => div()
             .flex()

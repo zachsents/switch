@@ -455,7 +455,7 @@ file became; what differs on purpose:
   measure beside notes; the note under the pointer darkens its words, and shows Edit and Delete
   in its own document; a click opens its thread (another document's in its window), Edit and Delete under
   the pointer (`editNote`, `deleteNote`). Esc closes an edit, then the popover, then the selection,
-  then the thread, then the window; ⌘D looks up, ⇧⌘H highlights, Return asks. `SWITCH_GPUI_PAGES=view:<app>/<name>?<key>=<value>`
+  then the thread, then the window; ⌘D looks up, ⇧⌘H highlights, Return asks. Its contents down the left, as a published page's outline: the document's own (a PDF's bookmarks, an EPUB's contents, `content`'s `outline`) or its headings' top two levels, the section being read marked as it scrolls, a click going to one; shown where the words keep a measure beside them, ⌃⌘S (the shared list's Contents) shows or hides it, none without headings. `SWITCH_GPUI_PAGES=view:<app>/<name>?<key>=<value>`
   opens a widget's window for a look; the desktop's `open_view` tool opens one for the agent.
 - A window comes out of full screen where it went in (AppKit leaves its top under the menu bar).
 - Cutover: the Electrobun app's Keychain item doesn't answer the Rust app with prompts off, but the

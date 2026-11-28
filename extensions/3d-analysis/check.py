@@ -78,3 +78,16 @@ for _bad in ({"delete_by": 30}, {"delete_by": "2026-11-23T20:00Z"}, {}):
     except ValueError:
         pass
 assert cfd.load("s")["delete_by"] == _ms - 600_000 + 7_200_000, "check: a refused keep changes nothing"
+
+# box: its first boot lets cfd's key in, runs the setup steps in turn, and says ready or which step failed
+import box  # noqa: E402
+
+_ci = box.cloud_init("ssh-ed25519 AAAA test", ["echo one", "echo 'two'"])
+assert _ci.startswith("#cloud-config\n") and "  - ssh-ed25519 AAAA test" in _ci, "check: box cloud-init key"
+assert "( echo one ) ||" in _ci and "setup step 2 failed" in _ci and "touch /root/box-ready" in _ci, "check: box setup steps"
+_t = box.now_ms()
+_boxes = [{"status": "running", "delete_by": _t + 3_600_000}, {"status": "running", "delete_by": _t - 1},
+          {"status": "deleting", "delete_by": _t + 3_600_000}]
+assert box.live(_boxes) == _boxes[:1], "check: box reuses only a live box before its delete-by"
+_k = box.ssh({"id": 9, "ip": "192.0.2.1"})
+assert _k[-1] == "root@192.0.2.1" and any(a.endswith("known_hosts-9") for a in _k), "check: box ssh"
