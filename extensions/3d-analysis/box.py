@@ -76,7 +76,7 @@ def record(srv):
     rec.update({"id": srv["id"], "name": srv["name"], "status": srv.get("status"),
                 "ip": ((srv.get("public_net") or {}).get("ipv4") or {}).get("ip"),
                 "type": (srv.get("server_type") or {}).get("name"), "cores": (srv.get("server_type") or {}).get("cores"),
-                "location": ((srv.get("datacenter") or {}).get("location") or {}).get("name"),
+                "location": ((srv.get("datacenter") or {}).get("location") or {}).get("name") or rec.get("location"),
                 "created": iso_ms(srv.get("created")) or rec.get("created"),
                 "delete_by": hetzner.parse_label_time(labels.get("delete_by", "")), "purpose": labels.get("purpose")})
     rec.setdefault("setup", [])
@@ -258,7 +258,7 @@ def start(hours=DEFAULT_HOURS, setup=None, server_type=None, location="hil", pur
                             if e.code == "resource_limit_exceeded" else "")
                     raise ValueError(f"Hetzner wouldn't rent the box: {e.message}.{hint}")
                 b = record(made)
-                b.update(price_hourly=hourly, currency=currency, setup=list(setup), cores_before=used)
+                b.update(location=b["location"] or location, price_hourly=hourly, currency=currency, setup=list(setup), cores_before=used)
                 keep(b)
                 state["rented"] += 1
                 reused = False
@@ -411,6 +411,9 @@ def delete_now(b, wait_s=120):
     left = None
     while True:
         left = cfd.leftovers(b["id"])
+        if left is not None and b.get("ip"):  # its IPv4 kept apart from the server would still bill
+            ips = hetzner.api("GET", "/primary_ips?per_page=50").get("primary_ips") or []
+            left += [f"primary IP {ip['ip']}" for ip in ips if ip.get("ip") == b["ip"] and ip.get("assignee_id") != b["id"]]
         if left == [] or time.time() >= end:
             break
         time.sleep(5)
