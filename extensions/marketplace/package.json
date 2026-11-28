@@ -17,7 +17,7 @@
     "needs": [
       "always-on"
     ],
-    "heartbeat": 1500000,
+    "heartbeat": 2400000,
     "connections": [
       {
         "provider": "facebook",

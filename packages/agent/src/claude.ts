@@ -145,6 +145,7 @@ const args = (l: Launch) => {
         {
           type: "http",
           url: m.url,
+          timeout: CALL_MS,
           ...(m.token === undefined ? {} : { headers: { Authorization: `Bearer ${m.token}` } }),
         },
       ]),
@@ -158,6 +159,14 @@ const args = (l: Launch) => {
   }
   return out
 }
+
+/**
+ * How long one MCP call may run, as the gateway lets it (gateway.ts `CALL_SILENCE_MS`). Claude
+ * Code's own default cuts an HTTP server's call at 60 s, whatever the tool: autonomy_wait,
+ * browser_act and slicing all failed there (Nov 2026, 64% of waits). Silence past 5 min still ends
+ * a call (its idle limit), so a tool that waits answers before then.
+ */
+const CALL_MS = 10 * 60_000
 
 const parseLine: (line: string) => CliMessage = JSON.parse
 

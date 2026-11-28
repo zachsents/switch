@@ -513,13 +513,16 @@ Setting the same \`what\` again, or giving one's \`id\` (as listed), moves it; \
     }),
 )
 
-const WAIT_MINUTES = 5
-const WAIT_MAX = 20
+// Under the agent's own limits on a call: 5 min silent ends it (Claude Code's idle limit), so a
+// wait answers before. What takes longer is an expect, not a wait (Nov 2026: waits of up to 20 min
+// were cut by the client at 60 s, 64% of them).
+const WAIT_MINUTES = 2
+const WAIT_MAX = 4
 
 const wait = tool(
   "wait",
   {
-    description: `Block until something comes out, instead of polling: an expectation (its id) wakes or closes, an action item (its id) closes, or a query (as brain_query takes; on the log, only events after now count) finds rows. Gives way when the user speaks. minutes: default ${WAIT_MINUTES}, at most ${WAIT_MAX}. To end your turn and be woken instead, use expect with when.`,
+    description: `Only for what comes out within ${WAIT_MAX} minutes, while you hold this turn: an expectation (its id) wakes or closes, an action item (its id) closes, or a query (as brain_query takes; on the log, only events after now count) finds rows. Gives way when the user speaks. minutes: default ${WAIT_MINUTES}, at most ${WAIT_MAX}; past it, it answers timeout. For anything longer or unsure (a task, a build, a reply, a print), don't wait: set expect with when and end your turn; you're woken when it comes.`,
     readOnly: true,
     input: Schema.Struct({
       id: Schema.optionalKey(Schema.String),
@@ -595,7 +598,12 @@ const wait = tool(
       )
       const waited = Math.round((Date.now() - started) / 1000)
       return Option.match(result, {
-        onNone: () => ({ ended: "timeout", rows: [], waitedS: waited }),
+        onNone: () => ({
+          ended: "timeout",
+          rows: [],
+          waitedS: waited,
+          next: `Nothing in ${minutes} min. Don't wait again: set expect with when (this query, or the id's) and end your turn.`,
+        }),
         onSome: (r) => ({ ...r, waitedS: waited }),
       })
     }),

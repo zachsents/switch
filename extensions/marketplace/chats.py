@@ -4,8 +4,9 @@ Replies from Marketplace sellers (and buyers of what the user sells) land in the
 Messenger, which has no API. This sense reads them from the Marketplace inbox
 (facebook.com/marketplace/inbox) in the user's own Chrome, signed in to Facebook, through the
 browser extension: one background tab (session `marketplace-chats`) that loads the inbox, reads the
-Buying and Selling tabs, and goes back to about:blank, every few minutes (2.5 while a negotiation
-is live, 6 by day, 20 at night).
+Buying and Selling tabs, and goes back to about:blank, every 10 to 14 minutes at random (20 to 28 at
+night), a few minutes clear of the saved searches' scans (server.facebook_turn): Facebook flags an
+account whose looks come fast or on a steady beat.
 
 It emits each conversation as `fb-marketplace-chat:<person>-<listing>-<hash>` (a chat event),
 again whenever its latest message or read state changes: who and which listing, the latest
@@ -24,7 +25,7 @@ sees it first): it opens the listing (or the chat, from the inbox), fills the fi
 the chat's composer, reads the words back, sends them, and confirms "Message sent ... by You:
 <words>" in the chat before it says sent. It then closes the chat's popup (so a reply never lands
 in an open chat and shows Seen), emits a send event, and reads the inbox so the chat is recorded
-as waiting on them and the loop polls every 2.5 minutes. `draft` reads what a send would go into,
+as waiting on them. `draft` reads what a send would go into,
 sending nothing. The loop itself only reads.
 """
 
@@ -40,7 +41,7 @@ import time
 
 import sbmcp
 from browser import Browser, BrowserError
-from server import app, session_live
+from server import app, facebook_turn, session_live
 
 
 TAB = Browser(app, session="marketplace-chats")
@@ -54,7 +55,9 @@ INBOX = "https://www.facebook.com/marketplace/inbox?targetTab={}"
 SIDES = {"BUYER": "buying", "SELLER": "selling"}
 ROWS = 15
 OPEN_PER_POLL = 2
-LIVE_S, DAY_S, NIGHT_S = 150, 360, 1200
+DAY_S, NIGHT_S = 600, 1200
+JITTER = (1.0, 1.4)
+"""Each wait is its base times a random factor in this range: never sooner than the base, never on a beat."""
 NIGHT_HOURS = range(0, 7)
 PAGE_JS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_chats.js")).read()
 
@@ -404,8 +407,8 @@ def interval():
         or t - (f.get("seen_at") or 0) < 30 * 60_000
         for f in chats.values()
     )
-    base = LIVE_S if live else NIGHT_S if datetime.datetime.now().hour in NIGHT_HOURS else DAY_S
-    return base * random.uniform(0.85, 1.15), live
+    base = NIGHT_S if datetime.datetime.now().hour in NIGHT_HOURS else DAY_S
+    return base * random.uniform(*JITTER), live
 
 
 def vitals(state, detail=None, live=False):
@@ -460,7 +463,9 @@ def loop():
         wait_s, live = interval()
         t = now_ms()
         try:
-            state = poll(full=full)
+            with facebook_turn():
+                t = now_ms()
+                state = poll(full=full)
             if state == "ok":
                 status["caught_up_at"] = t
                 status["due_at"] = now_ms() + int(wait_s * 1000)
@@ -486,7 +491,7 @@ def loop():
             if status["errors"] == FAILS_REPORTED:
                 vitals("error", str(e)[:200])
             status["state"] = "error"
-            wait_s = min(60 * 2 ** (status["errors"] - 1), 900)
+            wait_s = min(300 * 2 ** (status["errors"] - 1), 1800) * random.uniform(*JITTER)
         wake.wait(wait_s)
         wake.clear()
 

@@ -19,6 +19,7 @@ import gzip
 import shutil
 import subprocess
 import json
+import random
 import math
 import os
 import re
@@ -30,7 +31,7 @@ from datetime import datetime
 
 import sbmcp
 from browser import Browser, BrowserError
-from server import app, session_live
+from server import app, facebook_turn, session_live
 
 NAME = "marketplace-search"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +43,9 @@ TAB = Browser(app, session="marketplace-search")
 HEARTBEAT_S = 600
 """How often it says how it is, in vitals/marketplace."""
 TICK_S = 300
-"""How often it looks for saved searches that are due."""
+"""About how often it looks for saved searches that are due (at random, up to half again)."""
+MIN_EVERY_H = 2.0
+"""The shortest a saved search's schedule may be: Facebook flags an account that searches too often."""
 TEMPLATE_DAYS = 3
 """How long the queries read off Marketplace's page are trusted before they're read again."""
 FB = "https://www.facebook.com"
@@ -458,7 +461,7 @@ def search_now(d, details=0, photos=False, progress=None):
                 progress(f"Searching {', '.join(chunk)}" + (f" ({n + 1} of {len(chunks)})" if len(chunks) > 1 else ""),
                          n, len(chunks))
             op = {"op": "search", "search": t["search"], "queries": chunk, "filters": f, "pages": d["pages"],
-                  "pause_ms": 350, "photos": bool(photos)}
+                  "pause_ms": random.randint(700, 1500), "photos": bool(photos)}
             got = on_facebook(op, timeout=40 + 4 * d["pages"] * len(chunk))
             results = got.get("results") or []
             if not refreshed and results and all(r["errors"] and not r["items"] for r in results):
@@ -960,7 +963,7 @@ def scan_watch(name, progress=None):
         cur["seen"] = seen
         cur["scans"] = (cur.get("scans") or 0) + 1
         cur["last_scan"] = now_ms()
-        cur["next_scan"] = now_ms() + int(cur["every_hours"] * 3600000)
+        cur["next_scan"] = next_at(cur["every_hours"])
         cur["last_error"] = None
         return dict(cur)
     w = update(put) or w
@@ -996,7 +999,7 @@ def scan_watch(name, progress=None):
         "name": {"type": "string", "description": "What it's looking for, like \"Resin printer\" (saving a name again replaces that search)."},
         **SEARCH_PROPS,
         "details": {"type": "integer", "description": "Read the first this many listings' own pages each scan (default 0)."},
-        "every_hours": {"type": "number", "description": "How often to scan (default 6, at least 1)."},
+        "every_hours": {"type": "number", "description": "How often to scan, in hours (default 6, at least 2; each scan comes up to a quarter later, at random)."},
         "notify": {"type": "boolean", "description": "Notify the user when a scan finds a new listing or a price cut (default false: it's only recorded)."},
     },
     "required": ["name", "queries"],
@@ -1012,7 +1015,7 @@ def watch(name, queries, near=None, radius_miles=None, min_price=None, max_price
     d = build(queries, near, radius_miles, min_price, max_price, condition, days, shipping, include, exclude,
               pending, beyond, sort or "newest", pages or 2)
     key = slug(name)
-    every = max(1.0, float(every_hours or 6))
+    every = max(MIN_EVERY_H, float(every_hours or 6))
 
     def put(s):
         old = s["watches"].get(key) or {}
@@ -1022,7 +1025,7 @@ def watch(name, queries, near=None, radius_miles=None, min_price=None, max_price
             "notify": bool(notify), "details": max(0, min(int(details or 0), 20)),
             "seen": old.get("seen") if same else {}, "scans": old.get("scans", 0) if same else 0,
             "created": old.get("created") or now_ms(),
-            "next_scan": now_ms() + int(every * 3600000),
+            "next_scan": next_at(every),
         }
     update(put)
     result = scan_watch(key, progress=ctx.progress if ctx else None)
@@ -1109,14 +1112,23 @@ def status():
 # Background: saved searches and the heartbeat
 
 
+def next_at(every_hours):
+    """When a saved search scans next: every_hours (at least MIN_EVERY_H) on, and up to a quarter more at random."""
+    return now_ms() + int(max(MIN_EVERY_H, float(every_hours)) * 3600000 * random.uniform(1.0, 1.25))
+
+
 def due_watches():
     with lock:
         ws = load()["watches"]
-    return [k for k, w in ws.items() if (w.get("next_scan") or 0) <= now_ms()]
+    return sorted((k for k, w in ws.items() if (w.get("next_scan") or 0) <= now_ms()), key=lambda k: ws[k].get("next_scan") or 0)
 
 
 def run_due():
-    for key in due_watches():
+    """Scans the most overdue saved search, in its own turn at Facebook: one a tick, so scans never come back to back."""
+    with facebook_turn():
+        key = next(iter(due_watches()), None)
+        if not key:
+            return
         try:
             scan_watch(key)
         except Exception as e:
@@ -1127,7 +1139,7 @@ def run_due():
                 w = s["watches"].get(key)
                 if w:
                     w["last_error"] = err
-                    w["next_scan"] = now_ms() + 3600000  # try again in an hour
+                    w["next_scan"] = next_at(MIN_EVERY_H)  # try again later
             update(put)
             app.log(f"scan {key} failed: {err}")
 
@@ -1160,5 +1172,5 @@ def scheduler():
             run_due()
         except Exception as e:
             app.log("scheduler:", e)
-        time.sleep(TICK_S)
+        time.sleep(TICK_S * random.uniform(1.0, 1.5))
 

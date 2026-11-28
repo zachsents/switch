@@ -1,4 +1,10 @@
 """The marketplace extension's one MCP server, which search.py and chats.py both declare their tools on."""
+import random
+import threading
+import time
+from contextlib import contextmanager
+
+import browser
 import sbmcp
 
 app = sbmcp.Server("marketplace", version="1", instructions=(
@@ -7,8 +13,8 @@ app = sbmcp.Server("marketplace", version="1", instructions=(
     "approximate miles and age (details reads the top ones' descriptions, condition and seller rating); listing reads one "
     "listing in full, with its photos as files; watch saves a search that's scanned on a schedule and records what's new "
     "and price drops; scan, unwatch and watches manage them. Searching only reads: it never messages a seller, saves or offers. "
-    "Chats: the user's Marketplace chats, buying and selling, read from the Marketplace inbox every few minutes (2.5 while an "
-    "offer is out, 6 by day, 20 at night), each emitted as a chat event whenever its latest message or read state changes "
+    "Chats: the user's Marketplace chats, buying and selling, read from the Marketplace inbox every 10 to 14 minutes (20 to 28 at "
+    "night), each emitted as a chat event whenever its latest message or read state changes "
     "(new_from_them marks the first sight of a new message from the other side); it never opens an unread chat, and check "
     "reads the inbox now. To message a seller or buyer (an offer, a question, a reply), in the user's name: draft reads the "
     "listing and chat and says what sending would go into (sending nothing); send sends the words, confirms they're in the "
@@ -40,3 +46,19 @@ def session_live(provider):
         _live.add(provider)
     except Exception as e:  # noqa: BLE001  (never stops the work it was seen in)
         app.log(f"{provider}: couldn't record the sign-in: {e}")
+
+
+GAP_S = (240, 480)
+"""How far, at random, a background look (the chats' loop, a saved search's scan) stays from the last time anything
+here spoke to Facebook, so its looks never come back to back and keep no steady beat (Facebook flags automation)."""
+_background = threading.Lock()
+
+
+@contextmanager
+def facebook_turn():
+    """A background look's turn at Facebook: one at a time, each GAP_S (at random) after the last word to it."""
+    with _background:
+        gap = random.uniform(*GAP_S)
+        while (left := browser.LAST["at"] + gap - time.time()) > 0:
+            time.sleep(left)
+        yield

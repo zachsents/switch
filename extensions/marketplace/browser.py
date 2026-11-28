@@ -9,11 +9,15 @@ pick?}, steps [ops]. `show` and `minimize` change nothing here (the tab stays in
 extension doesn't keep (fill_secret, save_account, accounts) raises BrowserError.
 """
 import json
+import time
 
 
 class BrowserError(Exception):
     pass
 
+
+LAST = {"at": 0.0}
+"""When any Browser here last spoke to its tab (all of them are on Facebook): background looks keep their distance from it."""
 
 UNOFFERED = {"fill_secret", "save_account", "accounts"}
 QUIET = {"show", "minimize"}
@@ -29,10 +33,13 @@ class Browser:
         """One browser extension tool's words (`act` or `run`), waiting up to `wait` seconds."""
         arguments.setdefault("session", self.session)
         try:
+            LAST["at"] = time.time()
             # As the agent sees it: the browser extension's own tool, under its extension's name.
             result = self.app.call(f"browser_{name}", {k: v for k, v in arguments.items() if v is not None}, timeout=wait)
         except RuntimeError as e:
             raise BrowserError(f"{name}: {e}") from None
+        finally:
+            LAST["at"] = time.time()
         words = "\n".join(b.get("text", "") for b in result.get("content", []) if b.get("type") == "text")
         if result.get("isError"):
             raise BrowserError(f"{arguments.get('op') or name}: {words[:300] or 'it failed'}")
