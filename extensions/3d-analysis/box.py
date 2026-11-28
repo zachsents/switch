@@ -287,13 +287,18 @@ def job_result(b, job, wait_until):
     d = f"/root/jobs/{job}"
     code = None
     while True:
-        c, out, _ = remote(b, f"cat {d}/exit 2>/dev/null", timeout=30)
-        if c == 0 and text(out).strip():
+        # the job holds {d}/lock while it runs: flock answers the moment it ends, in one call (a job started before
+        # the lock, with no lock file, is looked at every 5 s instead)
+        left = max(1, int(wait_until - time.time()))
+        c, out, _ = remote(b, f"if [ -e {d}/lock ]; then timeout {left} flock -s {d}/lock true; else sleep 5; fi; "
+                              f"cat {d}/exit 2>/dev/null", timeout=left + 30)
+        if text(out).strip().lstrip("-").isdigit():
             code = int(text(out).strip())
             break
         if time.time() >= wait_until:
             break
-        time.sleep(5)
+        if c not in (0, 1):
+            time.sleep(5)  # ssh didn't get through: try again while there's time
     c, out, err = remote(b, f"test -d {d} || exit 3; n=$(wc -c < {d}/out); echo $n; "
                             f"if [ $n -le {OUT_HEAD + OUT_TAIL} ]; then cat {d}/out; else head -c {OUT_HEAD} {d}/out; "
                             f"printf '\\n<<1>>\\n'; tail -c {OUT_TAIL} {d}/out; fi", timeout=60)
@@ -339,8 +344,10 @@ def run(command=None, cwd="/root", timeout_s=600, job=None, box=None):
     script = f"{ENV}\ncd {shlex.quote(cwd or '/root')} || exit 97\n{command}\n".encode()
     # one call writes the job and starts it apart from this ssh session (setsid -f, every fd off it), so the call
     # returns at once whatever the job does and however loaded the box is
-    launch = (f"mkdir -p {d} && cat > {d}/cmd.sh && setsid -f bash -c 'timeout -k 10 {timeout_s} bash -l {d}/cmd.sh "
-              f"> {d}/out 2>&1; echo $? > {d}/exit' < /dev/null > /dev/null 2>&1")
+    # the lock is taken before the job forks and held by it (fd 9, not passed on to the command) until its exit is written
+    launch = (f"mkdir -p {d} && cat > {d}/cmd.sh && exec 9> {d}/lock && flock 9 && setsid -f bash -c "
+              f"'timeout -k 10 {timeout_s} bash -l {d}/cmd.sh 9>&- > {d}/out 2>&1; echo $? > {d}/exit' "
+              f"< /dev/null > /dev/null 2>&1")
     code, out, err = remote(b, launch, stdin=script, timeout=60)
     if code != 0:
         why = (text(err) or text(out)).strip()[-500:]
