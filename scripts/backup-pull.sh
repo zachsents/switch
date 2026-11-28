@@ -6,6 +6,9 @@
 #                                                  core's machine's authorized_keys, and an hourly
 #                                                  timer (systemd, as this user; on a Mac, launchd)
 #   backup-pull.sh <ssh target> [folder]           a pull
+#   … [folder] <remote folder>                     through an ssh that takes any command (Tailscale
+#                                                  SSH, which keys can't restrict): the backups'
+#                                                  folder there, read as it is
 # The core's machine lets the key do nothing but this (backup.sh serve). What it pulls is the image
 # there: a Mac core's switch.sparsebundle, or a Linux core's restic repository, switch.restic.
 # A sparsebundle pull that brought anything is a version, folder/<time>/switch.sparsebundle, each
@@ -19,6 +22,7 @@ set -eu
 if [ "${1:-}" = install ]; then
   from=${2:?usage: backup-pull.sh install <ssh target> [folder]}
   to=${3:-$HOME/switch-backups}
+  remote=${4:-}
   mkdir -p "$to"
   cp "$0" "$to/pull.sh"
   [ -f "$to/id" ] || ssh-keygen -q -t ed25519 -N '' -C switch-backup-pull -f "$to/id"
@@ -30,7 +34,7 @@ if [ "${1:-}" = install ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>ax.switch.backup-pull</string>
-<key>ProgramArguments</key><array><string>/bin/sh</string><string>$to/pull.sh</string><string>$from</string><string>$to</string></array>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>$to/pull.sh</string><string>$from</string><string>$to</string>${remote:+<string>$remote</string>}</array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
 <key>StartInterval</key><integer>3600</integer>
 <key>RunAtLoad</key><true/>
@@ -52,7 +56,7 @@ Description=Pull Switch's backups
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
-ExecStart=/bin/sh $to/pull.sh $from $to
+ExecStart=/bin/sh $to/pull.sh $from $to $remote
 EOF
     cat >"$HOME/.config/systemd/user/switch-backup-pull.timer" <<'EOF'
 [Unit]
@@ -76,8 +80,16 @@ fi
 
 from=${1:?usage: backup-pull.sh <ssh target> [folder]}
 to=${2:-$HOME/switch-backups}
+remote=${3:-}
 cd "$to"
 ssh="ssh -i $to/id -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+# Unrestricted: the folder by its path, and the pull said by writing its time there.
+if [ -n "$remote" ]; then
+  mkdir -p "$to/switch.restic"
+  rsync -rt --delete -e "ssh -o BatchMode=yes" "$from:$remote/switch.restic/" "$to/switch.restic/"
+  ssh -o BatchMode=yes "$from" 'date +%s > ~/.switch/backup-pulled'
+  exit 0
+fi
 # A folder on a disk that isn't mounted would land on the system disk instead.
 case $to in
   /Volumes/*) [ -d "/Volumes/$(echo "${to#/Volumes/}" | cut -d/ -f1)" ] || { echo "The backup disk isn't mounted" >&2; exit 1; } ;;

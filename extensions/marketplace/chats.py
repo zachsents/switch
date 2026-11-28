@@ -41,7 +41,7 @@ import time
 
 import sbmcp
 from browser import Browser, BrowserError
-from server import app, facebook_turn, session_live
+from server import app, facebook_turn, session_live, write_atomic
 
 
 TAB = Browser(app, session="marketplace-chats")
@@ -65,7 +65,9 @@ poll_lock = threading.RLock()  # one conversation with Facebook's chats at a tim
 wake = threading.Event()
 chats = {}  # entity -> its latest facts
 just_sent = []  # (listing title, words, epoch ms) this sent lately: the inbox shows them without "You: "
-status = {"state": "starting", "polls": 0, "errors": 0, "since": None, "asked_signin": False,
+ASKED = os.path.join(HOME, "signin-asked")
+"""There while the user has been asked to sign in or clear a checkpoint, so a restart never asks again."""
+status = {"state": "starting", "polls": 0, "errors": 0, "since": None, "asked_signin": os.path.exists(ASKED),
           "sends": 0, "send_failures": 0, "last_send": None, "last_send_error": None,
           "caught_up_at": int(time.time() * 1000), "due_at": int(time.time() * 1000)}
 """caught_up_at: when the loop's last look that read the whole inbox began (its start, before any).
@@ -454,6 +456,7 @@ def ask_signin():
                      # It closes itself once the inbox reads again.
                      "resolve_when": f'entities | where id == "{SENSE}" and facts.state == "ok"'}, about=[SENSE])
     status["asked_signin"] = True
+    write_atomic(ASKED, why)
 
 
 def loop():
@@ -479,6 +482,8 @@ def loop():
                 ask_signin()
             else:
                 status["asked_signin"] = False
+                if os.path.exists(ASKED):
+                    os.remove(ASKED)
             # A failing sense goes quiet (no heartbeat) so its health shows; known causes keep reporting.
             # Its state changing is it falling behind the inbox or catching up, so that beats at once.
             if status["state"] != state or state in ("ok", "signed_out"):

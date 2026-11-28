@@ -1,4 +1,5 @@
 """The marketplace extension's one MCP server, which search.py and chats.py both declare their tools on."""
+import os
 import random
 import threading
 import time
@@ -52,6 +53,22 @@ GAP_S = (240, 480)
 """How far, at random, a background look (the chats' loop, a saved search's scan) stays from the last time anything
 here spoke to Facebook, so its looks never come back to back and keep no steady beat (Facebook flags automation)."""
 _background = threading.Lock()
+TOUCHED = os.path.join(sbmcp.home(), "facebook-at")
+"""When a background look last spoke to Facebook, kept across restarts: a restart (an update, a deploy) never looks at once."""
+
+
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+try:
+    with open(TOUCHED, encoding="utf-8") as f:
+        browser.LAST["at"] = max(browser.LAST["at"], float(f.read().strip() or 0))
+except (OSError, ValueError):
+    pass
 
 
 @contextmanager
@@ -61,4 +78,7 @@ def facebook_turn():
         gap = random.uniform(*GAP_S)
         while (left := browser.LAST["at"] + gap - time.time()) > 0:
             time.sleep(left)
-        yield
+        try:
+            yield
+        finally:
+            write_atomic(TOUCHED, str(browser.LAST["at"]))
