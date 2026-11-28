@@ -30,6 +30,9 @@ RUN_MAX_S = 1200
 REAP_S = float(os.environ.get("BOX_REAP_S") or 600)
 OUT_HEAD, OUT_TAIL = 6000, 14000
 EXCLUDE = [".git", "node_modules", ".DS_Store"]
+# what setup steps and jobs start with: cloud-init runs the setup with no HOME, and an installer's bin (bun's, pip's) is found
+ENV = ("export HOME=/root USER=root LANG=C.UTF-8 PATH=/root/.bun/bin:/root/.local/bin:/root/.cargo/bin:"
+       "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
 state = {"calls": 0, "failed": 0, "last_error": None, "rented": 0, "reused": 0, "deleted": 0, "last_reap": None}
 renting = threading.Lock()
@@ -150,7 +153,7 @@ def wait_ready(b, until):
 def cloud_init(pubkey, setup=()):
     """First boot: cfd's key for root, a few tools, the setup commands in turn, then /root/box-ready (or /root/box-failed
     with the step that failed; /root/box-setup.log has their output)."""
-    script = ["set -o pipefail"]
+    script = [ENV, "cd /root", "set -o pipefail"]
     for i, s in enumerate(setup):
         script.append(f"( {s} ) || {{ echo 'setup step {i + 1} failed' > /root/box-failed; exit 1; }}")
     script.append("touch /root/box-ready")
@@ -331,17 +334,22 @@ def run(command=None, cwd="/root", timeout_s=600, job=None, box=None):
     if not command or not command.strip():
         raise ValueError("command: what to run, or job: one to wait for")
     timeout_s = max(5, min(int(timeout_s), RUN_MAX_S))
-    job = time.strftime("%m%d-%H%M%S") + f"-{threading.get_ident() % 1000}"
+    job = time.strftime("%m%d-%H%M%S-") + os.urandom(2).hex()
     d = f"/root/jobs/{job}"
-    script = f"cd {shlex.quote(cwd or '/root')} || exit 97\n{command}\n".encode()
-    code, out, err = remote(b, f"mkdir -p {d} && cat > {d}/cmd.sh", stdin=script, timeout=30)
+    script = f"{ENV}\ncd {shlex.quote(cwd or '/root')} || exit 97\n{command}\n".encode()
+    # one call writes the job and starts it apart from this ssh session (setsid -f, every fd off it), so the call
+    # returns at once whatever the job does and however loaded the box is
+    launch = (f"mkdir -p {d} && cat > {d}/cmd.sh && setsid -f bash -c 'timeout -k 10 {timeout_s} bash -l {d}/cmd.sh "
+              f"> {d}/out 2>&1; echo $? > {d}/exit' < /dev/null > /dev/null 2>&1")
+    code, out, err = remote(b, launch, stdin=script, timeout=60)
     if code != 0:
-        raise RuntimeError(f"{b['name']} didn't take the job (exit {code}): {(text(err) or text(out)).strip()[-500:]}")
-    launch = (f"cd /root && setsid nohup bash -c 'timeout -k 10 {timeout_s} bash -l {d}/cmd.sh > {d}/out 2>&1; "
-              f"echo $? > {d}/exit' < /dev/null > /dev/null 2>&1 &")
-    code, out, err = remote(b, launch, timeout=30)
-    if code != 0:
-        raise RuntimeError(f"{b['name']} didn't start the job (exit {code}): {(text(err) or text(out)).strip()[-500:]}")
+        why = (text(err) or text(out)).strip()[-500:]
+        seen, _, _ = remote(b, f"test -e {d}/out", timeout=60)
+        if seen == 1:
+            raise RuntimeError(f"{b['name']} didn't start the job (exit {code}): {why}")
+        if seen != 0:  # can't tell: the job may be running, so its id comes back to wait on
+            return {"box": b["name"], "job": job, "running": None, "start_error": f"exit {code}: {why}",
+                    "next": f"box_run with job {job!r} waits for it (or says it's not there)"}
     return job_result(b, job, time.time() + min(timeout_s + 15, WAIT_S))
 
 

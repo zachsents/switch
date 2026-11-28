@@ -43,8 +43,10 @@ say() { echo "[ship-gpui $(date +%H:%M:%S)] $*"; }
 # Below the live core: utility QoS, as the main lane builds.
 behind() { /usr/sbin/taskpolicy -c utility "$@"; }
 
-# The feed's address: this machine's tailnet name, on the feed's port.
+# The feed's address: this machine's tailnet name, on the feed's port; $SWITCH_GPUI_FEED, the core's
+# machine's, when it serves the feed instead.
 feed_url() {
+  [ -z "${SWITCH_GPUI_FEED:-}" ] || { echo "$SWITCH_GPUI_FEED"; return 0; }
   name=$("$TAILSCALE" status --self --json | plutil -extract Self.DNSName raw -o - -)
   echo "https://${name%.}:$FEED_PORT"
 }

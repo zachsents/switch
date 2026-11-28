@@ -30,12 +30,9 @@ const run = (label: string, brain: string | null) =>
       const proc = Bun.spawn(
         // At background priority: it mustn't starve the machine's work.
         [
-          "/usr/sbin/taskpolicy",
-          "-b",
-          "/usr/bin/lockf",
-          "-t",
-          "3600",
-          lock,
+          ...(process.platform === "darwin"
+            ? ["/usr/sbin/taskpolicy", "-b", "/usr/bin/lockf", "-t", "3600", lock]
+            : ["nice", "-n", "19", "ionice", "-c", "3", "flock", "-w", "3600", lock]),
           "/bin/sh",
           script,
           label,

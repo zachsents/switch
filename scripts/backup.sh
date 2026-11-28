@@ -2,6 +2,11 @@
 # A snapshot of every store in ~/.switch, to the backup disk ~/.switch/deploy.json names:
 #   backups      the folder on it (an encrypted APFS disk image, switch.sparsebundle, is kept there)
 #   backupsSize  the image's cap (default 40g), which old snapshots are dropped to stay under
+# On Linux there's no such image: the snapshots are plain folders in <backups>/snapshots (0700, on
+# the server's own disk beside the live stores), and each new one also goes into an encrypted
+# restic repository, <backups>/switch.restic, whose passphrase is ~/.config/switch/backup.pass
+# (0600; a first run makes both; keep a copy off this machine). The second copy pulls that
+# repository: its files are only ever added and removed, never changed, so any disk keeps them.
 # The image is compacted after each run, giving the disk back what it deleted. A disk too full for
 # the image's room is a failure (snapshots are never dropped for it).
 # The image's passphrase is in the login keychain (ax.switch.backup), never a file or a log; a first
@@ -22,11 +27,11 @@
 # scripts/restore.sh puts a snapshot back.
 set -eu
 S=${SWITCH_DIR:-$HOME/.switch}
-LOGS=$HOME/Library/Logs/switch
+. "$(cd "$(dirname "$0")" && pwd)/os.sh"
 SERVICE=ax.switch.backup
+PASSFILE=$HOME/.config/switch/backup.pass
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$LOGS"
-conf() { plutil -extract "$1" raw -o - "$S/deploy.json" 2>/dev/null || true; }
 expand() { case $1 in "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
 say() { echo "[backup $(date +%H:%M:%S)] $*" >>"$LOGS/backup.log"; }
 fail() {
@@ -45,7 +50,7 @@ SIZE=$(conf backupsSize)
 case $DEST in
   /Volumes/*)
     vol=/Volumes/$(echo "${DEST#/Volumes/}" | cut -d/ -f1)
-    if [ ! -d "$vol" ] || [ "$(stat -f %d "$vol")" = "$(stat -f %d /Volumes)" ]; then
+    if [ ! -d "$vol" ] || [ "$(dev "$vol")" = "$(dev /Volumes)" ]; then
       fail "The backup disk isn't mounted ($vol)"
     fi
     ;;
@@ -65,12 +70,12 @@ if [ "$label" = serve ]; then
     fail "A pull asked for something else"
   fi
   case $cmd in
-    "rsync --server --sender "*" . switch.sparsebundle/") ;;
+    "rsync --server --sender "*" . switch.sparsebundle/" | "rsync --server --sender "*" . switch.restic/") ;;
     *) fail "A pull asked for something else" ;;
   esac
   cd "$DEST"
   # shellcheck disable=SC2086
-  exec /usr/sbin/taskpolicy -b lockf -t 3600 "$S/backup.lock" "$(command -v rsync)" ${cmd#rsync }
+  exec sh -c '. "$1"; shift; background lk 3600 "$@"' sh "$(cd "$(dirname "$0")" && pwd)/os.sh" "$S/backup.lock" "$(command -v rsync)" ${cmd#rsync }
 fi
 [ -f "$brain" ] || [ -f "$brain.zst" ] || fail "No brain at $brain"
 # Deploys come minutes apart: one an hour reaches the image.
@@ -87,7 +92,34 @@ rm -rf "${TMPDIR:-/tmp}"/switch-backup.*
 
 t0=$(date +%s)
 say "$label: start"
+gb() { awk -v k="$1" 'BEGIN { printf "%.1f GB", k / 1048576 }'; }
+# Free space on the disk the backups are on, in KB.
+host_free() { df -k "$DEST" | awk 'NR == 2 { print $4 }'; }
+if [ "$OS" != Darwin ]; then
+  # The snapshots are a plain folder; the cap is backupsSize, against what they hold (each file
+  # once, however many snapshots link it).
+  MNT=$DEST
+  mkdir -p "$MNT/snapshots"
+  chmod 700 "$DEST"
+  attached=''
+  CAP=$(echo "$SIZE" | awk '{ n = $1 + 0; u = tolower(substr($1, length($1))); m = u == "t" ? 1073741824 : u == "g" ? 1048576 : u == "m" ? 1024 : 1; print int(n * m) }')
+  REPO=$DEST/switch.restic
+  command -v restic >/dev/null || fail "restic is needed (apt install restic)"
+  if [ ! -s "$PASSFILE" ]; then
+    [ ! -e "$REPO" ] || fail "No passphrase for $REPO ($PASSFILE)"
+    mkdir -p "$(dirname "$PASSFILE")"
+    (umask 077 && openssl rand -hex 32 >"$PASSFILE") || fail "Can't keep the backup passphrase in $PASSFILE"
+  fi
+  if [ ! -e "$REPO/config" ]; then
+    RESTIC_PASSWORD_FILE=$PASSFILE restic -r "$REPO" init -q >/dev/null || fail "Can't make $REPO"
+    say "made $REPO (encrypted)"
+  fi
+  compact() { :; }
+  used() { du -sk "$MNT/snapshots" | cut -f1; }
+fi
 IMG=$DEST/switch.sparsebundle
+[ "$OS" = Darwin ] || IMG=$REPO
+if [ "$OS" = Darwin ]; then
 pass=$(security find-generic-password -s "$SERVICE" -a backups -w 2>/dev/null || true)
 if [ -z "$pass" ]; then
   [ ! -e "$IMG" ] || fail "No passphrase for $IMG in the keychain ($SERVICE)"
@@ -107,11 +139,8 @@ fi
 MNT=$HOME/Library/Caches/$SERVICE/mnt
 mkdir -p "$MNT"
 attached=''
-gb() { awk -v k="$1" 'BEGIN { printf "%.1f GB", k / 1048576 }'; }
 # The image's cap, as it was made (its Info.plist, readable without the passphrase), in KB.
 CAP=$(($(plutil -extract size raw -o - "$IMG/Info.plist" 2>/dev/null || echo 0) / 1024))
-# Free space on the disk the image is on, in KB: the image's bands grow into it.
-host_free() { df -k "$DEST" | awk 'NR == 2 { print $4 }'; }
 # The image keeps what it deleted (a snapshot, the brain's copy) on the disk until it's compacted,
 # which it can be only while detached: after each run, and before one when the disk is low. The
 # passphrase goes through stdin, as for attaching. A failed compact is logged, and fails nothing.
@@ -133,7 +162,7 @@ compact() {
 }
 # This run's brain copy goes in the image first: with less than that and a margin on the disk, what
 # the image deleted is given back before it opens.
-need=$(($(stat -f %z "$S/brain.db" 2>/dev/null || echo 0) / 1024 + 2097152))
+need=$(($(size "$S/brain.db") / 1024 + 2097152))
 if [ "$(host_free)" -lt "$need" ] && ! mount | grep -qF " on $MNT ("; then
   compact
   [ "$(host_free)" -ge "$need" ] ||
@@ -148,6 +177,7 @@ fi
 # competes with the core for the disk. Turning off a disk image's index needs no admin.
 mdutil -i off "$MNT" >/dev/null 2>&1 || true
 pass=''
+fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/switch-backup.XXXXXX")
 # Detached, if this run attached it, and compacted then; once, at the end or on the way out.
 done_() {
@@ -179,7 +209,7 @@ fi
 # Room left in the image, as a percentage of its cap: what's used in it against the cap, never
 # df's free space, which is no more than the disk under it has left (a full disk is no reason to
 # drop a snapshot: dropping one doesn't give the disk anything back until the image is compacted).
-used() { df -k "$MNT" | awk 'NR == 2 { print $3 }'; }
+[ "$OS" != Darwin ] || used() { df -k "$MNT" | awk 'NR == 2 { print $3 }'; }
 [ "$CAP" -gt 0 ] || CAP=$(df -k "$MNT" | awk 'NR == 2 { print $2 }')
 free_pct() { echo $(((CAP - $(used)) * 100 / CAP)); }
 # Why a step failed, from what its tool said (a file): its "No space left on device" when it said
@@ -189,7 +219,7 @@ why() {
   e=$(grep -m1 'No space left on device' "$1" 2>/dev/null || grep -v '^$' "$1" 2>/dev/null | tail -1)
   case $e in
     *"No space left on device"*)
-      e="$e: the backup image is full, $(gb "$(df -k "$MNT" | awk 'NR == 2 { print $4 }')") left of its $(gb "$CAP")"
+      e="$e: the backup image is full, $(gb "$((CAP - $(used)))") left of its $(gb "$CAP")"
       ;;
   esac
   printf %s "${e:-no reason given}"
@@ -200,10 +230,10 @@ snapshots() { ls -1 "$SNAP" | grep -v '\.partial$' | sort; }
 prune() {
   keep=$work/keep
   snapshots | tail -5 >"$keep"
-  snapshots | sort -r | awk -v d="$(date -v-13d +%Y%m%d)" '{ day = substr($0, 1, 8) } day >= d && !seen[day]++' >>"$keep"
+  snapshots | sort -r | awk -v d="$(days_ago 13)" '{ day = substr($0, 1, 8) } day >= d && !seen[day]++' >>"$keep"
   snapshots | sort -r | while read -r s; do
-    echo "$(date -j -f %Y%m%d "${s%%-*}" +%G%V 2>/dev/null) $s"
-  done | awk -v w="$(date -v-7w +%G%V)" '$1 >= w && !seen[$1]++ { print $2 }' >>"$keep"
+    echo "$(week_of "${s%%-*}") $s"
+  done | awk -v w="$(weeks_ago 7)" '$1 >= w && !seen[$1]++ { print $2 }' >>"$keep"
   snapshots | while read -r s; do
     grep -qxF "$s" "$keep" || { rm -rf "${SNAP:?}/$s"; say "dropped $s"; }
   done
@@ -306,7 +336,11 @@ while read -r d; do
   rel=$(dirname "${d#"$S"/}")
   at=$new/files/$rel
   [ -d "$at" ] || continue
-  find "$d" \( -type f -o -type l \) -print0 | xargs -0 stat -f '%N %z %m' >"$work/list" 2>/dev/null || true
+  if [ "$OS" = Darwin ]; then
+    find "$d" \( -type f -o -type l \) -print0 | xargs -0 stat -f '%N %z %m' >"$work/list" 2>/dev/null || true
+  else
+    find "$d" \( -type f -o -type l \) -printf '%p %s %T@\n' >"$work/list" 2>/dev/null || true
+  fi
   grep -c '' "$work/list" >>"$work/module-files" || true
   sig=$(shasum <"$work/list" | cut -c1-40)
   if [ "$(cat "$at/.node_modules.sig" 2>/dev/null)" = "$sig" ] && [ -f "$at/.node_modules.tar.zst" ]; then
@@ -324,20 +358,7 @@ while read -r d; do
 done <"$work/modules"
 
 # SQLite files: each a consistent copy (VACUUM INTO reads one transaction), the brain compressed.
-# A whole file streamed past the file cache (F_NOCACHE): `uncached in <file>` to stdout, `uncached
-# out <file>` from stdin. A clone or copy of the brain is a file of its own in the cache, so reading
-# one of brain size through it (a backup's compress, its test, a copy) fills memory with a second
-# brain and pushes the live one's pages out, right as a new core warms after a swap: the core's next
-# writes then read them back from a disk the copy saturates, and stalled it for seconds (84 s once).
-# A pipeline of it runs under pipefail, so a reader cut short fails the step, not a short backup.
-uncached() {
-  perl -e 'my ($d, $p) = @ARGV; open(my $f, $d eq "in" ? "<" : ">", $p) or die "$p: $!\n";
-    fcntl($f, 48, 1) or die "F_NOCACHE $p: $!\n"; binmode $f; binmode STDIN; binmode STDOUT;
-    my ($i, $o) = $d eq "in" ? ($f, \*STDOUT) : (\*STDIN, $f);
-    while (1) { my $n = sysread($i, my $b, 1 << 20); defined $n or die "read $p: $!\n"; last if !$n;
-      for (my $at = 0; $at < $n;) { my $w = syswrite($o, $b, $n - $at, $at); defined $w or die "write $p: $!\n"; $at += $w } }
-    close($f) or die "close $p: $!\n";' "$@"
-}
+# A copy of brain size passes the file cache by (uncached, os.sh).
 sq() { printf %s "$1" | sed "s/'/''/g"; }
 prune_dirs -o -name node_modules \) -prune -o -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print >"$work/dbs"
 while read -r db; do
@@ -400,8 +421,25 @@ rm -f "$copy" "$work"/brain.db*
   echo "files $((plain + $(awk '{ n += $1 } END { print n + 0 }' "$work/module-files")))"
 } >"$new/manifest"
 mv "$new" "$SNAP/$name"
+# On Linux, the snapshot into the encrypted repository too, as it is, tagged with its name; the
+# repository keeps what prune keeps.
+if [ "$OS" != Darwin ]; then
+  RESTIC_PASSWORD_FILE=$PASSFILE restic -r "$REPO" backup -q --host switch --tag "$name" -- "$SNAP/$name" >/dev/null 2>"$work/restic.err" ||
+    fail "Can't put the snapshot in $REPO: $(why "$work/restic.err")"
+fi
 date +%s >"$S/backup-last"
 prune
+if [ "$OS" != Darwin ]; then
+  # The repository forgets what the folder dropped, and gives back its room weekly.
+  RESTIC_PASSWORD_FILE=$PASSFILE restic -r "$REPO" snapshots --json 2>/dev/null |
+    python3 -c 'import json, sys
+for s in json.load(sys.stdin): print(s["short_id"], (s.get("tags") or [""])[0])' | while read -r id tag; do
+    [ -d "$SNAP/$tag" ] || RESTIC_PASSWORD_FILE=$PASSFILE restic -r "$REPO" forget -q "$id" >/dev/null 2>&1 || true
+  done
+  if [ "$(date +%u)" = 7 ]; then
+    RESTIC_PASSWORD_FILE=$PASSFILE restic -r "$REPO" prune -q >/dev/null 2>&1 || say "the repository's prune failed"
+  fi
+fi
 say "$label: $name in $(($(date +%s) - t0)) s, $packed node_modules packed; image $(gb "$(used)") used of its $(gb "$CAP")"
 room=$((CAP - $(used)))
 done_

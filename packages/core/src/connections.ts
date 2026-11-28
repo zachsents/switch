@@ -7,10 +7,21 @@
 //   A key the agent gets itself (one a page shows, kept to a file) goes in from that file (`save`),
 //   as Switchboard's browser kept one: only how many characters it held comes back.
 // - session: the extension holds the sign-in itself and adopts it; the ask says which extension.
-// Tokens and keys stay in this Mac's Keychain under the connection's id; the brain holds only who
-// is connected with which scopes. Extensions get short-lived access tokens over loopback.
+// Tokens and keys stay in this Mac's Keychain under the connection's id (on Linux, a file each in
+// <dir>/keychain/<service>, 0600 in a 0700 folder, which the encrypted backups carry); the brain
+// holds only who is connected with which scopes. Extensions get short-lived access tokens over
+// loopback.
 import { createHash, randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import {
@@ -66,7 +77,7 @@ const run = (argv: readonly string[], stdin?: string) => {
 /** `security`'s exit when no item matches (errSecItemNotFound). */
 const NOT_FOUND = 44
 
-const keychain = {
+const macKeychain = {
   read: (service: string, account: string): string | null => {
     const r = run(["security", "find-generic-password", "-s", service, "-a", account, "-w"])
     return r.ok && r.out !== "" ? r.out : null
@@ -110,6 +121,59 @@ const keychain = {
     return out
   },
 }
+
+/**
+ * The Keychain's stand-in on Linux: <dir>/keychain/<service>/<account, hex>, one file an item, 0600
+ * in folders only this user reads, written whole (a temporary file renamed over it).
+ */
+const fileStore = (root: string) => {
+  const folder = (service: string) => path.join(root, Buffer.from(service).toString("hex"))
+  const file = (service: string, account: string) =>
+    path.join(folder(service), Buffer.from(account, "utf-8").toString("hex"))
+  return {
+    read: (service: string, account: string): string | null => {
+      try {
+        const v = readFileSync(file(service, account), "utf-8")
+        return v === "" ? null : v
+      } catch {
+        return null
+      }
+    },
+    write: (account: string, value: string) => {
+      try {
+        mkdirSync(folder(SERVICE), { recursive: true, mode: 0o700 })
+        chmodSync(root, 0o700)
+        const at = file(SERVICE, account)
+        const tmp = `${at}.${process.pid}.tmp`
+        writeFileSync(tmp, value, { mode: 0o600 })
+        renameSync(tmp, at)
+      } catch {
+        throw new Error("Can't write the Keychain")
+      }
+    },
+    has: (account: string): boolean | null => existsSync(file(SERVICE, account)),
+    remove: (account: string) => {
+      rmSync(file(SERVICE, account), { force: true })
+    },
+    removeFrom: (service: string, account: string) => {
+      rmSync(file(service, account), { force: true })
+    },
+    accounts: (service: string): string[] => {
+      try {
+        return readdirSync(folder(service))
+          .filter((n) => /^(?:[0-9a-f]{2})+$/u.test(n))
+          .map((n) => Buffer.from(n, "hex").toString("utf-8"))
+      } catch {
+        return []
+      }
+    },
+  }
+}
+
+/** Where this core keeps its connections' secrets: the Keychain on a Mac, else its files. */
+export const keychainDir = () =>
+  path.join(process.env.SWITCH_DIR ?? path.join(homedir(), ".switch"), "keychain")
+const keychain = process.platform === "darwin" ? macKeychain : fileStore(keychainDir())
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v)

@@ -91,3 +91,4 @@ _boxes = [{"status": "running", "delete_by": _t + 3_600_000}, {"status": "runnin
 assert box.live(_boxes) == _boxes[:1], "check: box reuses only a live box before its delete-by"
 _k = box.ssh({"id": 9, "ip": "192.0.2.1"})
 assert _k[-1] == "root@192.0.2.1" and any(a.endswith("known_hosts-9") for a in _k), "check: box ssh"
+assert box.cloud_init("k", ["x"]).index("export HOME=/root") < box.cloud_init("k", ["x"]).index("( x ) ||"), "check: box setup has HOME"

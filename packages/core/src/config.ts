@@ -60,7 +60,8 @@ const file = Schema.Struct({
   machine: Schema.optionalKey(Schema.String),
   /**
    * What this machine offers beyond its OS ("messages", "lan:printers", "browser"), and where
-   * agent turns go: "always-on" first; "personal", the user's own laptop, last and guarded.
+   * agent turns go: "always-on" first; "personal", the user's own laptop, last and guarded;
+   * "no-turns", a server that keeps the core alone, none (its logins only lent).
    */
   provides: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The machine whose login profile has AI_GATEWAY_API_KEY, read over ssh when it isn't set here. */

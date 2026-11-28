@@ -51,8 +51,9 @@ on_server "mkdir -p ~/Library/Logs/switch && /usr/bin/lockf -k ~/.switch/landing
   git clean -qfd
   exec sh scripts/ship.sh $sha
 ' 2>&1 | tee -a ~/Library/Logs/switch/ship.log"
-# The server prints DEPLOYED or FAILED; tee hides ssh's status, so read what it left.
-live=$(on_server 'basename "$(readlink ~/.switch/current)"')
+# The server prints DEPLOYED or FAILED; tee hides ssh's status, so read what it left: the release
+# its core runs, there or on the core's own machine (ship.sh live).
+live=$(on_server 'sh ~/.switch/src/scripts/ship.sh live')
 if [ "$live" != "$sha" ]; then
   echo "[deploy] $sha not live on $mini (live: $live)"
   exit 1

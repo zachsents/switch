@@ -6,14 +6,17 @@
 #   restore.sh <folder> [snapshot]   the newest snapshot unless one is named; <folder> must be new
 #                                    or empty, never a live ~/.switch
 # The image is <backups>/switch.sparsebundle (deploy.json's `backups`, or $SWITCH_BACKUPS), opened
-# with the passphrase in the login keychain (ax.switch.backup), else hdiutil asks for it. The core started is
+# with the passphrase in the login keychain (ax.switch.backup), else hdiutil asks for it. A Linux
+# core's backups are <backups>/snapshots, read as they are, or else its restic repository,
+# <backups>/switch.restic (a pulled copy, on any machine with restic), its passphrase from
+# ~/.config/switch/backup.pass or $RESTIC_PASSWORD_FILE, else restic asks. The core started is
 # $SWITCH_BIN, else the live release's; $SWITCH_BIN=none skips it.
 # On a new machine: restore into ~/.switch (the folder must not exist yet), then deploy, which
 # builds the releases.
 set -eu
 S=$HOME/.switch
+. "$(cd "$(dirname "$0")" && pwd)/os.sh"
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-conf() { plutil -extract "$1" raw -o - "$S/deploy.json" 2>/dev/null || true; }
 expand() { case $1 in "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
 say() { echo "[restore $(date +%H:%M:%S)] $*"; }
 die() {
@@ -29,12 +32,31 @@ to=$(cd "$to" && pwd)
 dest=${SWITCH_BACKUPS:-$(expand "$(conf backups)")}
 [ -n "$dest" ] || die "No backups folder: set deploy.json's backups or SWITCH_BACKUPS"
 IMG=$dest/switch.sparsebundle
-[ -d "$IMG" ] || die "No image at $IMG"
 rsync --version | grep -q '^rsync  *version 3' || die "rsync 3 is needed (brew install rsync)"
+attached='' unpacked=''
+if [ -d "$dest/snapshots" ] && [ ! -d "$IMG" ]; then
+  # A Linux core's own folder of snapshots.
+  MNT=$dest
+elif [ -d "$dest/switch.restic" ] && [ ! -d "$IMG" ]; then
+  # Its repository: the snapshot asked for (by its name, its tag there), else the newest, unpacked
+  # beside the folder it goes to.
+  command -v restic >/dev/null || die "restic is needed to open $dest/switch.restic"
+  [ -n "${RESTIC_PASSWORD_FILE:-}" ] || [ ! -s "$HOME/.config/switch/backup.pass" ] || export RESTIC_PASSWORD_FILE=$HOME/.config/switch/backup.pass
+  unpacked=$(mktemp -d "$(dirname "$to")/.switch-restore.XXXXXX")
+  if [ -n "$want" ]; then
+    restic -r "$dest/switch.restic" restore latest --tag "$want" --target "$unpacked" -q || die "Can't take $want out of $dest/switch.restic"
+  else
+    restic -r "$dest/switch.restic" restore latest --target "$unpacked" -q || die "Can't take a snapshot out of $dest/switch.restic"
+  fi
+  found=$(find "$unpacked" -name manifest -path '*/snapshots/*' | head -1)
+  [ -n "$found" ] || die "No snapshot in $dest/switch.restic"
+  MNT=$(dirname "$(dirname "$(dirname "$found")")")
+  want=$(basename "$(dirname "$found")")
+else
+[ -d "$IMG" ] || die "No image at $IMG"
 
 # backup.sh's mount when it's open (hold backup.lock to keep it so); else a read-only one of ours.
 MNT=$HOME/Library/Caches/ax.switch.backup/mnt
-attached=''
 if ! mount | grep -qF " on $MNT ("; then
   MNT=$(mktemp -d "${TMPDIR:-/tmp}/switch-restore.XXXXXX")
   if security find-generic-password -s ax.switch.backup -a backups >/dev/null 2>&1; then
@@ -46,9 +68,11 @@ if ! mount | grep -qF " on $MNT ("; then
   fi
   attached=1
 fi
+fi
 core=''
 cleanup() {
   [ -z "$core" ] || kill "$core" 2>/dev/null || true
+  [ -z "$unpacked" ] || rm -rf "$unpacked"
   [ -z "$attached" ] || hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -quiet -force "$MNT" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -102,9 +126,9 @@ for f in deploy.json config.json; do
   [ -f "$to/$f" ] || { say "WRONG $f: missing"; bad=1; }
 done
 
-bin=${SWITCH_BIN:-$S/current/Switch Host.app/Contents/MacOS/switch}
+if [ "$OS" = Darwin ]; then bin=${SWITCH_BIN:-$S/current/Switch Host.app/Contents/MacOS/switch}; else bin=${SWITCH_BIN:-$S/current/switch}; fi
 if [ "$bin" != none ] && [ -x "$bin" ]; then
-  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  port=$(free_port)
   envs="SWITCH_DIR=$to SWITCH_CONFIG=$to/config.json SWITCH_BRAIN=$to/brain.db SWITCH_HOST=127.0.0.1 SWITCH_PORT=$port CLOCK_STATE=$to/clock.json SWITCH_CANARY=true"
   # shellcheck disable=SC2086
   env $envs "$bin" prepare >"$to/.restore-core.log" 2>&1 || { tail -3 "$to/.restore-core.log"; die "The brain wouldn't prepare"; }
@@ -112,6 +136,7 @@ if [ "$bin" != none ] && [ -x "$bin" ]; then
   env $envs "$bin" >>"$to/.restore-core.log" 2>&1 &
   core=$!
   health=$(dirname "$(dirname "$(dirname "$(dirname "$bin")")")")/health.ts
+  [ -f "$health" ] || health=$(dirname "$bin")/health.ts
   [ -f "$health" ] || health=$S/current/health.ts
   served=1
   for _ in $(seq 150); do

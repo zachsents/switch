@@ -12,6 +12,10 @@ const SEEN_MAX = 3_500_000
 /** Its long side, at most: what models read before they scale it down themselves. */
 const SIDE = 1568
 const SIPS = "/usr/bin/sips"
+/** Elsewhere, ImageMagick's, when it's installed. */
+const MAGICK = ["/usr/bin/magick", "/usr/bin/convert", "/usr/local/bin/magick"].find((p) =>
+  existsSync(p),
+)
 
 const megabytes = (n: number) =>
   n < 1_000_000 ? `${Math.max(1, Math.round(n / 1000))} KB` : `${(n / 1_000_000).toFixed(1)} MB`
@@ -23,11 +27,14 @@ const seen = (at: string, a: Attachment) =>
     if (existsSync(scaled)) {
       return { path: scaled, type: "image/jpeg" }
     }
-    if (existsSync(SIPS) && a.type !== "image/gif") {
-      const proc = Bun.spawn(
-        [SIPS, "-Z", String(SIDE), "-s", "format", "jpeg", at, "--out", scaled],
-        { stdout: "ignore", stderr: "ignore" },
-      )
+    let scale: string[] | null = null
+    if (existsSync(SIPS)) {
+      scale = [SIPS, "-Z", String(SIDE), "-s", "format", "jpeg", at, "--out", scaled]
+    } else if (MAGICK !== undefined) {
+      scale = [MAGICK, `${at}[0]`, "-auto-orient", "-resize", `${SIDE}x${SIDE}>`, `jpeg:${scaled}`]
+    }
+    if (scale !== null && a.type !== "image/gif") {
+      const proc = Bun.spawn(scale, { stdout: "ignore", stderr: "ignore" })
       if ((await proc.exited) === 0 && existsSync(scaled)) {
         return { path: scaled, type: "image/jpeg" }
       }

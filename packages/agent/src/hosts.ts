@@ -46,7 +46,10 @@ export interface Machine {
   readonly home: string
   /** Its host's state folder, where accounts lent to it keep their homes: `~/.switch` when unset. */
   readonly dir?: string
-  /** What it provides: its OS, and "always-on", "laptop" or "personal" for where turns go. */
+  /**
+   * What it provides: its OS, and "always-on", "laptop" or "personal" for where turns go ("no-turns":
+   * none).
+   */
   readonly provides: readonly string[]
   /** The environment its processes start from. */
   readonly env: Readonly<Record<string, string>>
@@ -441,6 +444,9 @@ const load = (s: HostState) => s.used + s.running * TURN_SHARE
 const windowsKey = (ws: readonly Window[]) =>
   ws.map((w) => `${w.name}:${Math.round(w.used * 100)}:${w.resetsAt}`).join(" ")
 
+/** A machine that takes no turns, its logins only lent: a server that keeps the core alone. */
+export const NO_TURNS = "no-turns"
+
 /** Where a machine stands for turns, best first (Switchboard's place.rs). */
 const rank = (m: Machine) => {
   if (m.provides.includes("always-on")) {
@@ -537,6 +543,7 @@ const makeHosts = (initial: readonly Host[]): HostsShape => {
         const want = wanted === undefined ? undefined : account(wanted)
         const able = all().filter(
           (h) =>
+            !h.machine.provides.includes(NO_TURNS) &&
             (provider === undefined || providerOf(h) === provider) &&
             (want === undefined || accountOfHost(h) === want) &&
             (eligible === undefined || eligible.has(h.id) || eligible.has(accountOfHost(h))),

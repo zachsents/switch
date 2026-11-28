@@ -10,10 +10,34 @@ in `<angle brackets>` come from local config, never this repo.
 | workstation | the extension host, reporting to the server | `ax.switch.host` | `/Applications/Switch Host.app` |
 | workstation | the desktop app, as `<appId>` | — | `/Applications/Switchboard.app` |
 
+The core can run on a Linux machine instead (an always-on box that does nothing else), the server
+Mac still building and signing every release. deploy.json's `core` names it by ssh target
+(`user@host`); then:
+
+| Where | What | Unit | Lives in |
+| --- | --- | --- | --- |
+| core machine (Linux) | the core, port 4871, its own host inside | `switch-core.service` (systemd, as the user; linger on) | `~/.switch/current/switch`, `~/.switch` |
+| core machine | both update feeds, ports 8443 and 8446 (Tailscale Serve) | `switch-updates.service`, `switch-updates-gpui.service` | `~/.switch/updates`, `~/.switch/updates-gpui` |
+| server (Mac) | the repository, the build, signing and notarizing, the desktop app's lane, a host | `ax.switch.host` | `~/.switch/repo.git`, `~/.switch/releases` |
+| server | the old address, forwarded to the core machine (scripts/forward.ts) | `ax.switch.forward` | — |
+
+A ship builds on the server as always, sends the release to the core machine, and that release's
+own `ship.sh` runs the canary, the swap and the watch there (`ship.sh canary|unit|swap|units|healthy|after`),
+the pressure counted on the server, where the landings are. Its logs are
+`~/.local/state/switch/logs`. There, connections' secrets are files in `~/.switch/keychain` (0600,
+0700) instead of the Keychain, and the core's gateway key is `~/.switch/core.env` (0600). The core
+machine provides `no-turns` in its config.json, so turns stay on the Macs, its logins lent to them.
+Its backups are plain snapshots in `<backups>/snapshots` beside an encrypted restic repository,
+`<backups>/switch.restic` (passphrase `~/.config/switch/backup.pass`; keep a copy off the box), which
+the server pulls onto its backup disk (`backup-pull.sh install <user@core>`, a launchd job on a
+Mac), and `restore.sh` reads either. It needs sqlite3, zstd, rsync, restic, ImageMagick, bun, and
+`sudo tailscale set --operator=$USER`.
+
 `~/.switch/deploy.json` on the server holds the instance: `server` (its ssh and tailnet name),
 `identity` (the Developer ID), `team`, `hostId`, `appId`, `keychain`, `keychainPassFile`,
 `notaryKey`, `notaryKeyId`, `notaryIssuer`, `backups` (a folder on the backup disk) and
-`backupsSize` (the backup image's cap, default `40g`). On the workstation it holds `server`.
+`backupsSize` (the backup image's cap, default `40g`), and `core` when the core runs on another
+machine. On the workstation it holds `server`; on a Linux core machine, `backups` and `backupsSize`.
 
 Backups: every store (the brain, blobs, extensions' folders, every other database, `logins/`, the
 keys and the config) goes to an encrypted image, `<backups>/switch.sparsebundle`,
