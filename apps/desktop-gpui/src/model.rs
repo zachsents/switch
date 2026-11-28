@@ -486,9 +486,10 @@ impl Model {
         if !post.reply_to.is_empty() {
             e.view = Some(json!({ "replyTo": post.reply_to.iter().map(|r| r.to_kept()).collect::<Vec<_>>() }));
         }
+        // One that doesn't read is kept as "Not sent", never sent: its words stay to take back.
         if let Err(why) = crate::checks::checked("message.post", &e.payload) {
             log::warn!("a message didn't go: {why}");
-            return;
+            e.rejected = Some(why);
         }
         outbox::keep(e);
         self.follow_outbox();

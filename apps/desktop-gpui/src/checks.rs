@@ -28,7 +28,7 @@ pub fn checked(command: &str, p: &Value) -> Result<(), String> {
             if !optional(p.get("replyTo"), &|r| {
                 r.as_array().is_some_and(|r| {
                     r.iter().all(|x| match x.get("kind").and_then(Value::as_str) {
-                        Some("quote") => number(x.get("seq")) && string(x.get("text")) && optional(x.get("reply"), &Value::is_string),
+                        Some("quote" | "message") => number(x.get("seq")) && string(x.get("text")) && optional(x.get("reply"), &Value::is_string),
                         Some("ask") => string(x.get("id")) && optional(x.get("reply"), &Value::is_string),
                         _ => false,
                     })

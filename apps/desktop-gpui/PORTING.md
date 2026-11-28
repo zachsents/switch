@@ -430,6 +430,11 @@ file became; what differs on purpose:
   composer while it's up, else the page's) as a paste's do, their bytes down from the blobs and
   already up; at no Mac, the one used last takes them into Home's. Checked on the mini in a quiet
   copy against a scratch core.
+- Published pages (`links.rs`, new here): a link to one (`<base>/p/<token>`, the brain's publish)
+  or `switchboard://page/<id>` opens it in the reader's window (the reader extension's `open`);
+  a blank page (the agent's own HTML, its answer's `X-Switch-Page: blank`), an address that isn't
+  a page, or one the reader can't read, in the browser. A right-click on one: Open in Reader, Open
+  in Browser, Copy Link.
 - A quiet copy (`SWITCH_GPUI_QUIET=1`) writes nothing to the core (socket, HTTP, uploads, sign-ins,
   credentials), keeps its data and reports in a folder of its own (`switch-gpui-quiet-<pid>`, swept
   once it's gone) and sends no reports. The app's reports are its own file, never the Electrobun

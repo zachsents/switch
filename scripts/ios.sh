@@ -14,7 +14,8 @@
 #   SWITCH_CORE / ios_core                     a core to pair with on first launch, ws://host:port (else the pair screen asks)
 #   SWITCHBOARD_IOS_DEVICE                     which paired iPhone, when several
 #   SWITCHBOARD_ASC_KEY_ID / ios_asc_key_id, SWITCHBOARD_ASC_ISSUER_ID / ios_asc_issuer_id
-#                                              the App Store Connect key, for --testflight
+#                                              the App Store Connect key, for --testflight (and, when
+#                                              here, what signs an install's targets)
 set -eu
 # One iOS build at a time on a Mac, each at background priority (it and all it starts), so a
 # build never starves a core serving beside it: a second waits for the first.
@@ -291,9 +292,16 @@ if [ "$mode" = testflight ]; then testflight; exit; fi
 echo "Building the iPhone app for team $team as $bundle_id"
 [ -n "$core" ] || echo "No core given (SWITCH_CORE or ios_core): the app asks for one when it opens." >&2
 (cd "$project" && xcodegen -q)
+# With the App Store Connect key here, Xcode makes what a target's signing lacks (a new
+# extension's app id, its development profile) with the key, as for TestFlight, so a Mac with
+# no Apple account signed in to Xcode signs every target too.
+set --
+if [ -n "$key_id" ] && [ -n "$issuer" ] && [ -f "$key" ]; then
+  set -- -authenticationKeyPath "$key" -authenticationKeyID "$key_id" -authenticationKeyIssuerID "$issuer"
+fi
 xcodebuild -project "$project/Switchboard.xcodeproj" -scheme Switchboard -configuration Release \
   -destination 'generic/platform=iOS' -derivedDataPath "$build" -allowProvisioningUpdates -skipPackagePluginValidation -skipMacroValidation \
-  -clonedSourcePackagesDirPath "$HOME/Library/Caches/Switch/xcode/SourcePackages" \
+  -clonedSourcePackagesDirPath "$HOME/Library/Caches/Switch/xcode/SourcePackages" "$@" \
   DEVELOPMENT_TEAM="$team" APP_BUNDLE_ID="$bundle_id" SWITCH_CORE="$core" build -quiet
 app=$build/Build/Products/Release-iphoneos/Switchboard.app
 

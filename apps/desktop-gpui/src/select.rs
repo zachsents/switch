@@ -157,7 +157,13 @@ pub struct SelText {
     /// the middle of its first line went, by name, once placed.
     spots: Vec<(String, usize)>,
     spotted: Option<Spots>,
+    /// A right-click on a link: given its number in `links`, whether it showed a menu of its own
+    /// (the click then goes no further); the ranges as given, kept for it.
+    link_menu: Option<(Vec<Range<usize>>, LinkMenu)>,
 }
+
+/// What a right-click on a link does: given its number, whether it showed a menu.
+pub type LinkMenu = Rc<dyn Fn(usize, &mut Window, &mut App) -> bool>;
 
 /// Where named passages went: the middle of each one's first line, in the window.
 pub type Spots = Rc<std::cell::RefCell<std::collections::HashMap<String, gpui::Pixels>>>;
@@ -195,6 +201,7 @@ impl SelText {
             inner: None,
             spots: vec![],
             spotted: None,
+            link_menu: None,
         }
     }
 
@@ -313,6 +320,12 @@ impl SelText {
         self
     }
 
+    /// What a right-click on one of the links does (`links` first).
+    pub fn link_menu(mut self, menu: LinkMenu) -> Self {
+        self.link_menu = Some((self.links.clone(), menu));
+        self
+    }
+
     /// The SDK's run for these words, as laid out.
     fn build(&mut self) -> SelectableText<Key> {
         let mut text = SelectableText::new(self.id.clone(), self.key, &self.sel, self.words.clone())
@@ -376,6 +389,19 @@ impl Element for SelText {
     fn paint(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, state: &mut (), hitbox: &mut Hitbox, window: &mut Window, cx: &mut App) {
         let inner = self.inner.as_mut().expect("laid out before paint");
         inner.paint(id, inspector, bounds, state, hitbox, window, cx);
+        if let Some((links, menu)) = self.link_menu.clone() {
+            let (hit, layout) = (hitbox.clone(), inner.layout().clone());
+            window.on_mouse_event(move |e: &gpui::MouseDownEvent, phase, window, cx| {
+                let right = e.button == gpui::MouseButton::Right || e.button == gpui::MouseButton::Left && e.modifiers.control;
+                if phase != gpui::DispatchPhase::Bubble || !right || !hit.is_hovered(window) {
+                    return;
+                }
+                let Some(n) = layout.index_for_position(e.position).ok().and_then(|ix| links.iter().position(|r| r.contains(&ix))) else { return };
+                if menu(n, window, cx) {
+                    cx.stop_propagation();
+                }
+            });
+        }
         // Each formula over its room, on the words' baseline.
         let layout = inner.layout().clone();
         let line = layout.line_height();

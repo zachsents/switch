@@ -231,6 +231,53 @@ async function createTab(session, group) {
 let canceledAt = 0
 const CANCEL_HOLDS_MS = 10 * 60_000
 
+/**
+ * A page of the browser's own (a new tab, settings, another extension's page), which Chrome lets no
+ * extension's debugger into ("Cannot access a chrome:// URL"): never a page an agent opened.
+ */
+function browserPage(tab) {
+  const url = tab.url || tab.pendingUrl || ""
+  return /^(chrome|chrome-extension|chrome-search|chrome-untrusted|devtools|edge|brave|opera|vivaldi|view-source):/.test(
+    url,
+  )
+}
+
+/**
+ * The session's tab when it's one it can drive. One on a page of the browser's own isn't its tab
+ * any more (the person opened a new tab from it, and the session followed): it's left open where it
+ * is, out of the agents' group, and the session goes back to the tab it came through, else to none,
+ * so a new one opens. A tab the person gave it (adopted) stays theirs: the call fails, saying so.
+ */
+async function drivable(session, meta) {
+  const tab = await chrome.tabs.get(meta.tabId).catch(() => null)
+  if (!tab || !browserPage(tab)) return meta
+  if (meta.adopted)
+    throw new Error(
+      `tab ${tab.id} is on ${tab.url || tab.pendingUrl}, a page of the browser's own that it lets no extension drive: attach another tab, or navigate this one in Chrome first`,
+    )
+  if (tab.groupId !== NO_GROUP) quietly(ungroupTab(tab.id))
+  let back = null
+  for (const id of [...meta.others].reverse()) {
+    const other = await chrome.tabs.get(id).catch(() => null)
+    if (other && !browserPage(other)) {
+      back = other.id
+      break
+    }
+  }
+  if (back == null) {
+    await setSession(session, null)
+    if (meta.handBack != null && attached.has(meta.handBack)) {
+      attached.delete(meta.handBack)
+      await chrome.debugger.detach({ tabId: meta.handBack }).catch(() => undefined)
+    }
+    return null
+  }
+  const next = { ...meta, tabId: back, others: meta.others.filter((id) => id !== back) }
+  await setSession(session, next)
+  if (!next.adopted) quietly(groupTab(back, next.group ?? GROUP))
+  return next
+}
+
 /** The session's tab with the debugger attached, opened in the background if it has none. */
 async function ensure(session, group) {
   if (Date.now() - canceledAt < CANCEL_HOLDS_MS)
@@ -238,6 +285,7 @@ async function ensure(session, group) {
       "the person pressed Cancel on Chrome's debugging bar a few minutes ago, which stops your tabs: ask them before you drive this Chrome again, then call with person_asked (their words, and when)",
     )
   let meta = await liveSession(session)
+  if (meta && !attached.has(meta.tabId)) meta = await drivable(session, meta)
   if (!meta) {
     if (!creating.has(session))
       creating.set(
@@ -543,6 +591,12 @@ async function handOff(tab) {
   const session = Object.keys(sessions).find((name) => sessions[name].tabId === tab.openerTabId)
   if (session == null) return
   const meta = sessions[session]
+  // A new tab the person opened while a session's tab was in front (⌘T names it the opener, and
+  // puts it in the tab's group) isn't the page's: the session stays, and the tab is theirs.
+  if (browserPage(tab)) {
+    if (!meta.adopted) quietly(ungroupTab(tab.id))
+    return
+  }
   await setSession(session, {
     ...meta,
     tabId: tab.id,
@@ -591,12 +645,15 @@ async function personHere() {
 async function tidy() {
   const sessions = await getSessions()
   const now = Date.now()
-  for (const [name, meta] of Object.entries(sessions)) {
+  for (let [name, meta] of Object.entries(sessions)) {
     if (!(await tabExists(meta.tabId))) {
       // Its tab is gone (closed, or a popup that closed itself): the tabs it came through go with it.
       await release(name)
       continue
     }
+    // A session that followed the person's new tab lets go of it, never closing it.
+    if (!meta.adopted) meta = await drivable(name, meta).catch(() => meta)
+    if (!meta) continue
     const idle = now - (used.get(name) ?? started)
     if (attached.has(meta.tabId) && idle > DETACH_AFTER_MS) {
       attached.delete(meta.tabId)
@@ -628,6 +685,11 @@ async function sweep(sessions, now) {
   const since = Object.fromEntries(left.map((tab) => [tab.id, strays[tab.id] ?? now]))
   await chrome.storage.local.set({ strays: since })
   for (const tab of left) {
+    // A page of the browser's own in the group is the person's (a new tab opened from an agent's): never closed.
+    if (browserPage(tab)) {
+      await ungroupTab(tab.id)
+      continue
+    }
     if (now - since[tab.id] < CLOSE_AFTER_MS) continue
     const window = await chrome.windows.get(tab.windowId).catch(() => null)
     if (tab.active && window?.focused && (await personHere())) await ungroupTab(tab.id)

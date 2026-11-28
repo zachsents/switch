@@ -192,6 +192,9 @@ fn links(cites: bool) -> OnLink {
             // A footnote's own anchor: the words are all in the bubble.
         } else if url.starts_with("switchboard:") {
             crate::links::follow_link(url, cx);
+        } else if crate::links::page_token(url).is_some() {
+            // A page the brain published: in the reader.
+            crate::links::open_page(url.to_string(), cx);
         } else if url.split_once(':').is_some_and(|(scheme, _)| matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "mailto")) {
             // Only the web and mail go to the system, as the desktop lets them (`bun/index.ts`).
             cx.open_url(url);

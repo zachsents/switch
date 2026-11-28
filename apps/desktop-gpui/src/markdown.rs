@@ -883,7 +883,12 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
     let on_link = cx.on_link.clone();
     let on_mark = cx.reading.as_ref().map(|r| r.on_mark.clone());
     let copies = acts.iter().map(|a| matches!(a, Act::Copy(_))).collect();
-    text.looks(copies, l.hover).links(links, move |i, window, cx| match acts.get(i) {
+    // A published page's link opens in the reader: its own menu, for the browser.
+    let pages: Vec<Option<String>> = acts.iter().map(|a| match a {
+        Act::Link(url) if crate::links::page_token(url).is_some() => Some(url.clone()),
+        _ => None,
+    }).collect();
+    let text = text.looks(copies, l.hover).links(links, move |i, window, cx| match acts.get(i) {
         Some(Act::Link(url)) => on_link(url, window, cx),
         Some(Act::Copy(words)) => cx.write_to_clipboard(ClipboardItem::new_string(words.clone())),
         Some(Act::Mark(id)) => {
@@ -892,7 +897,17 @@ fn words(w: &Inline, n: &mut u32, cx: &Ctx, l: &Look, bold_all: bool, color: gpu
             }
         }
         None => {}
-    })
+    });
+    if pages.iter().all(Option::is_none) {
+        return text.into_any_element();
+    }
+    text.link_menu(Rc::new(move |i, window, cx| match pages.get(i).cloned().flatten() {
+        Some(url) => {
+            crate::links::page_menu(&url, window, cx);
+            true
+        }
+        None => false,
+    }))
     .into_any_element()
 }
 

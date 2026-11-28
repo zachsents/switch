@@ -271,6 +271,19 @@ impl Net {
         })
     }
 
+    /// What a published page is, as its answer says (`X-Switch-Page`: `document`, `surface`,
+    /// `article` or `blank`); none for an address that isn't one, or can't be reached.
+    pub fn page_kind(&self, url: String) -> tokio::task::JoinHandle<Option<String>> {
+        let http = self.http.clone();
+        self.rt.spawn(async move {
+            let res = http.get(&url).send().await.ok()?;
+            if !res.status().is_success() {
+                return None;
+            }
+            res.headers().get("x-switch-page")?.to_str().ok().map(str::to_string)
+        })
+    }
+
     /// The core's address, once it's known.
     pub fn core(&self) -> Option<String> {
         self.auth().map(|a| a.core)

@@ -205,7 +205,12 @@ export const pagesRoute = Effect.gen(function* routing() {
     if (what === "") {
       const html = await pageHtml(row, body.value, token, false)
       const policy = body.value.kind === "html" ? PAGE_POLICY : STATIC_POLICY
-      return answer(200, "text/html; charset=utf-8", html, { "Content-Security-Policy": policy })
+      // What it is, for a client choosing where to open it (a reader, or the browser).
+      const kind = body.value.kind === "html" ? body.value.shell : body.value.kind
+      return answer(200, "text/html; charset=utf-8", html, {
+        "Content-Security-Policy": policy,
+        "X-Switch-Page": kind,
+      })
     }
     if (what === "calendar.ics") {
       return calendar(row, token)

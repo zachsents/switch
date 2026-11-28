@@ -148,6 +148,7 @@ fn main() {
         terminal::init(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         menu::init(cx);
+        links::init(cx);
         cx.set_menus(menu::build(&menu::model_of(cx)));
         cx.spawn(async move |cx| {
             use futures::StreamExt;
