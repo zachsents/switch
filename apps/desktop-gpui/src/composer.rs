@@ -57,6 +57,19 @@ pub fn window(cx: &App) -> Option<AnyWindowHandle> {
     cx.try_global::<Composer>().and_then(|c| c.open.as_ref().map(|(w, _)| *w))
 }
 
+/// Files shared from the iPhone into it while it's up (shared.rs); given back when it isn't.
+pub fn take_shared(chosen: Vec<crate::files::Chosen>, cx: &mut App) -> Result<(), Vec<crate::files::Chosen>> {
+    let Some((w, v)) = cx.try_global::<Composer>().and_then(|c| c.open.clone()) else { return Err(chosen) };
+    let Some(v) = v.upgrade() else { return Err(chosen) };
+    let b = v.read(cx).chatbox.clone();
+    let mut held = Some(chosen);
+    let took = w.update(cx, |_, window, cx| {
+        let files = held.take().unwrap_or_default();
+        b.update(cx, |b, cx| b.take_shared(files, window, cx));
+    });
+    if took.is_ok() { Ok(()) } else { Err(held.unwrap_or_default()) }
+}
+
 /// Opens it (aimed at `aim`, a space), or closes it if it's up; aimed while it's up, it takes the aim.
 pub fn toggle(aim: Option<String>, cx: &mut App) {
     if let Some((w, v)) = cx.try_global::<Composer>().and_then(|c| c.open.clone()) {

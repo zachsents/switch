@@ -407,6 +407,18 @@ impl ChatBox {
         cx.notify();
     }
 
+    /// Files shared from the iPhone, up already (shared.rs): they join its draft as a paste's do,
+    /// after what it has kept, the cursor left where it is.
+    pub fn take_shared(&mut self, chosen: Vec<Chosen>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.opts.attach || chosen.is_empty() {
+            return;
+        }
+        self.seed(window, cx);
+        self.files.extend(chosen);
+        self.keep(cx);
+        cx.notify();
+    }
+
     /// The system's file panel, its files to this box.
     pub fn pick_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
@@ -757,6 +769,8 @@ impl Render for ChatBox {
             .map(|(i, (r, f))| {
                 let head: AnyElement = match r {
                     Reply::Quote { text, .. } => div().min_w_0().flex_1().border_l_2().border_color(l.ink3).pl(u(8.)).truncate().child(SharedString::from(quoted(text))).into_any_element(),
+                    // Its opening and its ending both in view: cut in the middle, where its own … is.
+                    Reply::Message { text, .. } => div().min_w_0().flex_1().border_l_2().border_color(l.ink3).pl(u(8.)).truncate().text_ellipsis_middle().child(SharedString::from(text.clone())).into_any_element(),
                     Reply::Ask { id, title, .. } => {
                         let (name, space) = ask_of(id).unwrap_or_else(|| (title.clone().unwrap_or_default(), String::new()));
                         div()

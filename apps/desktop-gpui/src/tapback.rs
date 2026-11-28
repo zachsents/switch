@@ -2,7 +2,7 @@
 //! `emoji-search.tsx`, `emoji-find.ts`): the six reactions, each in its own color as iMessage draws
 //! them now, or any emoji; their badges on a bubble's top corner; and the menu to choose one from,
 //! over the bubble (a double-click off its words or a right-click opens it, for the whole message)
-//! or over words selected in it (with Reply first, and the reaction on those words alone). Under
+//! or over words selected in it (the reaction on those words alone), Reply first in both. Under
 //! the six, a search finds emoji by meaning; what it finds takes the six's place until it's cleared.
 //! Arrows move through them, Enter picks the one lit; Esc clears what's typed, then closes it.
 
@@ -166,7 +166,7 @@ const MOST: usize = 6;
 pub struct Target {
     pub seq: u64,
     pub space: String,
-    /// The words chosen, for the words' menu (it has Reply).
+    /// The words chosen, for the words' menu.
     pub quote: Option<String>,
     /// The user's reaction there now: choosing it again takes it off.
     pub mine: Option<String>,
@@ -278,12 +278,16 @@ impl ReactMenu {
         self.shut(true, window, cx);
     }
 
-    /// Words chosen go to the box as what it replies to.
+    /// The words chosen, or the message whole, go to the box as what it replies to.
     fn reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = self.target.clone()
-            && let Some(q) = t.quote.clone()
-        {
-            crate::replying::attach(&t.space, Reply::Quote { seq: t.seq, text: q, reply: None }, cx);
+        if let Some(t) = self.target.clone() {
+            let to = match t.quote {
+                Some(q) => Some(Reply::Quote { seq: t.seq, text: q, reply: None }),
+                None => model(cx).read(cx).brain.find_line(t.seq).map(|l| Reply::whole(&l)),
+            };
+            if let Some(r) = to {
+                crate::replying::attach(&t.space, r, cx);
+            }
         }
         self.shut(true, window, cx);
     }
@@ -458,17 +462,16 @@ impl Render for ReactMenu {
             .items_start()
             .gap(px(2.))
             .p(px(4.))
-            .when(words, |d| {
-                d.child(
-                    kit::button("words-reply", Btn::Flat, true, &l)
-                        .h(px(32.))
-                        .rounded_full()
-                        .px(px(10.))
-                        .text_color(l.ink)
-                        .on_click(cx.listener(|m, _, window, cx| m.reply(window, cx)))
-                        .aria_label("Reply").child("Reply"),
-                )
-            })
+            .child(
+                kit::button("menu-reply", Btn::Flat, true, &l)
+                    .h(px(32.))
+                    .rounded_full()
+                    .px(px(10.))
+                    .text_color(l.ink)
+                    .on_click(cx.listener(|m, _, window, cx| m.reply(window, cx)))
+                    .aria_label("Reply")
+                    .child("Reply"),
+            )
             .child(search);
         let body = kit::float(&l)
             .id("react-menu")

@@ -322,7 +322,7 @@ SEARCH_READER = r"""(d, url, raw, txt) => {
       out.push({order, date, asin, title, image});
     }
   }
-  const nextA = [...d.querySelectorAll('.a-pagination a, a')].find(x => /^\s*Next/.test(txt(x)) && /startIndex=/.test(x.getAttribute('href') || ''));
+  const nextA = [...d.querySelectorAll('.a-pagination li.a-last a, .a-pagination a, a')].find(x => /^\s*Next/.test(txt(x)) && /[?&](?:page|startIndex)=/.test(x.getAttribute('href') || ''));
   return {count: +((txt(d.body).match(/(\d+) orders? matching/) || [])[1] || out.length), purchases: out, next: nextA ? nextA.getAttribute('href') : null};
 }"""
 
@@ -942,18 +942,25 @@ def hold(session, hours):
 # Order history.
 
 
+SEARCH_PAGES = 25
+"""The most pages of Amazon's order search one search reads (ten orders a page)."""
+
+
 def search_history(session, words, limit=30):
-    """Amazon's own search of every order, newest first: [{order, date, asin, title, image}]."""
+    """Amazon's own search of every order, newest first, page after page until limit purchases (None: all of them,
+    up to SEARCH_PAGES pages): ([{order, date, asin, title, image}], how many orders Amazon says match)."""
     path = "/your-orders/search?search=" + re.sub(r"\s+", "+", "".join(c if c.isalnum() or c in " -" else " " for c in words).strip())
-    found, count = [], 0
-    for _ in range(4):
+    found, count, seen = [], 0, set()
+    for _ in range(SEARCH_PAGES):
+        seen.add(path)
         page = read(session, SEARCH_READER, path, "search")
         found += page["purchases"]
         count = max(count, page.get("count") or 0)
-        if len(found) >= limit or not page.get("next"):
+        nxt = page.get("next")
+        if (limit and len(found) >= limit) or not nxt or nxt in seen or not page["purchases"]:
             break
-        path = page["next"]
-    return found[:limit], count
+        path = nxt
+    return (found[:limit] if limit else found), count
 
 
 def orders_page(session, url):
@@ -2548,17 +2555,19 @@ def reading(fn, start="/your-orders/orders", start_reader=None):
 
 @app.tool(name="find", read_only=True, schema={"type": "object", "properties": {
     "query": {"type": "string", "description": "Words to search every order for, as Amazon's order search does (\"socks\", \"PETG filament\"). Without it, the latest orders."},
-    "limit": {"type": "integer", "description": "How many purchases at most (default 20)."}}})
-def find(query: str = "", limit: int = 20):
+    "limit": {"type": "integer", "description": "How many purchases at most (default: with query, every one its search finds; else 20)."}}})
+def find(query: str = "", limit: int = 0):
     """the user's past Amazon purchases, newest first, read from Your Orders in the user's browser: with query, every
     order Amazon's search finds for it (each item's order, date, title, ASIN and link); without, the latest orders
     (date, total, status, items). For reorder's item or order."""
     def go_find(session):
         if query:
-            found, count = search_history(session, query, limit)
-            return {"query": query, "orders_matching": count, "purchases": [{**f, "link": f"{BASE}/dp/{f['asin']}"} for f in found[:limit]]}
-        orders = recent_orders(session, pages=max(1, min(5, (limit + 9) // 10)))
-        return {"orders": orders[:limit]}
+            found, count = search_history(session, query, limit or None)
+            return {"query": query, "orders_matching": count, "orders_read": len({f["order"] for f in found}),
+                    "purchases": [{**f, "link": f"{BASE}/dp/{f['asin']}"} for f in found]}
+        n = limit or 20
+        orders = recent_orders(session, pages=max(1, min(5, (n + 9) // 10)))
+        return {"orders": orders[:n]}
     return reading(go_find)
 
 

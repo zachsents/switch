@@ -333,6 +333,20 @@ const searchRead = defineRead("core/find/search", searchHistory)
 const exchangeRead = defineRead("core/find/exchange", (db, turn: string) =>
   exchangeOf(db, turn, true),
 )
+/** A chat message whole, its detail too, by its number: what a whole-message reply names. */
+const messageRead = defineRead("core/find/message", (db, seq: number) => {
+  const m = db
+    .query<{ source: string; text: string; detail: string | null }, [number]>(
+      `SELECT m.source, m.text, d.detail FROM messages m
+       LEFT JOIN message_details d ON d.seq = m.seq WHERE m.seq = ?`,
+    )
+    .get(seq)
+  if (m === null) {
+    return null
+  }
+  const whose = m.source === "agent" ? "Yours" : "Theirs"
+  return `[Message ${String(seq)} · ${whose}]\n${m.detail === null ? m.text : `${m.text}\n\n${m.detail}`}`
+})
 
 export const historyApp = defineApp<Brain>({
   name: "history",
@@ -367,16 +381,19 @@ export const historyApp = defineApp<Brain>({
       "read",
       {
         description:
-          "Read one earlier exchange in full, with its tool calls, by the id history_search gave.",
+          "Read one earlier exchange in full, with its tool calls, by the id history_search gave; or a chat message whole, by its number.",
         readOnly: true,
         input: Schema.Struct({ id: Schema.String }),
       },
       (input) =>
         Effect.gen(function* reading() {
           const brain = yield* Brain
-          const text = yield* brain.read(exchangeRead, input.id.trim())
+          const id = input.id.trim()
+          const text = /^\d+$/u.test(id)
+            ? yield* brain.read(messageRead, Number(id))
+            : yield* brain.read(exchangeRead, id)
           return text === null
-            ? yield* new Rejected({ reason: `No exchange ${input.id}` })
+            ? yield* new Rejected({ reason: `No exchange or message ${input.id}` })
             : text.slice(0, READ_MAX)
         }),
     ),

@@ -425,6 +425,11 @@ file became; what differs on purpose:
   space in ⌘K; the box in a panel that never takes the front; the core's `/route` for where it
   goes. ⌘/'s sheet moved to ⇧⌘/. A quiet copy takes the key only with `SWITCH_GPUI_HOTKEY=1`.
   Checked on the mini with real keys and clicks through the macOS extension, over Calculator.
+- Files shared from the iPhone's share sheet (`shared.rs`, new here; the core's `draft.ts`): the
+  core's `draft.shared` names the Mac the user is at, and its files join the box in front (the
+  composer while it's up, else the page's) as a paste's do, their bytes down from the blobs and
+  already up; at no Mac, the one used last takes them into Home's. Checked on the mini in a quiet
+  copy against a scratch core.
 - A quiet copy (`SWITCH_GPUI_QUIET=1`) writes nothing to the core (socket, HTTP, uploads, sign-ins,
   credentials), keeps its data and reports in a folder of its own (`switch-gpui-quiet-<pid>`, swept
   once it's gone) and sends no reports. The app's reports are its own file, never the Electrobun

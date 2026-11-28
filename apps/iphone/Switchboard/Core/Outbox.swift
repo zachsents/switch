@@ -85,7 +85,8 @@ final class Outbox {
   @ObservationIgnored private var core = unpaired
   /// The messages from a box not yet taken by the core, for their bubbles.
   private(set) var posts: [Entry] = []
-  /// Bumped when a message comes back to a box (its "Not sent" tapped), by place.
+  /// Bumped when something comes to a box from outside it, by place: a message back (its "Not
+  /// sent" tapped), or what it replies to.
   private(set) var retaken: [String: Int] = [:]
   /// Told when the core took a message with a bubble, and its seq.
   @ObservationIgnored var landed: (Entry, Int) -> Void = { _, _ in }
@@ -259,6 +260,19 @@ final class Outbox {
     d.dictated = dictated.isEmpty ? nil : .array(dictated)
     let files = (d.files ?? []) + (e.files ?? [])
     d.files = files.isEmpty ? nil : files
+    let replies = (d.replyTo?.array ?? []) + e.payload["replyTo"].array
+    d.replyTo = replies.isEmpty ? nil : .array(replies)
+    here.drafts[place] = d
+    retaken[place, default: 0] += 1
+    save()
+  }
+
+  /// What a box replies to, attached to it, unless it's there already.
+  func reply(_ r: Reply, at place: String) {
+    var d = here.drafts[place] ?? Draft(text: "")
+    let now = d.replyTo?.array ?? []
+    guard !now.contains(r.json) else { return }
+    d.replyTo = .array(now + [r.json])
     here.drafts[place] = d
     retaken[place, default: 0] += 1
     save()

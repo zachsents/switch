@@ -63,7 +63,7 @@ struct ThreadView: View {
       .defaultScrollAnchor(.bottom)
       .scrollDismissesKeyboard(.interactively)
       if running {
-        Box(placeholder: "Steer", place: "thread:\(id)", error: error) { words, _ in
+        Box(placeholder: "Steer", place: "thread:\(id)", error: error) { words, _, _ in
           error = nil
           Task {
             do {

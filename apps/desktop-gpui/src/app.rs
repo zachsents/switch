@@ -146,6 +146,15 @@ impl Root {
         c
     }
 
+    /// Files shared from the iPhone (shared.rs): into the box of the space open (a task's page,
+    /// its space's), or Home's.
+    pub fn take_shared(&mut self, chosen: Vec<crate::files::Chosen>, home: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let space = if home { crate::brain::HOME.to_string() } else { Nav::entity(cx).read(cx).page.space().to_string() };
+        let b = self.chat(&space, window, cx).read(cx).chatbox.clone();
+        b.update(cx, |b, cx| b.take_shared(chosen, window, cx));
+        cx.notify();
+    }
+
     /// The cursor in the page's box: a space's, or a running task's steer box.
     fn focus_page_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The page shown, which may be Home for a space not yet known.

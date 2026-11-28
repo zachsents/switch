@@ -175,43 +175,61 @@ impl Reactions {
     }
 }
 
-/// What a message of the user's replies to: words of a message (by its seq), or an action item;
-/// each with the user's own reply to it, when there is one.
+/// What a message of the user's replies to: words of a message (by its seq), a message whole (its
+/// seq and an excerpt, never all of it), or an action item; each with the user's own reply to it,
+/// when there is one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Reply {
     Quote { seq: u64, text: String, reply: Option<String> },
+    Message { seq: u64, text: String, reply: Option<String> },
     Ask { id: String, title: Option<String>, reply: Option<String> },
 }
 
 impl Reply {
-    pub fn reply(&self) -> &str {
+    /// A reply to a message whole: its seq, and its opening and its ending for the words.
+    pub fn whole(line: &Line) -> Reply {
+        Reply::Message { seq: line.seq, text: excerpt(&line.general()), reply: None }
+    }
+
+    fn said(&self) -> &Option<String> {
         match self {
-            Reply::Quote { reply, .. } | Reply::Ask { reply, .. } => reply.as_deref().unwrap_or(""),
+            Reply::Quote { reply, .. } | Reply::Message { reply, .. } | Reply::Ask { reply, .. } => reply,
         }
+    }
+
+    pub fn reply(&self) -> &str {
+        self.said().as_deref().unwrap_or("")
     }
 
     pub fn set_reply(&mut self, to: String) {
         match self {
-            Reply::Quote { reply, .. } | Reply::Ask { reply, .. } => *reply = Some(to),
+            Reply::Quote { reply, .. } | Reply::Message { reply, .. } | Reply::Ask { reply, .. } => *reply = Some(to),
         }
     }
 
-    /// The same quote (seq and words) or the same ask.
+    /// The same quote (seq and words), the same message or the same ask.
     pub fn same(&self, other: &Reply) -> bool {
         match (self, other) {
             (Reply::Quote { seq: a, text: x, .. }, Reply::Quote { seq: b, text: y, .. }) => a == b && x == y,
+            (Reply::Message { seq: a, .. }, Reply::Message { seq: b, .. }) => a == b,
             (Reply::Ask { id: a, .. }, Reply::Ask { id: b, .. }) => a == b,
             _ => false,
+        }
+    }
+
+    /// Its ref alone, without the user's reply.
+    fn bare(&self) -> Value {
+        match self {
+            Reply::Quote { seq, text, .. } => serde_json::json!({ "kind": "quote", "seq": seq, "text": text }),
+            Reply::Message { seq, text, .. } => serde_json::json!({ "kind": "message", "seq": seq, "text": text }),
+            Reply::Ask { id, .. } => serde_json::json!({ "kind": "ask", "id": id }),
         }
     }
 
     /// As the brain takes it in `replyTo`, with the user's reply when there is one.
     pub fn to_json(&self) -> Value {
         let reply = self.reply().trim();
-        let mut v = match self {
-            Reply::Quote { seq, text, .. } => serde_json::json!({ "kind": "quote", "seq": seq, "text": text }),
-            Reply::Ask { id, .. } => serde_json::json!({ "kind": "ask", "id": id }),
-        };
+        let mut v = self.bare();
         if !reply.is_empty() {
             v["reply"] = Value::String(reply.to_string());
         }
@@ -220,23 +238,49 @@ impl Reply {
 
     /// As kept on this Mac (a draft's), its title too.
     pub fn to_kept(&self) -> Value {
-        let mut v = match self {
-            Reply::Quote { seq, text, .. } => serde_json::json!({ "kind": "quote", "seq": seq, "text": text }),
-            Reply::Ask { id, title, .. } => {
-                let mut a = serde_json::json!({ "kind": "ask", "id": id });
-                if let Some(t) = title {
-                    a["title"] = Value::String(t.clone());
-                }
-                a
-            }
-        };
-        if let Some(r) = match self {
-            Reply::Quote { reply, .. } | Reply::Ask { reply, .. } => reply,
-        } {
+        let mut v = self.bare();
+        if let Reply::Ask { title: Some(t), .. } = self {
+            v["title"] = Value::String(t.clone());
+        }
+        if let Some(r) = self.said() {
             v["reply"] = Value::String(r.clone());
         }
         v
     }
+}
+
+/// A message as a whole-message reply names it: one line, its opening and its ending with an
+/// ellipsis between, a link's label for the link; all of it when it's short.
+pub fn excerpt(text: &str) -> String {
+    const SHORT: usize = 90;
+    const OPENING: usize = 45;
+    const ENDING: usize = 30;
+    static LINK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\[([^\]]*)\]\([^)]*\)").expect("link"));
+    let plain = LINK.replace_all(text, "$1");
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    let all = words.join(" ");
+    if all.chars().count() <= SHORT {
+        return all;
+    }
+    let opening = fill(words.iter().copied(), OPENING);
+    let mut ending = fill(words[opening.len()..].iter().rev().copied(), ENDING);
+    ending.reverse();
+    format!("{} … {}", opening.join(" "), ending.join(" "))
+}
+
+/// Words in turn until `most` characters are taken, the first one always.
+fn fill<'a>(words: impl Iterator<Item = &'a str>, most: usize) -> Vec<&'a str> {
+    let mut out = vec![];
+    let mut n = 0;
+    for w in words {
+        let len = w.chars().count();
+        if !out.is_empty() && n + len > most {
+            break;
+        }
+        n += len + 1;
+        out.push(w);
+    }
+    out
 }
 
 /// A side's reaction to words of a message.
@@ -255,6 +299,7 @@ pub fn replies_of(raw: &Value) -> Vec<Reply> {
             let reply = Some(gs(r, "reply")).filter(|x| !x.trim().is_empty());
             match gs(r, "kind").as_str() {
                 "quote" if !gs(r, "text").is_empty() => Some(Reply::Quote { seq: gu(r, "seq"), text: gs(r, "text"), reply }),
+                "message" if !gs(r, "text").is_empty() => Some(Reply::Message { seq: gu(r, "seq"), text: gs(r, "text"), reply }),
                 "ask" if !gs(r, "id").is_empty() => Some(Reply::Ask { id: gs(r, "id"), title: opt(r, "title").filter(|t| !t.is_empty()), reply }),
                 _ => None,
             }
@@ -271,6 +316,7 @@ pub fn replies_kept(raw: &Value) -> Vec<Reply> {
             let reply = r.get("reply").and_then(Value::as_str).map(str::to_string);
             match gs(r, "kind").as_str() {
                 "quote" => Some(Reply::Quote { seq: gu(r, "seq"), text: gs(r, "text"), reply }),
+                "message" => Some(Reply::Message { seq: gu(r, "seq"), text: gs(r, "text"), reply }),
                 "ask" => Some(Reply::Ask { id: gs(r, "id"), title: opt(r, "title"), reply }),
                 _ => None,
             }
@@ -358,6 +404,12 @@ pub struct Line {
 }
 
 impl Line {
+    /// Its general words: none when they only repeat its replies to what it replies to.
+    pub fn general(&self) -> String {
+        let replies: Vec<&str> = self.reply_to.iter().map(|r| r.reply().trim()).filter(|r| !r.is_empty()).collect();
+        if !replies.is_empty() && self.text.trim() == replies.join("\n\n") { String::new() } else { self.text.clone() }
+    }
+
     /// The spaces it shows in: where it was said and those it's mentioned in, but those it was
     /// taken out of.
     pub fn spaces(&self) -> Vec<String> {
@@ -544,6 +596,9 @@ pub fn replies_strict(raw: &Value) -> Option<Vec<Reply>> {
         .map(|r| match r.get("kind").and_then(Value::as_str) {
             Some("quote") if r.get("seq").is_some_and(Value::is_number) && r.get("text").is_some_and(Value::is_string) && opt_str(r, "reply") => {
                 Some(Reply::Quote { seq: gu(r, "seq"), text: gs(r, "text"), reply: opt(r, "reply") })
+            }
+            Some("message") if r.get("seq").is_some_and(Value::is_number) && r.get("text").is_some_and(Value::is_string) && opt_str(r, "reply") => {
+                Some(Reply::Message { seq: gu(r, "seq"), text: gs(r, "text"), reply: opt(r, "reply") })
             }
             Some("ask") if r.get("id").is_some_and(Value::is_string) && opt_str(r, "title") && opt_str(r, "reply") => {
                 Some(Reply::Ask { id: gs(r, "id"), title: opt(r, "title"), reply: opt(r, "reply") })

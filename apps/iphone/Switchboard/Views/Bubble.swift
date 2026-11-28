@@ -4,7 +4,8 @@ import SwiftUI
 /// in gray on the left, the last of a run with its tail. What it replies to is inset at its top,
 /// each with the user's words to it under it, then the rest of what they said;
 /// its tapbacks sit on its top corner, those on its words at their end; its time, the six
-/// tapbacks, Copy and Edit are in its long-press menu, with the model that wrote it. Desktop's ui/chat.tsx.
+/// tapbacks, Reply, Copy and Edit are in its long-press menu, with the model that wrote it. Swiped
+/// to the right, past the arrow, it's a reply too. Desktop's ui/chat.tsx.
 struct Said: View {
   let agent: Bool
   let ink: Color
@@ -32,6 +33,8 @@ struct Said: View {
   var onEmoji: (() -> Void)?
   /// The user's last message: Edit puts it back in the box.
   var onEdit: (() -> Void)?
+  /// Set once it's in the log: a reply to it whole, in the box.
+  var onReply: (() -> Void)?
   /// The spaces it shows in, when more than one: each a Remove from it.
   var removals: [(id: String, name: String)] = []
   var onRemove: ((String) -> Void)?
@@ -39,8 +42,12 @@ struct Said: View {
   var onRead: ((String) -> Void)?
 
   @Environment(\.colorScheme) private var scheme
+  /// How far it's swiped toward a reply.
+  @State private var pull: CGFloat = 0
 
   static let radius: CGFloat = 18
+  /// How far a swipe goes to be a reply.
+  private static let reach: CGFloat = 56
 
   private var fill: Color { agent ? SIS.bubble : ink }
 
@@ -89,8 +96,35 @@ struct Said: View {
       }
       .opacity(dim ? 0.6 : 1)
       .padding(.top, reactions.isEmpty ? 0 : 14)
+      .offset(x: pull)
+      .background(alignment: .leading) {
+        if pull > 0 {
+          Image(systemName: "arrowshape.turn.up.left.fill")
+            .font(SIS.text(15))
+            .foregroundStyle(pull >= Self.reach ? SIS.ink : SIS.ink3)
+            .opacity(min(1, pull / Self.reach))
+            .offset(x: min(pull, Self.reach) - 28)
+        }
+      }
+      .simultaneousGesture(swipe)
+      .sensoryFeedback(.impact(weight: .light), trigger: pull >= Self.reach) { _, now in now }
       .frame(maxWidth: .infinity, alignment: agent ? .leading : .trailing)
       .padding(agent ? .trailing : .leading, 64)
+  }
+
+  /// Sideways to the right, past `reach`: a reply. Up and down is the chat's scroll.
+  private var swipe: some Gesture {
+    DragGesture(minimumDistance: 16)
+      .onChanged { v in
+        guard onReply != nil, v.translation.width > 0, abs(v.translation.width) > abs(v.translation.height) * 2 || pull > 0 else { return }
+        // Past the reach it pulls harder.
+        let x = v.translation.width
+        pull = x <= Self.reach ? x : Self.reach + (x - Self.reach) / 4
+      }
+      .onEnded { _ in
+        if pull >= Self.reach { onReply?() }
+        withAnimation(.spring(duration: 0.25)) { pull = 0 }
+      }
   }
 
   @ViewBuilder private var words: some View {
@@ -127,6 +161,7 @@ struct Said: View {
   }
 
   @ViewBuilder private var keys: some View {
+    if let onReply { Button("Reply", systemImage: "arrowshape.turn.up.left", action: onReply) }
     Button {
       UIPasteboard.general.string = whole
     } label: {
@@ -336,7 +371,7 @@ struct ReplyInset: Hashable {
   var space = ""
 }
 
-/// One of a bubble's replies, inset darker at its top: a quote's words beside a bar, or an ask's
+/// One of a bubble's replies, inset darker at its top: a quote's words (or a message's excerpt) beside a bar, or an ask's
 /// hand, title and space. A tap goes to it (desktop's said-replies.tsx ReplyInsets).
 private struct InsetRow: View {
   let inset: ReplyInset
@@ -348,7 +383,7 @@ private struct InsetRow: View {
     Button(action: go) {
       Group {
         switch inset.reply {
-        case .quote(_, let text, _, _):
+        case .quote(_, let text, _, _), .message(_, let text, _):
           Text(text)
             .lineLimit(3)
             .multilineTextAlignment(.leading)

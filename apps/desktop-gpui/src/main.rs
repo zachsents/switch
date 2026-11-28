@@ -56,6 +56,7 @@ mod rail;
 mod replying;
 mod select;
 mod settings;
+mod shared;
 mod shell;
 mod shortcuts;
 #[cfg(feature = "shot")]

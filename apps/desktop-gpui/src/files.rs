@@ -136,6 +136,34 @@ fn keep_later(id: &str, write: impl FnOnce(&std::path::Path) -> std::io::Result<
     });
 }
 
+/// A file in the core's blobs kept here as file `id`, streamed to disk on `rt` as it comes down,
+/// waited on as it's being kept (`kept`): a file shared from the iPhone (shared.rs).
+pub fn keep_blob(rt: &tokio::runtime::Runtime, http: reqwest::Client, core: String, token: String, id: &str, blob: &str) {
+    use tokio::io::AsyncWriteExt;
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    keeping().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), rx);
+    let (id, to, blob) = (id.to_string(), outbox::file_path(id), blob.to_string());
+    rt.spawn(async move {
+        let part = to.with_extension("part");
+        let got: Option<()> = async {
+            tokio::fs::create_dir_all(to.parent()?).await.ok()?;
+            let mut res = http.get(format!("{core}/blobs/{blob}")).bearer_auth(&token).send().await.ok()?.error_for_status().ok()?;
+            let mut f = tokio::fs::File::create(&part).await.ok()?;
+            while let Some(chunk) = res.chunk().await.ok()? {
+                f.write_all(&chunk).await.ok()?;
+            }
+            f.flush().await.ok()?;
+            tokio::fs::rename(&part, &to).await.ok()
+        }
+        .await;
+        if got.is_none() {
+            let _ = tokio::fs::remove_file(&part).await;
+        }
+        keeping().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        let _ = tx.send(true);
+    });
+}
+
 /// Copies files' bytes in, each `(id, from, to)`, one after another on a thread of its own, each
 /// waited on as it's being kept (`kept`); `then` hears which didn't come in.
 pub fn keep_all_later(jobs: Vec<(String, PathBuf, PathBuf)>, then: impl FnOnce(Vec<String>) + Send + 'static) {

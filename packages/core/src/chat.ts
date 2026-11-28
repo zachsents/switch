@@ -91,8 +91,9 @@ const answersEach = (refs: readonly ReplyRef[]) => refs.some((r) => (r.reply ?? 
 
 /**
  * What a message of the user's replies to, as the agent reads it: the words it quotes and whose
- * message they're from, and each action item it's on, by title and id, each followed by the user's
- * reply to it when it has one. An older reply on an item (`item`) reads as one on that item.
+ * message they're from, a message whole by its number and excerpt (history_read gives the rest),
+ * and each action item it's on, by title and id, each followed by the user's reply to it when it
+ * has one. An older reply on an item (`item`) reads as one on that item.
  */
 export const repliesLine = (db: Database, refs: readonly ReplyRef[], item: string | undefined) => {
   const all = [
@@ -105,10 +106,14 @@ export const repliesLine = (db: Database, refs: readonly ReplyRef[], item: strin
   const title = db.query<{ title: string | null }, [string]>(
     "SELECT json_extract(data, '$.title') AS title FROM action_items WHERE id = ?",
   )
+  const from = (seq: number) =>
+    whose.get(seq)?.source === "agent" ? "your message" : "their message"
   const on = (r: ReplyRef) => {
     if (r.kind === "quote") {
-      const from = whose.get(r.seq)?.source === "agent" ? "your message" : "their message"
-      return `(Replying to these words of ${from} ${String(r.seq)}: "${r.text}".)`
+      return `(Replying to these words of ${from(r.seq)} ${String(r.seq)}: "${r.text}".)`
+    }
+    if (r.kind === "message") {
+      return `(Replying to ${from(r.seq)} ${String(r.seq)}, whole: "${r.text}"; history_read with id ${String(r.seq)} reads it all.)`
     }
     const named = title.get(r.id)?.title ?? null
     return `(On action item ${named === null ? "" : `"${named}" `}${r.id}.)`

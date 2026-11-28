@@ -112,6 +112,8 @@ const SILENT = [
   "spur.",
   // A script's set, start and retirement: its own records say themselves.
   "script.",
+  // Files shared into a draft on a Mac: they say themselves once the message is sent.
+  "draft.",
 ]
 
 /** A script's record (scripts.ts): in the space that set the script. */
@@ -174,16 +176,16 @@ export const recordLine = (e: StoredEvent): Line | null => {
 }
 
 /**
- * What a message replies to, as its line says it: words it quotes, and items it's on, each with the
- * user's reply to it when it has one.
+ * What a message replies to, as its line says it: words it quotes, messages whole by an excerpt, and
+ * items it's on, each with the user's reply to it when it has one.
  */
 const repliedOn = (posted: typeof MessagePosted.payload.Type) => {
   const refs = posted.replyTo ?? []
   const quoted = refs.map((r) => {
     const on =
-      r.kind === "quote"
-        ? `replying to "${clip(r.text, 200)}" in message ${String(r.seq)}`
-        : `on item ${r.id}`
+      r.kind === "ask"
+        ? `on item ${r.id}`
+        : `replying to ${r.kind === "quote" ? `"${clip(r.text, 200)}" in message ${String(r.seq)}` : `message ${String(r.seq)}: "${clip(r.text, 200)}"`}`
     const reply = (r.reply ?? "").trim()
     return reply === "" ? ` (${on})` : ` (${on}: "${clip(reply, 400)}")`
   })

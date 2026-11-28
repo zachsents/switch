@@ -134,7 +134,7 @@ extension Brain {
     }
     let kept = Outbox.shared.posts.compactMap(Pending.init).filter { pending[$0.id] == nil && !arrived.contains($0.id) }
     for p in (kept + pending.values).sorted(by: { $0.time < $1.time }) where p.space == id {
-      out.append(ChatLine(line: Line(seq: .max, time: p.time, agent: false, text: p.text, home: id, mentions: [], attachments: p.attachments), also: [], pending: p))
+      out.append(ChatLine(line: Line(seq: .max, time: p.time, agent: false, text: p.text, home: id, mentions: [], attachments: p.attachments, replyTo: p.replyTo), also: [], pending: p))
     }
     return out
   }

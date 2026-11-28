@@ -31,7 +31,8 @@ export type Dictated = typeof Dictated.Type
 
 /**
  * What a message of the user's replies to: words of a message (its seq, the words as they stand
- * there, and where, in UTF-16 code units, when the client knows), or an action item (its id).
+ * there, and where, in UTF-16 code units, when the client knows), a message whole (its seq and a
+ * short excerpt of it, its opening and its ending, never all of it), or an action item (its id).
  * Several may go on one message, each with the user's own reply to it (`reply`), apart from the
  * message's general words.
  */
@@ -43,12 +44,18 @@ export const Quote = Schema.Struct({
   end: Schema.optionalKey(Schema.Number),
   reply: Schema.optionalKey(Schema.String),
 })
+export const MessageRef = Schema.Struct({
+  kind: Schema.Literal("message"),
+  seq: Schema.Number,
+  text: Schema.String,
+  reply: Schema.optionalKey(Schema.String),
+})
 export const AskRef = Schema.Struct({
   kind: Schema.Literal("ask"),
   id: ItemId,
   reply: Schema.optionalKey(Schema.String),
 })
-export const ReplyRef = Schema.Union([Quote, AskRef])
+export const ReplyRef = Schema.Union([Quote, MessageRef, AskRef])
 export type ReplyRef = typeof ReplyRef.Type
 
 /**
@@ -75,7 +82,7 @@ export const MessagePosted = defineEvent(
     widget: Schema.optionalKey(shown),
     /** The action item the user replied on. */
     item: Schema.optionalKey(ItemId),
-    /** What it replies to: words of a message, or an action item; several may go together. */
+    /** What it replies to: words of a message, a message whole, or an action item; several may go together. */
     replyTo: Schema.optionalKey(Schema.Array(ReplyRef)),
     attachments: Schema.optionalKey(Schema.Array(Attachment)),
     dictated: Schema.optionalKey(Dictated),

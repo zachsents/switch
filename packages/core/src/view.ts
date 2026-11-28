@@ -804,6 +804,8 @@ const LIVE = new Set([
   "message.edited",
   "message.revised",
   "message.reacted",
+  // Files shared from the iPhone into a desktop's draft (draft.ts).
+  "draft.shared",
 ])
 
 const decodeTagged = Schema.decodeUnknownOption(SpaceTagged.payload)

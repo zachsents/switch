@@ -193,10 +193,12 @@ final class Phone {
   // MARK: Saying things to the brain
 
   /// Kept in the Outbox at once, its files still to go up, and shown from there until the core has
-  /// it; one the brain says no to stays, marked "Not sent". It says which words were dictated.
-  func post(_ space: String, _ words: Words, _ files: [Outbox.File] = []) {
+  /// it; one the brain says no to stays, marked "Not sent". It says which words were dictated, and
+  /// what it replies to.
+  func post(_ space: String, _ words: Words, _ files: [Outbox.File] = [], _ replies: [Reply] = []) {
     var payload = words.payload
     payload["space"] = .string(space)
+    if !replies.isEmpty { payload["replyTo"] = .array(replies.map(\.json)) }
     Trail.shared.note("sent message.post")
     Outbox.shared.add(.command, "message.post", .object(payload), files: files.isEmpty ? nil : files, view: ["space": .string(space)])
   }

@@ -86,7 +86,7 @@ struct Entry {
 /// Said, in a bubble: not a quiet line or a widget; by whom, and a peer's name.
 fn said_of(k: &Kind_) -> Option<(Who, Option<&str>)> {
     match k {
-        Kind_::Line(l) if l.quiet.is_none() && l.widget.is_none() && !general_of(l).is_empty() => Some((l.who, l.from.as_deref())),
+        Kind_::Line(l) if l.quiet.is_none() && l.widget.is_none() && !l.general().is_empty() => Some((l.who, l.from.as_deref())),
         Kind_::Pending(p) if !p.text.is_empty() => Some((Who::User, None)),
         _ => None,
     }
@@ -226,12 +226,6 @@ fn undelivered(b: &crate::brain::Brain, space: &str) -> Option<String> {
     let t = b.threads.get(&format!("space:{space}"))?;
     let unanswered = matches!(t.status, Status::Failed | Status::Limited) || (t.status == Status::Interrupted && t.result != STOPPED && t.result != PAUSED);
     (unanswered && !t.woken).then(|| t.id.clone())
-}
-
-/// A line's general words: none when they only repeat its replies under what it replies to.
-fn general_of(line: &Line) -> String {
-    let replies: Vec<&str> = line.reply_to.iter().map(|r| r.reply().trim()).filter(|r| !r.is_empty()).collect();
-    if !replies.is_empty() && line.text.trim() == replies.join("\n\n") { String::new() } else { line.text.clone() }
 }
 
 /// What a line replies to: its own refs, and the item an older reply was on.
@@ -404,7 +398,7 @@ impl ChatView {
             .iter()
             .enumerate()
             .filter_map(|(ix, e)| match &e.kind {
-                Kind_::Line(l) if l.quiet.is_none() && l.widget.is_none() && (!general_of(l).is_empty() || !l.reply_to.is_empty() || l.item.is_some()) => Some((ix, l.seq)),
+                Kind_::Line(l) if l.quiet.is_none() && l.widget.is_none() && (!l.general().is_empty() || !l.reply_to.is_empty() || l.item.is_some()) => Some((ix, l.seq)),
                 _ => None,
             })
             .collect()
@@ -451,10 +445,10 @@ impl ChatView {
         })
     }
 
-    /// R or ↵ on the line picked: a reply to it in the box.
+    /// R or ↵ on the line picked: a reply to it whole in the box.
     fn reply_picked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some((line, _)) = self.picked_line() else { return };
-        crate::replying::attach(&self.space, Reply::Quote { seq: line.seq, text: general_of(&line), reply: None }, cx);
+        crate::replying::attach(&self.space, Reply::whole(&line), cx);
         self.unpick(cx);
     }
 
@@ -481,7 +475,7 @@ impl ChatView {
     /// C or ⌘C on the line picked: its words, as its Copy.
     fn copy_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((line, key)) = self.picked_line() else { return };
-        cx.write_to_clipboard(ClipboardItem::new_string(general_of(&line)));
+        cx.write_to_clipboard(ClipboardItem::new_string(line.general()));
         *self.sh.copied.borrow_mut() = Some((key, std::time::Instant::now()));
         window.refresh();
         cx.notify();
@@ -490,7 +484,7 @@ impl ChatView {
     /// Space or O on the line picked: it whole, with its detail, in its reading window.
     fn read_picked(&mut self, cx: &mut Context<Self>) {
         let Some((line, _)) = self.picked_line() else { return };
-        crate::chat_platform::read(&self.sh.title, &crate::said::whole_of(&general_of(&line), line.detail.as_deref()), cx);
+        crate::chat_platform::read(&self.sh.title, &crate::said::whole_of(&line.general(), line.detail.as_deref()), cx);
     }
 
     /// ↑ in the empty box: the user's last message here, to edit, unless it's still being sent.
@@ -507,7 +501,7 @@ impl ChatView {
         self.editing = Some(line.seq);
         self.chatbox.update(cx, |b, _| b.editing = true);
         cx.notify();
-        Some(general_of(&line))
+        Some(line.general())
     }
 
     fn send(&mut self, sent: &Sent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -830,7 +824,7 @@ impl ChatView {
         } else if let Some(w) = &line.widget {
             out = out.child(self.widget(&key, w, line.seq, cx));
         } else if !line.text.is_empty() || !line.reply_to.is_empty() || line.item.is_some() {
-            let text = general_of(line);
+            let text = line.general();
             let doc = (line.who != Who::User).then(|| self.doc(line.seq, &text));
             let replies = replies_to(line);
             // A peer's name over the first of its run, as a group chat names a sender.
@@ -872,7 +866,7 @@ impl ChatView {
         }
         if !line.attachments.is_empty() {
             let row = self.rows.entry(key.clone()).or_default().clone();
-            out = out.child(attached::attached(&line.attachments, line.who == Who::User, !general_of(line).is_empty(), &key, &row, l, window, cx));
+            out = out.child(attached::attached(&line.attachments, line.who == Who::User, !line.general().is_empty(), &key, &row, l, window, cx));
         }
         if let Some(thread) = &e.undelivered {
             let thread = thread.clone();

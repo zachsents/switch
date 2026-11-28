@@ -2,7 +2,9 @@ import Foundation
 import Security
 
 /// Where the core is and the token it gave this phone when its pairing was approved. Kept in the
-/// Keychain, readable by this app once the phone has been unlocked after a restart.
+/// Keychain, readable once the phone has been unlocked after a restart, by this app and its share
+/// extension: in the access group they share, the first their entitlements name, where an item goes
+/// when none is said.
 nonisolated struct Credential: Codable, Equatable, Sendable {
   /// The core's HTTP root, `http://host:4871`.
   let core: URL
@@ -10,15 +12,33 @@ nonisolated struct Credential: Codable, Equatable, Sendable {
 
   private static let service = "Switch"
   private static let account = "core"
+  private static let shared = ".shared"
 
   static func load() -> Credential? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
-      kSecReturnData as String: true,
+      kSecReturnData as String: true, kSecReturnAttributes as String: true,
     ]
     var found: AnyObject?
-    guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
-    return try? JSONDecoder().decode(Credential.self, from: data)
+    guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let item = found as? [String: Any],
+      let data = item[kSecValueData as String] as? Data, let credential = try? JSONDecoder().decode(Credential.self, from: data)
+    else { return nil }
+    // One kept by a build before the share extension, in the app's own group, moves to the shared one.
+    // A copy goes in first, so there's never a moment without one; the old goes once it's in.
+    if let group = item[kSecAttrAccessGroup as String] as? String, !group.hasSuffix(shared) {
+      let copy: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+        kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+      ]
+      if SecItemAdd(copy as CFDictionary, nil) == errSecSuccess {
+        SecItemDelete(
+          [
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: group,
+          ] as CFDictionary)
+      }
+    }
+    return credential
   }
 
   /// Changed in place, so there's never a moment without one.

@@ -44,6 +44,7 @@ targets:
     dependencies:
       - target: NotificationService
       - target: Activities
+      - target: Share
       - package: A2UI
         products: [A2UISwiftCore, A2UISwiftUI, BasicCatalog, BasicCatalogSwiftUI]
       - package: JSONSchema
@@ -99,6 +100,23 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).activities
         INFOPLIST_FILE: Activities-Info.plist
         SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+  Share:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Share
+        type: syncedFolder
+      - path: Switchboard/Core/Credential.swift
+      - path: Switchboard/Core/JSON.swift
+    settings:
+      base:
+        PRODUCT_NAME: Share
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).share
+        INFOPLIST_FILE: Share-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Share.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         SKIP_INSTALL: YES

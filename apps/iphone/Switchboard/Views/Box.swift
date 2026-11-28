@@ -85,8 +85,9 @@ import SwiftUI
 /// dimmed; the key again, or a tap in the box, finishes it. With `attaches`, its + opens the attach
 /// sheet, and what's picked waits in a strip above the words, going up meanwhile; Send hands what's
 /// picked to the Outbox, which sends the message once they're up, and nothing sends with one that
-/// failed. What's in it is kept in the Outbox at each change, under `place`, so a box gone (or the
-/// app) loses none of it; an edit isn't kept.
+/// failed. What it replies to (attached from the chat's bubbles) sits over the words, a row each,
+/// ✕ taking one off, and goes with the message. What's in it is kept in the Outbox at each change,
+/// under `place`, so a box gone (or the app) loses none of it; an edit isn't kept.
 struct Box: View {
   let placeholder: String
   /// Where it is, as its draft is kept: `space:<id>`, `thread:<id>`.
@@ -96,8 +97,9 @@ struct Box: View {
   /// Words being edited: put in the box when they come, with Cancel above it.
   var editing: String?
   var onCancel: () -> Void = {}
-  let onSend: (Words, [Outbox.File]) -> Void
+  let onSend: (Words, [Outbox.File], [Reply]) -> Void
   @State private var writing = Writing()
+  @State private var replies: [Reply] = []
   @State private var tray = Tray()
   @State private var attaching = false
   /// An edit is in it: what's typed isn't kept.
@@ -127,6 +129,7 @@ struct Box: View {
       } else if let stopped = writing.stopped {
         stoppedNote(stopped)
       }
+      ForEach(Array(replies.enumerated()), id: \.element) { at, r in replyRow(r, at) }
       if !tray.isEmpty { Chips(tray: tray) }
       HStack(alignment: .bottom, spacing: 12) {
         if attaches {
@@ -165,14 +168,17 @@ struct Box: View {
     .onDisappear { writing.finish() }
     .sheet(isPresented: $attaching) { AttachSheet(tray: tray) }
     .onAppear {
-      let keep = { [writing, tray, place, $paused] in
-        if !$paused.wrappedValue { Outbox.shared.keep(Self.draft(writing.words, tray.files), at: place) }
-      }
       writing.changed = keep
       tray.changed = keep
       restore()
     }
-    .onChange(of: Outbox.shared.retaken[place]) { restore() }
+    .onChange(of: Outbox.shared.retaken[place]) {
+      let had = replies.count
+      restore()
+      // One just attached takes the keys.
+      if replies.count > had { focused = true }
+    }
+    .onChange(of: replies) { keep() }
     .onChange(of: editing) {
       if let editing {
         paused = true
@@ -189,8 +195,14 @@ struct Box: View {
   private func send() {
     let words = writing.words.trimmed
     guard !words.isEmpty || !tray.isEmpty, !tray.failed, !tray.reading else { return }
-    onSend(words, tray.handOver())
+    onSend(words, tray.handOver(), replies)
+    replies = []
     writing.clear()
+  }
+
+  /// What's in it, kept in the Outbox; not while an edit's in it.
+  private func keep() {
+    if !paused { Outbox.shared.keep(Self.draft(writing.words, tray.files, replies), at: place) }
   }
 
   /// What's kept for this box, in it.
@@ -202,11 +214,45 @@ struct Box: View {
     }
     writing.restore(Words(d.text, dictated: Spans(spans ?? [])))
     tray.restore(d.files ?? [])
+    replies = d.replyTo?.array.compactMap(Reply.init) ?? []
   }
 
-  private static func draft(_ words: Words, _ files: [Outbox.File]) -> Outbox.Draft {
+  private static func draft(_ words: Words, _ files: [Outbox.File], _ replies: [Reply]) -> Outbox.Draft {
     let dictated = words.dictated.record(words.text)
-    return Outbox.Draft(text: words.text, dictated: dictated.isEmpty ? nil : .array(dictated), files: files.isEmpty ? nil : files)
+    return Outbox.Draft(
+      text: words.text, dictated: dictated.isEmpty ? nil : .array(dictated), files: files.isEmpty ? nil : files,
+      replyTo: replies.isEmpty ? nil : .array(replies.map(\.json)))
+  }
+
+  /// One of what it replies to: its words on one line beside a bar, and ✕.
+  private func replyRow(_ r: Reply, _ at: Int) -> some View {
+    HStack(spacing: 8) {
+      Group {
+        switch r {
+        case .quote(_, let text, _, _): Text(text)
+        // Its opening and its ending both in view: cut in the middle, where its own … is.
+        case .message(_, let text, _): Text(text).truncationMode(.middle)
+        case .ask(_, let title, _): Text(title ?? "")
+        }
+      }
+      .font(SIS.text(13))
+      .foregroundStyle(SIS.ink2)
+      .lineLimit(1)
+      .padding(.leading, 8)
+      .overlay(alignment: .leading) { Rectangle().fill(SIS.ink3).frame(width: 2) }
+      Spacer(minLength: 0)
+      Button {
+        replies.remove(at: at)
+      } label: {
+        Image(systemName: "xmark").font(SIS.text(13)).foregroundStyle(SIS.ink2).frame(width: 32, height: 32).contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Remove")
+    }
+    .padding(.leading, SIS.inset)
+    .padding(.trailing, SIS.inset - 8)
+    .frame(minHeight: 40)
+    .overlay(alignment: .bottom) { Hairline() }
   }
 
   private func note(_ text: Text) -> some View {

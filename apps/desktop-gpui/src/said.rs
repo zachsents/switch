@@ -176,7 +176,7 @@ fn reply_insets(replies: &[Reply], right: bool, here: &str, words: bool, key: &s
             let inset_ink = if right { l.white.opacity(0.9) } else { l.ink2 };
             let here = here.to_string();
             let body: AnyElement = match r {
-                Reply::Quote { text, .. } => {
+                Reply::Quote { text, .. } | Reply::Message { text, .. } => {
                     n += 1;
                     div()
                         .border_l_2()
@@ -224,7 +224,7 @@ fn reply_insets(replies: &[Reply], right: bool, here: &str, words: bool, key: &s
                         .text_color(inset_ink)
                         .cursor_pointer()
                         .on_click(move |_, window, cx| match &go {
-                            Reply::Quote { seq, .. } => Nav::open_at(here.clone(), Some(*seq), cx),
+                            Reply::Quote { seq, .. } | Reply::Message { seq, .. } => Nav::open_at(here.clone(), Some(*seq), cx),
                             Reply::Ask { id, .. } => window.dispatch_action(Box::new(crate::commands::OpenItem(id.clone())), cx),
                         })
                         .child(body),

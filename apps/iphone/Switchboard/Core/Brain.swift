@@ -113,19 +113,65 @@ struct Line: Identifiable, Hashable {
 }
 
 /// What a message replies to (packages/brain/src/messages.ts): words of message `seq` as they
-/// stand in its text (`start`, `end`: UTF-16 offsets into it, when known), or an ask, with its title
-/// when known; each with the user's words to it (`reply`), when it has its own.
+/// stand in its text (`start`, `end`: UTF-16 offsets into it, when known), a message whole (its
+/// seq and an excerpt, never all of it), or an ask, with its title when known; each with the
+/// user's words to it (`reply`), when it has its own.
 enum Reply: Hashable {
   case quote(seq: Int, text: String, start: Int?, said: String)
+  case message(seq: Int, text: String, said: String)
   case ask(id: String, title: String?, said: String)
 
   init?(_ j: JSON) {
     switch j["kind"].str {
     case "quote":
       self = .quote(seq: Int(j["seq"].number ?? 0), text: j["text"].str, start: j["start"].number.map { Int($0) }, said: j["reply"].str)
+    case "message": self = .message(seq: Int(j["seq"].number ?? 0), text: j["text"].str, said: j["reply"].str)
     case "ask": self = .ask(id: j["id"].str, title: j["title"].string, said: j["reply"].str)
     default: return nil
     }
+  }
+
+  /// A reply to a line whole: its seq, and its opening and its ending for the words.
+  static func whole(_ line: Line) -> Reply { .message(seq: line.seq, text: excerpt(line.general), said: "") }
+
+  /// A message as a whole-message reply names it: one line, its opening and its ending with an
+  /// ellipsis between, a link's label for the link; all of it when it's short. As the desktop's
+  /// `brain::excerpt`.
+  static func excerpt(_ text: String) -> String {
+    let plain = text.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+    let words = plain.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    let all = words.joined(separator: " ")
+    guard all.count > 90 else { return all }
+    let opening = fill(words, 45)
+    let ending = fill(words.dropFirst(opening.count).reversed(), 30).reversed()
+    return "\(opening.joined(separator: " ")) … \(ending.joined(separator: " "))"
+  }
+
+  /// Words in turn until `most` characters are taken, the first one always.
+  private static func fill(_ words: some Sequence<String>, _ most: Int) -> [String] {
+    var out: [String] = []
+    var n = 0
+    for w in words {
+      if !out.isEmpty && n + w.count > most { break }
+      n += w.count + 1
+      out.append(w)
+    }
+    return out
+  }
+
+  /// As the brain takes it in `replyTo`.
+  var json: JSON {
+    let said = self.said.trimmingCharacters(in: .whitespacesAndNewlines)
+    var j: [String: JSON]
+    switch self {
+    case .quote(let seq, let text, let start, _):
+      j = ["kind": "quote", "seq": .number(Double(seq)), "text": .string(text)]
+      if let start { j["start"] = .number(Double(start)) }
+    case .message(let seq, let text, _): j = ["kind": "message", "seq": .number(Double(seq)), "text": .string(text)]
+    case .ask(let id, _, _): j = ["kind": "ask", "id": .string(id)]
+    }
+    if !said.isEmpty { j["reply"] = .string(said) }
+    return .object(j)
   }
 
   /// A line's refs, and the ask it was a reply on (`item`) when they don't name it.
@@ -141,7 +187,7 @@ enum Reply: Hashable {
   /// The user's own words to it.
   var said: String {
     switch self {
-    case .quote(_, _, _, let said), .ask(_, _, let said): said
+    case .quote(_, _, _, let said), .message(_, _, let said), .ask(_, _, let said): said
     }
   }
 }
@@ -313,6 +359,8 @@ struct Pending: Identifiable, Hashable {
   let text: String
   /// Its files: up already, or drawn from their bytes here while they go up.
   var attachments: [Attachment] = []
+  /// What it replies to.
+  var replyTo: [Reply] = []
   let time: Double
   var failed = false
   var landed: Int?
@@ -326,7 +374,7 @@ extension Pending {
     self.init(
       id: e.id, space: space, text: e.payload["text"].str,
       attachments: files.map { f in f.attachment ?? Attachment(blob: "", name: f.name, type: f.type, size: f.size, local: Blobs.sending(f)) },
-      time: e.time ?? 0, failed: e.rejected != nil)
+      replyTo: e.payload["replyTo"].array.compactMap(Reply.init), time: e.time ?? 0, failed: e.rejected != nil)
   }
 }
 

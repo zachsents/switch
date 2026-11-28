@@ -91,6 +91,7 @@ import {
   sealedRoute,
 } from "./asks.ts"
 import { blobsRoute } from "./blobs.ts"
+import { draftConfig, draftRoute } from "./draft.ts"
 import { checkpointer } from "./checkpointer.ts"
 import { queryRoute } from "./query.ts"
 import { routeRoute } from "./route.ts"
@@ -177,6 +178,7 @@ export const brainParts: readonly {
   scriptsConfig,
   notifyConfig,
   asksConfig,
+  draftConfig,
 ]
 
 /**
@@ -617,6 +619,7 @@ const layerRoutes = HttpRouter.serve(
     portalRoute,
     extensionsRoute,
     blobsRoute,
+    draftRoute,
     queryRoute,
     routeRoute,
     eventsRoute,

@@ -377,12 +377,6 @@ fn replies_to(line: &Line) -> Vec<Reply> {
     out
 }
 
-/// A line's general words: none when they only repeat its replies under what it replies to.
-fn general_of(line: &Line) -> String {
-    let replies: Vec<&str> = line.reply_to.iter().map(|r| r.reply().trim()).filter(|r| !r.is_empty()).collect();
-    if !replies.is_empty() && line.text.trim() == replies.join("\n\n") { String::new() } else { line.text.clone() }
-}
-
 /// A space's chat: what's posted in it or mentions it, then what's sent but not yet in the log. A
 /// turn's steps, and its words until they're posted, are its thread's, never the chat's.
 pub fn chat(b: &Brain, id: &str) -> Vec<ChatLine> {
@@ -396,7 +390,7 @@ pub fn chat(b: &Brain, id: &str) -> Vec<ChatLine> {
                 seq: Some(line.seq),
                 home: Some(line.home.clone()),
                 who: line.who,
-                text: general_of(line),
+                text: line.general(),
                 also: line.spaces().into_iter().filter(|x| x.as_str() != id && b.spaces.contains_key(x)).collect(),
                 pending: None,
                 widget: line.widget.clone().map(|w| (w, line.seq)),

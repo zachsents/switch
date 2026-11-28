@@ -8,5 +8,10 @@
 	<!-- Urgent action items break through Focus. -->
 	<key>com.apple.developer.usernotifications.time-sensitive</key>
 	<true/>
+	<!-- The pairing's credential, shared with the share extension (Credential.swift): first, so it's where items go. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(APP_BUNDLE_ID).shared</string>
+	</array>
 </dict>
 </plist>

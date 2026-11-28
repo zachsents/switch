@@ -127,6 +127,7 @@ impl Model {
                 Incoming::Events(events) => {
                     self.brain.apply(&events);
                     crate::queries::on_events(&events, cx);
+                    crate::shared::heard(&events, cx);
                     cx.emit(Heard(std::rc::Rc::new(events)));
                     changed = true;
                 }

@@ -149,12 +149,12 @@ struct ChatPane: View {
       Box(
         placeholder: id == HOME ? "Message" : "Message \(title)", place: "space:\(id)", error: editError,
         attaches: true, editing: editing?.text, onCancel: { editing = nil }
-      ) { words, files in
+      ) { words, files, replies in
         editError = nil
         toLatest()
         guard let was = editing else {
           phone.chatAt[id] = nil
-          phone.post(id, words, files)
+          phone.post(id, words, files, replies)
           return
         }
         editing = nil
@@ -188,7 +188,7 @@ struct ChatPane: View {
   /// To what a reply is on: the quoted message, brought into view; an open ask, opened.
   private func go(_ r: Reply) {
     switch r {
-    case .quote(let seq, _, _, _):
+    case .quote(let seq, _, _, _), .message(let seq, _, _):
       if phone.chatAt[id] == seq {
         shown = nil
         settle(brain.chat(id))
@@ -228,6 +228,7 @@ struct ChatPane: View {
           onReact: held ? { r in phone.react(l.line.seq, r, was: l.line.reactions.user) } : nil,
           onEmoji: held ? { emojiFor = l.line.seq } : nil,
           onEdit: edit ? { editing = (l.line.seq, l.line.text) } : nil,
+          onReply: held ? { Outbox.shared.reply(.whole(l.line), at: "space:\(id)") } : nil,
           // This space first: the one it's most likely out of place in.
           removals: held ? phone.removable(l.line).sorted { a, _ in a.id == id } : [],
           onRemove: { [seq = l.line.seq] space in phone.remove(seq, from: space, undo: undo) }
